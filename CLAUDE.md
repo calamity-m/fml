@@ -3,8 +3,11 @@
 # TODO: we must specify the use of flamegraphs, ideally we can link these in with benchmarks.
 # TODO: we must reiterate and enforce the need for performance testing - waiting until the last phase will not suffice
 # TODO: flesh out Backwards resolution in CLAUDE.md
-# TODO: Re-read IMPLEMENTATION_PLAN.md, changes have been made since last viewing
+# TODO: Re-read IMPLEMENTATION_PLAN.md, changes have been made since last viewing. New phase + mention of code-review + wanted use of `skim` earlier. Polish phase should be collapsed into existing phases, rather than all at the end.
 # TODO: Add merged steps to phases that don't have them.
+# TODO: Refactor test harness explanation - as tests are implemented, tests should be removed from the harness and added to the relevant module, at the end there should be no harnesses left - we will keep tests/common though. Evaluate if it should become a crate in-of-itself.
+# TODO: Add a finale benchmark, which benches across the entire stack as much as possible - ingest to export
+# TODO: Evaluate how we can do TUI benchmarking
 
 > **fml** — *Feed Me Logs*
 >
