@@ -1,0 +1,31 @@
+# Cargo
+/target/
+Cargo.lock.bak
+
+# Benchmarks — baselines are committed intentionally via make save-baselines
+benches/baselines/*
+!benches/baselines/.gitkeep
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.fleet/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs / temp
+*.log
+*.tmp
+/tmp/
+
