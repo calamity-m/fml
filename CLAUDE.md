@@ -150,6 +150,8 @@ Selection semantics: selecting a node at any level implicitly selects all its de
 
 `skim` is invoked with `f` to fuzzy-jump to any node in the tree without navigating manually. The tree is otherwise keyboard-navigated with arrow keys / `hjkl`.
 
+Lead on using https://github.com/EdJoPaTo/tui-rs-tree-widget/tree/main, though unsure if the node selection functionality is supported, or customization.
+
 ### Log Stream
 
 Live-tailing view. Scrolling up pauses the display (lines keep arriving in the store). A banner shows the pause state and number of buffered new lines. `G` jumps back to the tail. Each line is prefixed with its producer name (colour-coded) and timestamp (toggleable). Matched spans from the active query are highlighted inline.
