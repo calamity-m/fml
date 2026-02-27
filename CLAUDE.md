@@ -3,7 +3,7 @@
 # TODO: we must specify the use of flamegraphs, ideally we can link these in with benchmarks.
 # TODO: we must reiterate and enforce the need for performance testing - waiting until the last phase will not suffice
 # TODO: flesh out Backwards resolution in CLAUDE.md
-# TODO: Re-read IMPLEMENTATION_PLAN.md and check changes - read commit "docs(claude): add corrections and extra phasing to implementation plan"
+# TODO: Re-read IMPLEMENTATION_PLAN.md, changes have been made since last viewing
 
 > **fml** — *Feed Me Logs*
 >

@@ -112,7 +112,6 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 3.5.3 | Producer tree populates from `store.producers()` | | | |
 | 3.5.4 | Demo mode (fake entries at configurable rate, default 10/sec) | | | |
 | 3.5.5 | Wire -> TUI with generated mock data based on a `--demo` flag | | | |
-| 3.5.7 | Document demo, intention is to show off capabilities to interested users quick and easily | | | |
 
 ### Phase 4 — Feed implementations
 
