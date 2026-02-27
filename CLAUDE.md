@@ -1,5 +1,10 @@
 # claude
 
+# TODO: we must specify the use of flamegraphs, ideally we can link these in with benchmarks.
+# TODO: we must reiterate and enforce the need for performance testing - waiting until the last phase will not suffice
+# TODO: flesh out Backwards resolution in CLAUDE.md
+# TODO: Re-read IMPLEMENTATION_PLAN.md and check changes - read commit "docs(claude): add corrections and extra phasing to implementation plan"
+
 > **fml** — *Feed Me Logs*
 >
 > *The log triage tool you open when something is already broken. Built for high-stress, time-pressured moments — multi-source ingestion, semantic search that thinks ahead of you, and a UI that gets out of the way so you can find the line that matters before the incident gets worse.*
@@ -271,7 +276,6 @@ Usage examples from within Claude Code:
 
 The skill file lives at `.claude/skills/fml.md` in this repo and is auto-discovered by Claude Code when working inside the project.
 
-
 ## Testing
 
 The test suite is a safety net for Claude and for humans. Every significant
@@ -450,6 +454,10 @@ When the query begins with a negative prefix (`un-`, `fail-`, `err-`, `invalid-`
 ```
 
 This means `unauth` at high greed naturally surfaces terms like `forbidden`, `rejected`, `denied`, and `401` — none of which needed to be explicitly linked to `unauth` in the ontology.
+
+### Backwards resolution
+
+The greedy algorithm must be backward-resolution possible, such that auth can be resolved from something like "expiry". Based on the greedy factor, auth may grab "expiry" on a greed value of `5`, we may need to set the greed value to `9` when we supply "expiry", to resolve back to auth.
 
 ### Rust Implementation Notes
 
