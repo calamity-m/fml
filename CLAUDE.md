@@ -4,6 +4,7 @@
 # TODO: we must reiterate and enforce the need for performance testing - waiting until the last phase will not suffice
 # TODO: flesh out Backwards resolution in CLAUDE.md
 # TODO: Re-read IMPLEMENTATION_PLAN.md, changes have been made since last viewing
+# TODO: Add merged steps to phases that don't have them.
 
 > **fml** — *Feed Me Logs*
 >

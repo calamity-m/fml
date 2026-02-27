@@ -8,6 +8,8 @@ The central architectural insight: **feeds push normalized entries into a shared
 
 All phases should have tests generated, and when possible, phases should be completing performance testing and adding benchmarks where appropriate.
 
+At the end of each phase the "code-review" plugin should be utilised.
+
 ## Workspace structure
 
 ```
@@ -58,6 +60,9 @@ Feed Worker B ─┘                                              │
 
 **Store concurrency**: `Arc<RwLock<StoreInner>>`. Write lock held only during `push()` (single writer). Read lock for queries (multiple readers). If profiling shows contention, swap inner for a lock-free ring — API stays the same.
 
+## Git Flow
+
+For each new phase, we will first create a new branch named after a phase. Before we can complete a phase fully, we will need to merge this branch into main through a pull request via `gh pr`.
 
 ## Tracking
 
@@ -73,6 +78,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 1.4 | Create `fml-tui` with `App` stub | | | |
 | 1.5 | Migrate all test/bench imports to `fml_core::` | | | |
 | 1.6 | Delete old `src/lib.rs`, verify `cargo test --workspace` (120 ignored) | | | |
+| 1.7 | Merged | | | |
 
 ### Phase 2 — TUI shell (mock data)
 
@@ -87,6 +93,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 2.7 | App shell + layout + focus switching | | | |
 | 2.8 | Add help popup displaying possible actions (`?` to open) | | | |
 | 2.9 | Wire `cargo run` → TUI with hardcoded mock data | | | |
+| 2.10 | Merged | | | |
 
 ### Phase 3 — Store + normalizer
 
@@ -102,6 +109,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 3.8 | Normalizer: unstructured pattern detection | 3 | | | |
 | 3.9 | Normalizer: fallback + synthetic fields + edge cases | 5 | | | |
 | 3.10 | Normalizer: insta snapshots | 4 | | | |
+| 3.11 | Merged | 4 | | | |
 
 ### Phase 3.5 — Wire store → TUI
 
@@ -112,6 +120,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 3.5.3 | Producer tree populates from `store.producers()` | | | |
 | 3.5.4 | Demo mode (fake entries at configurable rate, default 10/sec) | | | |
 | 3.5.5 | Wire -> TUI with generated mock data based on a `--demo` flag | | | |
+| 3.5.6 | Merged | | | |
 
 ### Phase 4 — Feed implementations
 
@@ -457,6 +466,8 @@ We should iterate here before we move to the search engine, to try and maximise 
   7. repeat steps 5-6 until approved
   8. merge changes
 
+Utilise the code-review plugin
+
 ---
 
 ## Phase 5: Search engine
@@ -509,6 +520,8 @@ We should iterate here before we move to the tabs + export + headless, to try an
   6. action feedback, resubmit for re-review
   7. repeat steps 5-6 until approved
   8. merge changes
+
+Utilise the code-review plugin
 
 ---
 
