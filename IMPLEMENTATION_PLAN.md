@@ -92,8 +92,9 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 2.6 | Query bar widget (text input, greed slider) | | | |
 | 2.7 | App shell + layout + focus switching | | | |
 | 2.8 | Add help popup displaying possible actions (`?` to open) | | | |
-| 2.9 | Wire `cargo run` → TUI with hardcoded mock data | | | |
-| 2.10 | Merged | | | |
+| 2.10 | Add a config.toml reading for TUI | | | |
+| 2.11 | Wire `cargo run` → TUI with hardcoded mock data | | | |
+| 2.12 | Merged | | | |
 
 ### Phase 3 — Store + normalizer
 
