@@ -3,7 +3,7 @@
 //!
 //! # Usage
 //!
-//! In the main event loop, call [`to_app_event`] on every [`crossterm::event::Event`]
+//! In the main event loop, call [`AppEvent::parse_event`] on every [`crossterm::event::Event`]
 //! and match on the returned [`AppEvent`] instead of crossterm types.
 //!
 //! # Keybindings
@@ -33,7 +33,7 @@
 //! ## Insert mode
 //!
 //! When a text-input widget (query bar, command bar) is focused, the event
-//! loop calls [`to_app_event_insert`] instead. In insert mode:
+//! loop calls [`AppEvent::parse_event_insert`] instead. In insert mode:
 //! - hjkl produce `Char` events instead of `TreeNav`
 //! - `q`, `G`, `[`, `]` produce `Char` events
 //! - Arrow keys still produce `TreeNav` for cursor movement
@@ -86,128 +86,186 @@ pub enum AppEvent {
     Resize(u16, u16),
     /// Dismiss the active modal (query bar focus, help popup).
     Escape,
+    /// Regardless of focused tab, close the app
+    Exit,
+    /// Display help
+    Help,
+    /// Change theme
+    Theme(String),
+    /// Toggle display of timestamps
+    Timestamps,
+    /// Set greed value directly
+    Greed(u8),
+    /// Emitted when no handling is required
+    NoOp,
 }
 
-/// Map a raw crossterm [`Event`] to an [`AppEvent`] (normal / navigation mode).
-///
-/// Returns `None` for events that carry no semantic meaning for the
-/// application (mouse events, key-release events on terminals that emit
-/// them, unbound keys).
-///
-/// Keybindings are hardcoded to their defaults for Phase 2.
-pub fn to_app_event(event: Event) -> Option<AppEvent> {
-    match event {
-        Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),
-        Event::Key(key) => map_key(key),
-        _ => None,
-    }
-}
-
-/// Map a raw crossterm [`Event`] to an [`AppEvent`] for text-input ("insert") mode.
-///
-/// In insert mode, alphabetic navigation shortcuts (hjkl, q, G, \[, \]) are
-/// forwarded as [`AppEvent::Char`] so the user can type freely. Arrow keys
-/// still produce [`AppEvent::TreeNav`] so `←`/`→` move the text cursor.
-/// Only `Ctrl+c`, `Escape`, `Enter`, `Tab`, and `Backspace` keep their
-/// special bindings.
-///
-/// Call this variant whenever a text-input widget (query bar, command bar)
-/// has focus.
-pub fn to_app_event_insert(event: Event) -> Option<AppEvent> {
-    match event {
-        Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),
-        Event::Key(key) => map_key_insert(key),
-        _ => None,
-    }
-}
-
-fn map_key(key: KeyEvent) -> Option<AppEvent> {
-    use KeyCode::*;
-    use KeyModifiers as Mod;
-
-    match key.code {
-        // Quit — q (normal mode) or Ctrl+c anywhere
-        Char('q') if key.modifiers == Mod::NONE => Some(AppEvent::Quit),
-        Char('c') if key.modifiers == Mod::CONTROL => Some(AppEvent::Quit),
-
-        // Focus cycling
-        Tab if key.modifiers == Mod::NONE => Some(AppEvent::FocusNext),
-
-        // Query bar
-        Char('/') if key.modifiers == Mod::NONE => Some(AppEvent::QueryFocus),
-
-        // Scroll — page keys and vim-style Ctrl bindings.
-        // Arrow keys / hjkl are reserved for TreeNav so both panes share them;
-        // the App shell re-interprets TreeNav(Up/Down) as ScrollUp/Down when
-        // the log stream pane is focused.
-        PageUp => Some(AppEvent::ScrollUp),
-        PageDown => Some(AppEvent::ScrollDown),
-        Char('u') if key.modifiers == Mod::CONTROL => Some(AppEvent::ScrollUp),
-        Char('d') if key.modifiers == Mod::CONTROL => Some(AppEvent::ScrollDown),
-
-        // Scroll to tail — 'G' (uppercase, so SHIFT may or may not be set
-        // depending on the terminal; match on the code alone)
-        Char('G') => Some(AppEvent::ScrollToTail),
-
-        // Greed adjustment
-        Char(']') if key.modifiers == Mod::NONE => Some(AppEvent::GreedUp),
-        Char('[') if key.modifiers == Mod::NONE => Some(AppEvent::GreedDown),
-
-        // Tree / list navigation
-        Up | Char('k') if key.modifiers == Mod::NONE => Some(AppEvent::TreeNav(Direction::Up)),
-        Down | Char('j') if key.modifiers == Mod::NONE => Some(AppEvent::TreeNav(Direction::Down)),
-        Left | Char('h') if key.modifiers == Mod::NONE => Some(AppEvent::TreeNav(Direction::Left)),
-        Right | Char('l') if key.modifiers == Mod::NONE => {
-            Some(AppEvent::TreeNav(Direction::Right))
+impl AppEvent {
+    pub fn parse_str(input: &str) -> Result<AppEvent, String> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(String::new());
         }
 
-        // Text input — forward printable characters (including shifted ones,
-        // e.g. uppercase letters while typing in the query bar)
-        Char(c) if key.modifiers == Mod::NONE || key.modifiers == Mod::SHIFT => {
-            Some(AppEvent::Char(c))
+        let (word, rest) = input
+            .split_once(char::is_whitespace)
+            .map(|(w, r)| (w, r.trim()))
+            .unwrap_or((input, ""));
+
+        match word {
+            "q" | "quit" => Ok(AppEvent::Quit),
+            "q!" | "quit!" => Ok(AppEvent::Exit),
+            "?" | "help" => Ok(AppEvent::Help),
+            "ts" | "timestamps" => Ok(AppEvent::Timestamps),
+            "tail" => Ok(AppEvent::ScrollToTail),
+            "theme" => {
+                if rest.is_empty() {
+                    Err("usage: theme <default|gruvbox>".to_string())
+                } else {
+                    Ok(AppEvent::Theme(rest.to_string()))
+                }
+            }
+            "greed" => match rest.parse::<u8>() {
+                Ok(n) if n <= 10 => Ok(AppEvent::Greed(n)),
+                Ok(_) => Err("greed must be 0-10".to_string()),
+                Err(_) => Err("usage: greed <0-10>".to_string()),
+            },
+            other => Err(format!("unknown command: {other}")),
         }
-
-        Backspace if key.modifiers == Mod::NONE => Some(AppEvent::Backspace),
-        Enter if key.modifiers == Mod::NONE => Some(AppEvent::Enter),
-        Esc => Some(AppEvent::Escape),
-
-        _ => None,
     }
-}
 
-/// Key mapping for text-input / insert mode.
-///
-/// All printable characters (with or without Shift) forward as `Char`.
-/// Arrow keys produce `TreeNav` so ← / → still move the text cursor.
-/// Navigation shortcuts (hjkl, q, G, [, ]) yield their literal characters.
-fn map_key_insert(key: KeyEvent) -> Option<AppEvent> {
-    use KeyCode::*;
-    use KeyModifiers as Mod;
+    /// Key mapping for text-input / insert mode.
+    ///
+    /// All printable characters (with or without Shift) forward as `Char`.
+    /// Arrow keys produce `TreeNav` so ← / → still move the text cursor.
+    /// Navigation shortcuts (hjkl, q, G, [, ]) yield their literal characters.
+    fn parse_key_event(input: KeyEvent) -> Option<AppEvent> {
+        match input.code {
+            // Quit — q (normal mode) or Ctrl+c anywhere
+            KeyCode::Char('q') if input.modifiers == KeyModifiers::NONE => Some(AppEvent::Quit),
+            KeyCode::Char('c') if input.modifiers == KeyModifiers::CONTROL => Some(AppEvent::Quit),
 
-    match key.code {
-        // Ctrl+c always quits, even while typing
-        Char('c') if key.modifiers == Mod::CONTROL => Some(AppEvent::Quit),
+            // Focus cycling
+            KeyCode::Tab if input.modifiers == KeyModifiers::NONE => Some(AppEvent::FocusNext),
 
-        // Arrow keys move the text cursor (widgets interpret TreeNav Left/Right)
-        Up => Some(AppEvent::TreeNav(Direction::Up)),
-        Down => Some(AppEvent::TreeNav(Direction::Down)),
-        Left => Some(AppEvent::TreeNav(Direction::Left)),
-        Right => Some(AppEvent::TreeNav(Direction::Right)),
+            // Query bar
+            KeyCode::Char('/') if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::QueryFocus)
+            }
 
-        // Tab exits the text input (focus-cycle behaviour)
-        Tab if key.modifiers == Mod::NONE => Some(AppEvent::FocusNext),
+            // Scroll — page keys and vim-style Ctrl bindings.
+            // Arrow keys / hjkl are reserved for TreeNav so both panes share them;
+            // the App shell re-interprets TreeNav(Up/Down) as ScrollUp/Down when
+            // the log stream pane is focused.
+            KeyCode::PageUp => Some(AppEvent::ScrollUp),
+            KeyCode::PageDown => Some(AppEvent::ScrollDown),
+            KeyCode::Char('u') if input.modifiers == KeyModifiers::CONTROL => {
+                Some(AppEvent::ScrollUp)
+            }
+            KeyCode::Char('d') if input.modifiers == KeyModifiers::CONTROL => {
+                Some(AppEvent::ScrollDown)
+            }
 
-        // Every printable character — including letters that are nav shortcuts
-        // in normal mode — is forwarded verbatim
-        Char(c) if key.modifiers == Mod::NONE || key.modifiers == Mod::SHIFT => {
-            Some(AppEvent::Char(c))
+            // Scroll to tail — 'G' (uppercase, so SHIFT may or may not be set
+            // depending on the terminal; match on the code alone)
+            KeyCode::Char('G') => Some(AppEvent::ScrollToTail),
+
+            // Greed adjustment
+            KeyCode::Char(']') if input.modifiers == KeyModifiers::NONE => Some(AppEvent::GreedUp),
+            KeyCode::Char('[') if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::GreedDown)
+            }
+
+            // Tree / list navigation
+            KeyCode::Up | KeyCode::Char('k') if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::TreeNav(Direction::Up))
+            }
+            KeyCode::Down | KeyCode::Char('j') if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::TreeNav(Direction::Down))
+            }
+            KeyCode::Left | KeyCode::Char('h') if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::TreeNav(Direction::Left))
+            }
+            KeyCode::Right | KeyCode::Char('l') if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::TreeNav(Direction::Right))
+            }
+
+            // Text input — forward printable characters (including shifted ones,
+            // e.g. uppercase letters while typing in the query bar)
+            KeyCode::Char(c)
+                if input.modifiers == KeyModifiers::NONE
+                    || input.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(AppEvent::Char(c))
+            }
+
+            KeyCode::Backspace if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::Backspace)
+            }
+            KeyCode::Enter if input.modifiers == KeyModifiers::NONE => Some(AppEvent::Enter),
+            KeyCode::Esc => Some(AppEvent::Escape),
+
+            _ => None,
         }
+    }
 
-        Backspace if key.modifiers == Mod::NONE => Some(AppEvent::Backspace),
-        Enter if key.modifiers == Mod::NONE => Some(AppEvent::Enter),
-        Esc => Some(AppEvent::Escape),
+    fn parse_insert_key_event(input: KeyEvent) -> Option<AppEvent> {
+        match input.code {
+            // Ctrl+c always quits, even while typing
+            KeyCode::Char('c') if input.modifiers == KeyModifiers::CONTROL => Some(AppEvent::Quit),
 
-        _ => None,
+            // Arrow keys move the text cursor (widgets interpret TreeNav Left/Right)
+            KeyCode::Up => Some(AppEvent::TreeNav(Direction::Up)),
+            KeyCode::Down => Some(AppEvent::TreeNav(Direction::Down)),
+            KeyCode::Left => Some(AppEvent::TreeNav(Direction::Left)),
+            KeyCode::Right => Some(AppEvent::TreeNav(Direction::Right)),
+
+            // Tab exits the text input (focus-cycle behaviour)
+            KeyCode::Tab if input.modifiers == KeyModifiers::NONE => Some(AppEvent::FocusNext),
+
+            // Every printable character — including letters that are nav shortcuts
+            // in normal mode — is forwarded verbatim
+            KeyCode::Char(c)
+                if input.modifiers == KeyModifiers::NONE
+                    || input.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(AppEvent::Char(c))
+            }
+
+            KeyCode::Backspace if input.modifiers == KeyModifiers::NONE => {
+                Some(AppEvent::Backspace)
+            }
+            KeyCode::Enter if input.modifiers == KeyModifiers::NONE => Some(AppEvent::Enter),
+            KeyCode::Esc => Some(AppEvent::Escape),
+
+            _ => None,
+        }
+    }
+
+    pub fn parse_event(input: Event) -> Option<AppEvent> {
+        match input {
+            Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),
+            Event::Key(key) => AppEvent::parse_key_event(key),
+            _ => None,
+        }
+    }
+
+    /// Map a raw crossterm [`Event`] to an [`AppEvent`] for text-input ("insert") mode.
+    ///
+    /// In insert mode, alphabetic navigation shortcuts (hjkl, q, G, \[, \]) are
+    /// forwarded as [`AppEvent::Char`] so the user can type freely. Arrow keys
+    /// still produce [`AppEvent::TreeNav`] so `←`/`→` move the text cursor.
+    /// Only `Ctrl+c`, `Escape`, `Enter`, `Tab`, and `Backspace` keep their
+    /// special bindings.
+    ///
+    /// Call this variant whenever a text-input widget (query bar, command bar)
+    /// has focus.
+    pub fn parse_insert_event(input: Event) -> Option<AppEvent> {
+        match input {
+            Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),
+            Event::Key(key) => AppEvent::parse_insert_key_event(key),
+            _ => None,
+        }
     }
 }
 
@@ -240,21 +298,27 @@ mod tests {
     #[test]
     fn quit_keys() {
         assert_eq!(
-            to_app_event(press(KeyCode::Char('q'))),
+            AppEvent::parse_event(press(KeyCode::Char('q'))),
             Some(AppEvent::Quit)
         );
-        assert_eq!(to_app_event(ctrl(KeyCode::Char('c'))), Some(AppEvent::Quit));
+        assert_eq!(
+            AppEvent::parse_event(ctrl(KeyCode::Char('c'))),
+            Some(AppEvent::Quit)
+        );
     }
 
     #[test]
     fn focus_next() {
-        assert_eq!(to_app_event(press(KeyCode::Tab)), Some(AppEvent::FocusNext));
+        assert_eq!(
+            AppEvent::parse_event(press(KeyCode::Tab)),
+            Some(AppEvent::FocusNext)
+        );
     }
 
     #[test]
     fn query_focus() {
         assert_eq!(
-            to_app_event(press(KeyCode::Char('/'))),
+            AppEvent::parse_event(press(KeyCode::Char('/'))),
             Some(AppEvent::QueryFocus)
         );
     }
@@ -263,11 +327,11 @@ mod tests {
     fn scroll_to_tail() {
         // Uppercase G — terminal may or may not send SHIFT modifier
         assert_eq!(
-            to_app_event(press(KeyCode::Char('G'))),
+            AppEvent::parse_event(press(KeyCode::Char('G'))),
             Some(AppEvent::ScrollToTail)
         );
         assert_eq!(
-            to_app_event(key(KeyCode::Char('G'), KeyModifiers::SHIFT)),
+            AppEvent::parse_event(key(KeyCode::Char('G'), KeyModifiers::SHIFT)),
             Some(AppEvent::ScrollToTail)
         );
     }
@@ -275,11 +339,11 @@ mod tests {
     #[test]
     fn greed_keys() {
         assert_eq!(
-            to_app_event(press(KeyCode::Char(']'))),
+            AppEvent::parse_event(press(KeyCode::Char(']'))),
             Some(AppEvent::GreedUp)
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Char('['))),
+            AppEvent::parse_event(press(KeyCode::Char('['))),
             Some(AppEvent::GreedDown)
         );
     }
@@ -287,19 +351,19 @@ mod tests {
     #[test]
     fn tree_nav_arrows() {
         assert_eq!(
-            to_app_event(press(KeyCode::Up)),
+            AppEvent::parse_event(press(KeyCode::Up)),
             Some(AppEvent::TreeNav(Direction::Up))
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Down)),
+            AppEvent::parse_event(press(KeyCode::Down)),
             Some(AppEvent::TreeNav(Direction::Down))
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Left)),
+            AppEvent::parse_event(press(KeyCode::Left)),
             Some(AppEvent::TreeNav(Direction::Left))
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Right)),
+            AppEvent::parse_event(press(KeyCode::Right)),
             Some(AppEvent::TreeNav(Direction::Right))
         );
     }
@@ -307,19 +371,19 @@ mod tests {
     #[test]
     fn tree_nav_hjkl() {
         assert_eq!(
-            to_app_event(press(KeyCode::Char('k'))),
+            AppEvent::parse_event(press(KeyCode::Char('k'))),
             Some(AppEvent::TreeNav(Direction::Up))
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Char('j'))),
+            AppEvent::parse_event(press(KeyCode::Char('j'))),
             Some(AppEvent::TreeNav(Direction::Down))
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Char('h'))),
+            AppEvent::parse_event(press(KeyCode::Char('h'))),
             Some(AppEvent::TreeNav(Direction::Left))
         );
         assert_eq!(
-            to_app_event(press(KeyCode::Char('l'))),
+            AppEvent::parse_event(press(KeyCode::Char('l'))),
             Some(AppEvent::TreeNav(Direction::Right))
         );
     }
@@ -327,11 +391,11 @@ mod tests {
     #[test]
     fn scroll_page_keys() {
         assert_eq!(
-            to_app_event(press(KeyCode::PageUp)),
+            AppEvent::parse_event(press(KeyCode::PageUp)),
             Some(AppEvent::ScrollUp)
         );
         assert_eq!(
-            to_app_event(press(KeyCode::PageDown)),
+            AppEvent::parse_event(press(KeyCode::PageDown)),
             Some(AppEvent::ScrollDown)
         );
     }
@@ -339,11 +403,11 @@ mod tests {
     #[test]
     fn scroll_ctrl_ud() {
         assert_eq!(
-            to_app_event(ctrl(KeyCode::Char('u'))),
+            AppEvent::parse_event(ctrl(KeyCode::Char('u'))),
             Some(AppEvent::ScrollUp)
         );
         assert_eq!(
-            to_app_event(ctrl(KeyCode::Char('d'))),
+            AppEvent::parse_event(ctrl(KeyCode::Char('d'))),
             Some(AppEvent::ScrollDown)
         );
     }
@@ -351,12 +415,12 @@ mod tests {
     #[test]
     fn char_forwarding() {
         assert_eq!(
-            to_app_event(press(KeyCode::Char('a'))),
+            AppEvent::parse_event(press(KeyCode::Char('a'))),
             Some(AppEvent::Char('a'))
         );
         // Uppercase (SHIFT held)
         assert_eq!(
-            to_app_event(key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            AppEvent::parse_event(key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
             Some(AppEvent::Char('A'))
         );
     }
@@ -364,24 +428,27 @@ mod tests {
     #[test]
     fn backspace_and_enter() {
         assert_eq!(
-            to_app_event(press(KeyCode::Backspace)),
+            AppEvent::parse_event(press(KeyCode::Backspace)),
             Some(AppEvent::Backspace)
         );
-        assert_eq!(to_app_event(press(KeyCode::Enter)), Some(AppEvent::Enter));
+        assert_eq!(
+            AppEvent::parse_event(press(KeyCode::Enter)),
+            Some(AppEvent::Enter)
+        );
     }
 
     #[test]
     fn resize_event() {
         use crossterm::event::Event;
         assert_eq!(
-            to_app_event(Event::Resize(120, 40)),
+            AppEvent::parse_event(Event::Resize(120, 40)),
             Some(AppEvent::Resize(120, 40))
         );
     }
 
     #[test]
     fn unbound_key_returns_none() {
-        assert_eq!(to_app_event(press(KeyCode::F(5))), None);
+        assert_eq!(AppEvent::parse_event(press(KeyCode::F(5))), None);
     }
 
     // ── Insert mode ────────────────────────────────────────────────────────
@@ -392,7 +459,7 @@ mod tests {
         for ch in ['h', 'j', 'k', 'l', 'q', 'G', '[', ']'] {
             let ev = press(KeyCode::Char(ch));
             assert_eq!(
-                to_app_event_insert(ev),
+                AppEvent::parse_insert_event(ev),
                 Some(AppEvent::Char(ch)),
                 "insert mode: '{ch}' should produce Char, not a nav event"
             );
@@ -402,11 +469,11 @@ mod tests {
     #[test]
     fn insert_mode_arrow_keys_are_treenav() {
         assert_eq!(
-            to_app_event_insert(press(KeyCode::Left)),
+            AppEvent::parse_insert_event(press(KeyCode::Left)),
             Some(AppEvent::TreeNav(Direction::Left))
         );
         assert_eq!(
-            to_app_event_insert(press(KeyCode::Right)),
+            AppEvent::parse_insert_event(press(KeyCode::Right)),
             Some(AppEvent::TreeNav(Direction::Right))
         );
     }
@@ -414,7 +481,7 @@ mod tests {
     #[test]
     fn insert_mode_ctrl_c_still_quits() {
         assert_eq!(
-            to_app_event_insert(ctrl(KeyCode::Char('c'))),
+            AppEvent::parse_insert_event(ctrl(KeyCode::Char('c'))),
             Some(AppEvent::Quit)
         );
     }

@@ -1,7 +1,6 @@
 //! fml TUI — ratatui application shell.
 
 pub mod app;
-pub mod commands;
 pub mod event;
 pub mod theme;
 pub mod widgets;

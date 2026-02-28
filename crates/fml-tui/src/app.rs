@@ -4,8 +4,7 @@
 //! tears everything down cleanly on exit or panic.
 
 use crate::{
-    commands::{execute_command, Command},
-    event::{self, AppEvent},
+    event::AppEvent,
     theme::Theme,
     widgets::{
         command_bar::{CommandBar, CommandBarState},
@@ -176,9 +175,9 @@ impl App {
                         let raw = Event::Key(key);
                         // Use insert-mode mapping when a text widget is focused
                         let app_event = if is_insert_mode(self.state.focus) {
-                            event::to_app_event_insert(raw)
+                            AppEvent::parse_insert_event(raw)
                         } else {
-                            event::to_app_event(raw)
+                            AppEvent::parse_event(raw)
                         };
                         if let Some(ev) = app_event {
                             tracing::debug!(
@@ -190,7 +189,7 @@ impl App {
                         }
                     }
                     other => {
-                        if let Some(ev) = event::to_app_event(other) {
+                        if let Some(ev) = AppEvent::parse_event(other) {
                             self.handle(ev);
                         }
                     }
@@ -225,45 +224,48 @@ impl App {
                 }
                 AppEvent::Enter => {
                     let input = s.command_bar.input.clone();
-                    match Command::parse(&input) {
-                        Ok(cmd) => {
-                            tracing::debug!(command = ?cmd, "executing command");
+
+                    match AppEvent::parse_str(&input) {
+                        Ok(event) => {
+                            tracing::debug!(appevent = ?event, "command generating app event");
                             s.command_bar.clear();
                             s.focus = s.prev_focus;
-                            execute_command(s, cmd);
-                        }
-                        Err(msg) if msg.is_empty() => {
-                            // Empty input — just close
-                            s.command_bar.clear();
-                            s.focus = s.prev_focus;
+                            self.handle(event);
                         }
                         Err(msg) => {
-                            // Show the error; bar stays open
-                            s.command_bar.error = Some(msg);
+                            if msg.is_empty() {
+                                s.command_bar.clear();
+                                s.focus = s.prev_focus;
+                            } else {
+                                s.command_bar.error = Some(msg)
+                            }
                         }
                     }
                 }
-                other => s.command_bar.handle(&other),
+                other => match s.command_bar.handle(&other) {
+                    Some(event) => {
+                        tracing::debug!(appevent = ?event, "command bar handled app event and emitted new app event");
+                        self.handle(event);
+                    }
+                    None => {
+                        tracing::debug!("command bar handled app event with no app event emission")
+                    }
+                },
             }
             return;
         }
 
         match event {
-            // Toggle help (only when not typing in the query bar)
-            AppEvent::Char('?') if s.focus != Focus::QueryBar => {
+            AppEvent::Help | AppEvent::Char('?') if s.focus != Focus::QueryBar => {
                 tracing::debug!("help popup opened");
                 s.show_help = true;
             }
-
-            // Enter command mode with `:` (not from the query bar)
             AppEvent::Char(':') if s.focus != Focus::QueryBar => {
                 tracing::debug!(prev_focus = ?s.focus, "entering command mode");
                 s.prev_focus = s.focus;
                 s.command_bar.clear();
                 s.focus = Focus::Command;
             }
-
-            // Quit / close tab
             AppEvent::Quit => {
                 if s.active_tab == 0 {
                     tracing::debug!("quit");
@@ -274,16 +276,12 @@ impl App {
                     s.active_tab = s.active_tab.saturating_sub(1);
                 }
             }
-
-            // Return focus from query bar
             AppEvent::Escape => {
                 if s.focus == Focus::QueryBar {
                     tracing::debug!("focus: QueryBar -> Tree");
                     s.focus = Focus::Tree;
                 }
             }
-
-            // Tab-cycle focus: Tree → Stream → QueryBar → Tree
             AppEvent::FocusNext => {
                 let next = match s.focus {
                     Focus::Tree => Focus::Stream,
@@ -293,21 +291,30 @@ impl App {
                 tracing::debug!(from = ?s.focus, to = ?next, "focus cycle");
                 s.focus = next;
             }
-
-            // Jump to query bar
             AppEvent::QueryFocus => {
                 tracing::debug!("focus -> QueryBar");
                 s.focus = Focus::QueryBar;
             }
-
-            // Greed adjustment works regardless of focus
             AppEvent::GreedUp | AppEvent::GreedDown => {
                 s.tabs[s.active_tab].query.handle(&event);
             }
-
-            // Terminal resize is handled automatically by ratatui
-            AppEvent::Resize(_, _) => {}
-
+            AppEvent::Exit => {
+                s.quit = true;
+            }
+            AppEvent::Theme(name) => {
+                s.theme = match name.to_ascii_lowercase().as_str() {
+                    "gruvbox" | "gruvbox_dark" | "gruvbox-dark" => Theme::load_gruvbox_dark(),
+                    _ => Theme::load_default(),
+                };
+            }
+            AppEvent::Timestamps => {
+                let tab = &mut s.tabs[s.active_tab];
+                tab.stream.show_timestamps = !tab.stream.show_timestamps;
+            }
+            AppEvent::Greed(n) => {
+                s.tabs[s.active_tab].query.greed = n;
+            }
+            AppEvent::NoOp => tracing::debug!("received no-op app event"),
             other => dispatch_to_focused(s, other),
         }
     }
