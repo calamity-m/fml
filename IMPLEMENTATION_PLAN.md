@@ -72,120 +72,120 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 
 | # | Deliverable | Issue | Status | Completed |
 |---|------------|-------|--------|-----------|
-| 1.1 | Create workspace Cargo.toml + crate manifests | | | |
-| 1.2 | Move core types to `fml-core` | | | |
-| 1.3 | Create `fml-feeds` with `FeedHandle` trait stub | | | |
-| 1.4 | Create `fml-tui` with `App` stub | | | |
-| 1.5 | Migrate all test/bench imports to `fml_core::` | | | |
-| 1.6 | Delete old `src/lib.rs`, verify `cargo test --workspace` (120 ignored) | | | |
-| 1.7 | Merged | | | |
+| 1.1 | Create workspace Cargo.toml + crate manifests | [#1](https://github.com/calamity-m/fml/issues/1) | Done | 2026-02-28 |
+| 1.2 | Move core types to `fml-core` | [#2](https://github.com/calamity-m/fml/issues/2) | Done | 2026-02-28 |
+| 1.3 | Create `fml-feeds` with `FeedHandle` trait stub | [#3](https://github.com/calamity-m/fml/issues/3) | Done | 2026-02-28 |
+| 1.4 | Create `fml-tui` with `App` stub | [#4](https://github.com/calamity-m/fml/issues/4) | Done | 2026-02-28 |
+| 1.5 | Migrate all test/bench imports to `fml_core::` | [#5](https://github.com/calamity-m/fml/issues/5) | Done | 2026-02-28 |
+| 1.6 | Delete old `src/lib.rs`, verify `cargo test --workspace` (120 ignored) | [#6](https://github.com/calamity-m/fml/issues/6) | Done | 2026-02-28 |
+| 1.7 | Merged ([PR #7](https://github.com/calamity-m/fml/pull/7)) | | Done | 2026-02-28 |
 
 ### Phase 2 — TUI shell (mock data)
 
 | # | Deliverable | Issue | Status | Completed |
 |---|------------|-------|--------|-----------|
-| 2.1 | Theme + colour palette | | | |
-| 2.2 | Event system (crossterm → semantic `AppEvent`) | | | |
-| 2.3 | Tab bar widget | | | |
-| 2.4 | Producer tree widget (collapsible, hjkl nav, selection) | | | |
-| 2.5 | Log stream widget (scrollable, pause/resume, `G` to tail) | | | |
-| 2.6 | Query bar widget (text input, greed slider) | | | |
-| 2.7 | App shell + layout + focus switching | | | |
-| 2.8 | Add help popup displaying possible actions (`?` to open) | | | |
-| 2.10 | Add a config.toml reading for TUI | | | |
-| 2.11 | Wire `cargo run` → TUI with hardcoded mock data | | | |
+| 2.1 | Theme + colour palette | [#8](https://github.com/calamity-m/fml/issues/8) | | |
+| 2.2 | Event system (crossterm → semantic `AppEvent`) | [#9](https://github.com/calamity-m/fml/issues/9) | | |
+| 2.3 | Tab bar widget | [#10](https://github.com/calamity-m/fml/issues/10) | | |
+| 2.4 | Producer tree widget (collapsible, hjkl nav, selection) | [#11](https://github.com/calamity-m/fml/issues/11) | | |
+| 2.5 | Log stream widget (scrollable, pause/resume, `G` to tail) | [#12](https://github.com/calamity-m/fml/issues/12) | | |
+| 2.6 | Query bar widget (text input, greed slider) | [#13](https://github.com/calamity-m/fml/issues/13) | | |
+| 2.7 | App shell + layout + focus switching | [#14](https://github.com/calamity-m/fml/issues/14) | | |
+| 2.8 | Add help popup displaying possible actions (`?` to open) | [#15](https://github.com/calamity-m/fml/issues/15) | | |
+| 2.10 | Add a config.toml reading for TUI | [#16](https://github.com/calamity-m/fml/issues/16) | | |
+| 2.11 | Wire `cargo run` → TUI with hardcoded mock data | [#17](https://github.com/calamity-m/fml/issues/17) | | |
 | 2.12 | Merged | | | |
 
 ### Phase 3 — Store + normalizer
 
 | # | Deliverable | Tests | Issue | Status | Completed |
 |---|------------|-------|-------|--------|-----------|
-| 3.1 | Store ring buffer + `push()` / eviction | 3 | | | |
-| 3.2 | Store sequence numbers + `range()` / `latest()` / `get()` | 3 | | | |
-| 3.3 | Store concurrent reads + `Arc<RwLock>` | 2 | | | |
-| 3.4 | Store filters (producer, level) + `StoreFilter` | 3 | | | |
-| 3.5 | Store broadcast notifications | — | | | |
-| 3.6 | Normalizer: JSON parser | 5 | | | |
-| 3.7 | Normalizer: logfmt parser | 2 | | | |
-| 3.8 | Normalizer: unstructured pattern detection | 3 | | | |
-| 3.9 | Normalizer: fallback + synthetic fields + edge cases | 5 | | | |
-| 3.10 | Normalizer: insta snapshots | 4 | | | |
+| 3.1 | Store ring buffer + `push()` / eviction | 3 | [#18](https://github.com/calamity-m/fml/issues/18) | | |
+| 3.2 | Store sequence numbers + `range()` / `latest()` / `get()` | 3 | [#19](https://github.com/calamity-m/fml/issues/19) | | |
+| 3.3 | Store concurrent reads + `Arc<RwLock>` | 2 | [#20](https://github.com/calamity-m/fml/issues/20) | | |
+| 3.4 | Store filters (producer, level) + `StoreFilter` | 3 | [#21](https://github.com/calamity-m/fml/issues/21) | | |
+| 3.5 | Store broadcast notifications | — | [#22](https://github.com/calamity-m/fml/issues/22) | | |
+| 3.6 | Normalizer: JSON parser | 5 | [#23](https://github.com/calamity-m/fml/issues/23) | | |
+| 3.7 | Normalizer: logfmt parser | 2 | [#24](https://github.com/calamity-m/fml/issues/24) | | |
+| 3.8 | Normalizer: unstructured pattern detection | 3 | [#25](https://github.com/calamity-m/fml/issues/25) | | |
+| 3.9 | Normalizer: fallback + synthetic fields + edge cases | 5 | [#26](https://github.com/calamity-m/fml/issues/26) | | |
+| 3.10 | Normalizer: insta snapshots | 4 | [#27](https://github.com/calamity-m/fml/issues/27) | | |
 | 3.11 | Merged | 4 | | | |
 
 ### Phase 3.5 — Wire store → TUI
 
 | # | Deliverable | Issue | Status | Completed |
 |---|------------|-------|--------|-----------|
-| 3.5.1 | App takes `Arc<Store>` + broadcast receiver | | | |
-| 3.5.2 | Log stream reads from store | | | |
-| 3.5.3 | Producer tree populates from `store.producers()` | | | |
-| 3.5.4 | Demo mode (fake entries at configurable rate, default 10/sec) | | | |
-| 3.5.5 | Wire -> TUI with generated mock data based on a `--demo` flag | | | |
+| 3.5.1 | App takes `Arc<Store>` + broadcast receiver | [#28](https://github.com/calamity-m/fml/issues/28) | | |
+| 3.5.2 | Log stream reads from store | [#29](https://github.com/calamity-m/fml/issues/29) | | |
+| 3.5.3 | Producer tree populates from `store.producers()` | [#30](https://github.com/calamity-m/fml/issues/30) | | |
+| 3.5.4 | Demo mode (fake entries at configurable rate, default 10/sec) | [#31](https://github.com/calamity-m/fml/issues/31) | | |
+| 3.5.5 | Wire -> TUI with generated mock data based on a `--demo` flag | [#32](https://github.com/calamity-m/fml/issues/32) | | |
 | 3.5.6 | Merged | | | |
 
 ### Phase 4 — Feed implementations
 
 | # | Deliverable | Tests | Issue | Status | Completed |
 |---|------------|-------|-------|--------|-----------|
-| 4.1 | `FeedHandle` trait + `FeedEvent` enum | — | | | |
-| 4.2 | stdin feed | 9 | | | |
-| 4.3 | File feed (inotify, rotation, truncation, glob) | 10 | | | |
-| 4.4 | Kubernetes feed (kubectl subprocess, reconnect, backoff) | 9 | | | |
-| 4.5 | Docker feed (API client, frame decoding, socket auto-detect) | 10 | | | |
-| 4.6 | Wire feeds into binary + TUI producer tree | — | | | |
+| 4.1 | `FeedHandle` trait + `FeedEvent` enum | — | [#33](https://github.com/calamity-m/fml/issues/33) | | |
+| 4.2 | stdin feed | 9 | [#34](https://github.com/calamity-m/fml/issues/34) | | |
+| 4.3 | File feed (inotify, rotation, truncation, glob) | 10 | [#35](https://github.com/calamity-m/fml/issues/35) | | |
+| 4.4 | Kubernetes feed (kubectl subprocess, reconnect, backoff) | 9 | [#36](https://github.com/calamity-m/fml/issues/36) | | |
+| 4.5 | Docker feed (API client, frame decoding, socket auto-detect) | 10 | [#37](https://github.com/calamity-m/fml/issues/37) | | |
+| 4.6 | Wire feeds into binary + TUI producer tree | — | [#38](https://github.com/calamity-m/fml/issues/38) | | |
 | 4.7 | Merged | | | | |
 
 ### Phase 4.5 — Mock Feed Generators
 
 | # | Deliverable | Tests | Issue | Status | Completed |
 |---|------------|-------|-------|--------|-----------|
-| 4.5.1 | Create fake feed generators that can be used for demoing  | | | |
-| 4.5.2 | Wire -> TUI with generated mock data based on a `--demo` flag | | | |
-| 4.5.3 | Document demo, intention is to show off capabilities to interested users quick and easily | | | |
-| 4.5.4 | Evaluate and expose mock feed generators for randomized statisical benchmarking | | | |
+| 4.5.1 | Create fake feed generators that can be used for demoing | | [#39](https://github.com/calamity-m/fml/issues/39) | | |
+| 4.5.2 | Wire -> TUI with generated mock data based on a `--demo` flag | | [#40](https://github.com/calamity-m/fml/issues/40) | | |
+| 4.5.3 | Document demo, intention is to show off capabilities to interested users quick and easily | | [#41](https://github.com/calamity-m/fml/issues/41) | | |
+| 4.5.4 | Evaluate and expose mock feed generators for randomized statistical benchmarking | | [#42](https://github.com/calamity-m/fml/issues/42) | | |
 | 4.5.5 | Merged | | | | |
 
 ### Phase 5 — Search engine
 
 | # | Deliverable | Tests | Issue | Status | Completed |
 |---|------------|-------|-------|--------|-----------|
-| 5.1 | Ontology clusters (`phf` static data, 7 domain families) | — | | | |
-| 5.2 | Semantic graph (TermNode, weighted edges, BFS) | — | | | |
-| 5.3 | FST index (prefix scan over ontology terms) | — | | | |
-| 5.4 | Greed-gated expansion (layers 0→10) | 8 | | | |
-| 5.5 | Negative prefix inference | 2 | | | |
-| 5.6 | Generalised fuzzy searching - skim | 2 | | | |
-| 5.7 | Query parsing (key:value + bare terms) | 3 | | | |
-| 5.8 | Full search pipeline + ranking | 5 | | | |
-| 5.9 | Greed monotonicity property test | 2 | | | |
-| 5.10 | Evaluate backwards semantic referencing (token -> auth) | 2 | | | |
-| 5.11 | Implement backwards semantic referencing (token -> auth) | 2 | | | |
-| 5.12 | Wire search into TUI query bar + highlight matched spans | 2 | | | |
+| 5.1 | Ontology clusters (`phf` static data, 7 domain families) | — | [#43](https://github.com/calamity-m/fml/issues/43) | | |
+| 5.2 | Semantic graph (TermNode, weighted edges, BFS) | — | [#44](https://github.com/calamity-m/fml/issues/44) | | |
+| 5.3 | FST index (prefix scan over ontology terms) | — | [#45](https://github.com/calamity-m/fml/issues/45) | | |
+| 5.4 | Greed-gated expansion (layers 0→10) | 8 | [#47](https://github.com/calamity-m/fml/issues/47) | | |
+| 5.5 | Negative prefix inference | 2 | [#49](https://github.com/calamity-m/fml/issues/49) | | |
+| 5.6 | Generalised fuzzy searching - skim | 2 | [#51](https://github.com/calamity-m/fml/issues/51) | | |
+| 5.7 | Query parsing (key:value + bare terms) | 3 | [#53](https://github.com/calamity-m/fml/issues/53) | | |
+| 5.8 | Full search pipeline + ranking | 5 | [#55](https://github.com/calamity-m/fml/issues/55) | | |
+| 5.9 | Greed monotonicity property test | 2 | [#57](https://github.com/calamity-m/fml/issues/57) | | |
+| 5.10 | Evaluate backwards semantic referencing (token -> auth) | 2 | [#59](https://github.com/calamity-m/fml/issues/59) | | |
+| 5.11 | Implement backwards semantic referencing (token -> auth) | 2 | [#60](https://github.com/calamity-m/fml/issues/60) | | |
+| 5.12 | Wire search into TUI query bar + highlight matched spans | 2 | [#61](https://github.com/calamity-m/fml/issues/61) | | |
 | 5.13 | Merged | | | | |
 
 ### Phase 6 — Tabs + export + headless
 
 | # | Deliverable | Tests | Issue | Status | Completed |
 |---|------------|-------|-------|--------|-----------|
-| 6.1 | Tab trait + TabManager | — | | | |
-| 6.2 | MainTab (live-tail, selected producers) | — | | | |
-| 6.3 | FreezeTab (`y` on producer → scoped tab) | — | | | |
-| 6.4 | CorrelateTab (`c` on log line → field picker → cross-producer) | — | | | |
-| 6.5 | Export: raw format | 4 | | | |
-| 6.6 | Export: jsonl format | 4 | | | |
-| 6.7 | Export: csv format | 4 | | | |
-| 6.8 | Export: empty/edge cases + insta snapshots | 3 | | | |
-| 6.9 | Headless mode (all flags, TTY detection, exit codes) | 12 | | | |
-| 6.10 | Config file loading (`~/.config/fml/config.toml`) | — | | | |
+| 6.1 | Tab trait + TabManager | — | [#62](https://github.com/calamity-m/fml/issues/62) | | |
+| 6.2 | MainTab (live-tail, selected producers) | — | [#63](https://github.com/calamity-m/fml/issues/63) | | |
+| 6.3 | FreezeTab (`y` on producer → scoped tab) | — | [#64](https://github.com/calamity-m/fml/issues/64) | | |
+| 6.4 | CorrelateTab (`c` on log line → field picker → cross-producer) | — | [#65](https://github.com/calamity-m/fml/issues/65) | | |
+| 6.5 | Export: raw format | 4 | [#66](https://github.com/calamity-m/fml/issues/66) | | |
+| 6.6 | Export: jsonl format | 4 | [#67](https://github.com/calamity-m/fml/issues/67) | | |
+| 6.7 | Export: csv format | 4 | [#68](https://github.com/calamity-m/fml/issues/68) | | |
+| 6.8 | Export: empty/edge cases + insta snapshots | 3 | [#69](https://github.com/calamity-m/fml/issues/69) | | |
+| 6.9 | Headless mode (all flags, TTY detection, exit codes) | 12 | [#70](https://github.com/calamity-m/fml/issues/70) | | |
+| 6.10 | Config file loading (`~/.config/fml/config.toml`) | — | [#71](https://github.com/calamity-m/fml/issues/71) | | |
 | 6.11 | Merged | | | | |
 
 ### Phase 7 — MCP server + polish
 
 | # | Deliverable | Issue | Status | Completed |
 |---|------------|-------|--------|-----------|
-| 7.1 | MCP server (`fml --mcp`, `fml_query` tool) | | | |
-| 7.2 | Skim picker (feed selection, producer fuzzy-jump) | | | |
-| 7.3 | Configurable keybindings from config.toml | | | |
+| 7.1 | MCP server (`fml --mcp`, `fml_query` tool) | [#46](https://github.com/calamity-m/fml/issues/46) | | |
+| 7.2 | Skim picker (feed selection, producer fuzzy-jump) | [#48](https://github.com/calamity-m/fml/issues/48) | | |
+| 7.3 | Configurable keybindings from config.toml | [#50](https://github.com/calamity-m/fml/issues/50) | | |
 | 7.4 | Merged | | | |
 
 
@@ -195,17 +195,17 @@ This is a stretch goal and aspirational. It should not be enabled by default.
 
 | # | Deliverable | Issue | Status | Completed |
 |---|------------|-------|--------|-----------|
-| 8.1 | Evaluate options for runtime learning, create research document (cover learning, performance, binary sizing, maintenance and storage/persistence) | | | |
-| 8.2 | Implement semantic learning on existing semantic graph for incoming feed lines | | | |
-| 8.3 | Wire in results from runtime learning into search engine | | | |
-| 8.4 | Performance profiling + optimization pass | | | |
+| 8.1 | Evaluate options for runtime learning, create research document (cover learning, performance, binary sizing, maintenance and storage/persistence) | [#52](https://github.com/calamity-m/fml/issues/52) | | |
+| 8.2 | Implement semantic learning on existing semantic graph for incoming feed lines | [#54](https://github.com/calamity-m/fml/issues/54) | | |
+| 8.3 | Wire in results from runtime learning into search engine | [#56](https://github.com/calamity-m/fml/issues/56) | | |
+| 8.4 | Performance profiling + optimization pass | [#58](https://github.com/calamity-m/fml/issues/58) | | |
 | 8.5 | Merged | | | |
 
 ### Summary
 
 | Phase | Deliverables | Tests unignored | Status |
 |-------|-------------|-----------------|--------|
-| 1 | 7 | 0 | |
+| 1 | 7 | 0 | Complete |
 | 2 | 12 | 0 | |
 | 3 | 11 | 33 | |
 | 3.5 | 6 | 0 | |

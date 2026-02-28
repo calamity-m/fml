@@ -23,6 +23,7 @@ use std::collections::HashMap;
 ///     .build();
 /// ```
 pub struct LogEntryBuilder {
+    seq: u64,
     raw: String,
     ts: chrono::DateTime<chrono::Utc>,
     level: Option<LogLevel>,
@@ -36,6 +37,7 @@ impl LogEntryBuilder {
     pub fn new(raw: impl Into<String>) -> Self {
         let raw = raw.into();
         Self {
+            seq: 0,
             raw: raw.clone(),
             ts: chrono::Utc::now(),
             level: None,
@@ -44,6 +46,11 @@ impl LogEntryBuilder {
             fields: HashMap::new(),
             message: Some(raw),
         }
+    }
+
+    pub fn seq(mut self, seq: u64) -> Self {
+        self.seq = seq;
+        self
     }
 
     pub fn level(mut self, level: LogLevel) -> Self {
@@ -78,6 +85,7 @@ impl LogEntryBuilder {
 
     pub fn build(self) -> LogEntry {
         LogEntry {
+            seq: self.seq,
             raw: self.raw,
             ts: self.ts,
             level: self.level,
