@@ -133,6 +133,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 4.4 | Kubernetes feed (kubectl subprocess, reconnect, backoff) | 9 | | | |
 | 4.5 | Docker feed (API client, frame decoding, socket auto-detect) | 10 | | | |
 | 4.6 | Wire feeds into binary + TUI producer tree | — | | | |
+| 4.7 | Merged | | | | |
 
 ### Phase 4.5 — Mock Feed Generators
 
@@ -142,6 +143,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 4.5.2 | Wire -> TUI with generated mock data based on a `--demo` flag | | | |
 | 4.5.3 | Document demo, intention is to show off capabilities to interested users quick and easily | | | |
 | 4.5.4 | Evaluate and expose mock feed generators for randomized statisical benchmarking | | | |
+| 4.5.5 | Merged | | | | |
 
 ### Phase 5 — Search engine
 
@@ -159,6 +161,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 5.10 | Evaluate backwards semantic referencing (token -> auth) | 2 | | | |
 | 5.11 | Implement backwards semantic referencing (token -> auth) | 2 | | | |
 | 5.12 | Wire search into TUI query bar + highlight matched spans | 2 | | | |
+| 5.13 | Merged | | | | |
 
 ### Phase 6 — Tabs + export + headless
 
@@ -174,6 +177,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 6.8 | Export: empty/edge cases + insta snapshots | 3 | | | |
 | 6.9 | Headless mode (all flags, TTY detection, exit codes) | 12 | | | |
 | 6.10 | Config file loading (`~/.config/fml/config.toml`) | — | | | |
+| 6.11 | Merged | | | | |
 
 ### Phase 7 — MCP server + polish
 
@@ -182,6 +186,7 @@ Issues are created at the start of each phase via `gh issue create`. Each row is
 | 7.1 | MCP server (`fml --mcp`, `fml_query` tool) | | | |
 | 7.2 | Skim picker (feed selection, producer fuzzy-jump) | | | |
 | 7.3 | Configurable keybindings from config.toml | | | |
+| 7.4 | Merged | | | |
 
 
 ### Phase 8 — Stretch Goals - Runtime corpus learning
@@ -194,20 +199,22 @@ This is a stretch goal and aspirational. It should not be enabled by default.
 | 8.2 | Implement semantic learning on existing semantic graph for incoming feed lines | | | |
 | 8.3 | Wire in results from runtime learning into search engine | | | |
 | 8.4 | Performance profiling + optimization pass | | | |
+| 8.5 | Merged | | | |
 
 ### Summary
 
 | Phase | Deliverables | Tests unignored | Status |
 |-------|-------------|-----------------|--------|
-| 1 | 6 | 0 | |
-| 2 | 8 | 0 | |
-| 3 | 10 | 33 | |
-| 3.5 | 4 | 0 | |
-| 4 | 6 | 38 | |
-| 5 | 9 | 22 | |
-| 6 | 10 | 27 | |
+| 1 | 7 | 0 | |
+| 2 | 12 | 0 | |
+| 3 | 11 | 33 | |
+| 3.5 | 6 | 0 | |
+| 4 | 7 | 38 | |
+| 4.5 | 5 | 0 | |
+| 5 | 13 | 22 | |
+| 6 | 11 | 27 | |
 | 7 | 4 | 0 | |
-| **Total** | **57** | **120** | |
+| **Total** | **76** | **120** | |
 
 ### Benchmark baselines
 
@@ -218,6 +225,8 @@ This is a stretch goal and aspirational. It should not be enabled by default.
 | `ingestor_bench` | 4 | 4 | | |
 | `search_bench` | 5 | 5 | | |
 | `export_bench` | 3 | 6 | | |
+| `pipeline_bench` | 4 | 6 | | |
+| `tui_bench` | 3 | 6 | | |
 
 ---
 

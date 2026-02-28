@@ -1,14 +1,3 @@
-# claude
-
-# TODO: we must specify the use of flamegraphs, ideally we can link these in with benchmarks.
-# TODO: we must reiterate and enforce the need for performance testing - waiting until the last phase will not suffice
-# TODO: flesh out Backwards resolution in CLAUDE.md
-# TODO: Re-read IMPLEMENTATION_PLAN.md, changes have been made since last viewing. New phase + mention of code-review + wanted use of `skim` earlier. Polish phase should be collapsed into existing phases, rather than all at the end.
-# TODO: Add merged steps to phases that don't have them.
-# TODO: Refactor test harness explanation - as tests are implemented, tests should be removed from the harness and added to the relevant module, at the end there should be no harnesses left - we will keep tests/common though. Evaluate if it should become a crate in-of-itself.
-# TODO: Add a finale benchmark, which benches across the entire stack as much as possible - ingest to export
-# TODO: Evaluate how we can do TUI benchmarking
-
 > **fml** — *Feed Me Logs*
 >
 > *The log triage tool you open when something is already broken. Built for high-stress, time-pressured moments — multi-source ingestion, semantic search that thinks ahead of you, and a UI that gets out of the way so you can find the line that matters before the incident gets worse.*
@@ -286,7 +275,17 @@ The skill file lives at `.claude/skills/fml.md` in this repo and is auto-discove
 
 The test suite is a safety net for Claude and for humans. Every significant
 change to the codebase should be accompanied by a passing `cargo test --all`.
-The harnesses are stubs today; fill them in as each layer is implemented.
+
+### Harness migration policy
+
+The files in `tests/` are **integration harnesses** — they start out as stubs and are filled in during implementation. As a module is built:
+
+1. **Unit tests** (testing a single function or struct in isolation) move into the module's own `#[cfg(test)]` block, co-located with the code they test.
+2. **Integration tests** (testing interactions between modules or externally observable behaviour) stay in the harness.
+3. By the end of Phase 6, each harness should contain only integration-level tests; all unit tests should live inside their respective modules.
+4. At the conclusion of the project, no harness file should exist in `tests/` except for `tests/common/` (shared test utilities). If a harness still has tests in it at project end, those tests should be moved into the appropriate module before the phase is considered complete.
+
+`tests/common/` is kept as a shared test utility module regardless. Evaluate promoting it to a `fml-test-utils` workspace crate if it exceeds ~300 lines or is needed by more than two harnesses.
 
 ### What "all tests pass" guarantees
 
@@ -357,6 +356,80 @@ scripts/save_baselines.sh main
 critcmp main candidate --threshold 5
 ```
 
+#### Flamegraphs
+
+Flamegraphs are generated via the `pprof` crate's criterion integration. This works without `perf` or root access and produces per-function flamegraph SVGs inside `target/criterion/`.
+
+**Setup** — add to `[dev-dependencies]` in `Cargo.toml`:
+
+```toml
+pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
+```
+
+**Wire into a bench file** — update `criterion_group!` to attach the profiler:
+
+```rust
+use pprof::criterion::{Output, PProfProfiler};
+
+criterion_group! {
+    name = search_benches;
+    config = Criterion::default()
+        .with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    targets = exact_bench, greedy_expansion_bench, /* … */
+}
+```
+
+**Run and view**:
+
+```sh
+# Profile a single bench function for 10 seconds (generates the flamegraph)
+cargo bench --bench search_bench -- --profile-time 10 "greedy/full_pipeline"
+
+# Flamegraph SVG appears at:
+# target/criterion/greedy/full_pipeline/auth_10k_store/profile/flamegraph.svg
+open target/criterion/greedy/full_pipeline/auth_10k_store/profile/flamegraph.svg
+```
+
+Flamegraph SVGs are gitignored. Always generate them fresh on the branch under investigation, not on main.
+
+#### End-to-end (pipeline) benchmark
+
+`benches/pipeline_bench.rs` exercises the full stack in a single pass: raw log line → `normalize()` → `Store::push()` → search query → export output. This is the single most important end-to-end latency number.
+
+```sh
+cargo bench --bench pipeline_bench
+# With flamegraph:
+cargo bench --bench pipeline_bench -- --profile-time 10
+```
+
+Groups:
+- `pipeline/json_ingest` — JSON line through the full chain
+- `pipeline/logfmt_ingest` — logfmt line through the full chain
+- `pipeline/search_filter` — store + search with an active greed-5 query
+- `pipeline/export_raw` — export 10k entries as raw text
+
+#### TUI benchmarking
+
+The UI layer has no automated correctness tests, but render performance is measured using ratatui's `TestBackend` (renders to an in-memory buffer, no real terminal required):
+
+```rust
+use ratatui::{backend::TestBackend, Terminal};
+
+// In benches/tui_bench.rs:
+let backend = TestBackend::new(200, 50);
+let mut terminal = Terminal::new(backend)?;
+c.bench_function("log_stream_500_lines", |b| {
+    b.iter(|| terminal.draw(|f| render_log_stream(f, &state)))
+});
+```
+
+Key targets:
+- Full frame render (all panes, 50-row terminal): **< 2ms**
+- Log stream widget with 500 visible lines: **< 1ms**
+- Producer tree with 200 nodes: **< 0.5ms**
+
+A full frame must complete in **< 8ms** to sustain smooth 120fps scrolling.
+
 ### Expectations for Claude when changing code
 
 When Claude adds or modifies a feature:
@@ -370,7 +443,13 @@ When Claude adds or modifies a feature:
    snapshots intentionally — never silently accept snapshot diffs.
 5. **For performance-sensitive paths** (normalizer, search pipeline, store
    insert), run `cargo bench` before and after and check for regressions
-   with `critcmp`.
+   with `critcmp`. Performance benchmarking is not optional and is not
+   deferred to a polish phase — it applies from Phase 3 onward.
+6. **For any regression or suspected bottleneck**, generate a flamegraph with
+   `--profile-time 10` before touching code. Let the flamegraph guide the
+   fix, not intuition.
+7. **At the end of each phase**, run the `/code-review` skill to review all
+   changes made in that phase before merging the branch via `gh pr`.
 
 ## Greedy Algorithm
 
@@ -463,7 +542,38 @@ This means `unauth` at high greed naturally surfaces terms like `forbidden`, `re
 
 ### Backwards resolution
 
-The greedy algorithm must be backward-resolution possible, such that auth can be resolved from something like "expiry". Based on the greedy factor, auth may grab "expiry" on a greed value of `5`, we may need to set the greed value to `9` when we supply "expiry", to resolve back to auth.
+The greedy algorithm must be backward-resolution possible: any term reachable from a seed at greed G should itself be able to reach that seed at some higher greed H ≤ 10.
+
+**Example**: `auth` expands to include `expiry` at greed 5 (forward edge weight 0.6). The reverse — `expiry` resolving back to `auth` — requires greed 9, because the reverse edge `expiry → auth` carries a lower weight (≈ 0.3), reflecting that `expiry` is a broader, more ambiguous term than `auth`.
+
+This asymmetry is intentional and encoded explicitly in the ontology: every `domain_peer` edge must define both the forward weight and the `reverse_weight`. If `reverse_weight` is omitted, it defaults to `forward_weight * 0.4`.
+
+```toml
+[[cluster]]
+seed = "auth"
+domain_peers = [
+    { term = "expiry", weight = 0.6, reverse_weight = 0.3 },
+]
+```
+
+**Traversal mechanics** for backwards resolution:
+1. Start BFS from the input term (e.g. `expiry`).
+2. Follow reverse edges whose weight ≥ `min_weight(greed)`.
+3. Collect all seeds reachable within `max_depth(greed)` hops.
+4. Include the forward expansions of those seeds as additional candidate terms.
+
+**Greed thresholds** (approximate):
+
+| Greed | min_weight | max_depth |
+|-------|-----------|-----------|
+| 0 | exact | 0 |
+| 1–2 | 0.95 | 1 (morphological only) |
+| 3–4 | 0.75 | 1 |
+| 5–6 | 0.55 | 1 |
+| 7–8 | 0.40 | 2 |
+| 9–10 | 0.25 | 3+ |
+
+**Testing invariant**: for every `(A, B)` pair where `A` expands to include `B` at greed G, `B` must expand to include `A` at some greed H where G < H ≤ 10. The `search_harness::prop_backwards_resolution` property test enforces this across all ontology pairs.
 
 ### Rust Implementation Notes
 
