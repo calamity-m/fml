@@ -30,7 +30,7 @@
 
 mod common;
 use common::*;
-use fml::LogLevel;
+use fml_core::LogLevel;
 
 // ---------------------------------------------------------------------------
 // Ring buffer eviction

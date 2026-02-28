@@ -1,3 +1,79 @@
+[workspace]
+members = [
+    "crates/fml-core",
+    "crates/fml-feeds",
+    "crates/fml-tui",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.49", features = ["full"] }
+
+# Serialization / log format parsing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# TUI rendering
+ratatui = "0.30"
+crossterm = "0.29"
+
+# Fuzzy-find picker
+skim = "3.5"
+
+# FST-backed term index
+fst = "0.4"
+
+# Compile-time perfect hash maps for static ontology
+phf = { version = "0.13", features = ["macros"] }
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Config file parsing
+config = { version = "0.15", features = ["toml", "yaml", "json"] }
+
+# Regex for heuristic log parsing
+regex = "1.2"
+
+# inotify-based file watching
+notify = "8.2"
+
+# HTTP client for Docker API
+hyper = { version = "1.8", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+tower = "0.5"
+
+# Unix socket support
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# MCP / HTTP server
+axum = { version = "0.8", features = ["macros"] }
+
+# Logging for the binary itself
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Dev / test dependencies
+criterion = { version = "0.8", features = ["async_tokio", "html_reports", "csv_output"] }
+proptest = "1.10"
+proptest-derive = "0.8"
+insta = { version = "1.46", features = ["json", "toml"] }
+tempfile = "3"
+pretty_assertions = "1"
+rstest = "0.26"
+fake = { version = "4.4", features = ["derive"] }
+futures = "0.3"
+bytes = "1"
+
 [package]
 name = "fml"
 version = "0.1.0"
@@ -8,10 +84,6 @@ license = "MIT"
 [[bin]]
 name = "fml"
 path = "src/main.rs"
-
-[lib]
-name = "fml"
-path = "src/lib.rs"
 
 [[bench]]
 name = "ingestor_bench"
@@ -39,90 +111,29 @@ path = "benches/export_bench.rs"
 harness = false
 
 [dependencies]
-# TUI rendering
-ratatui = "0.30"
-crossterm = "0.29"
-
-# Fuzzy-find picker
-skim = "3.5"
-
-# FST-backed term index
-fst = "0.4"
-
-# Compile-time perfect hash maps for static ontology
-phf = { version = "0.13", features = ["macros"] }
-
-# CLI argument parsing
-clap = { version = "4.5", features = ["derive"] }
-
-# Async runtime
-tokio = { version = "1.49", features = ["full"] }
-
-# Serialization / log format parsing
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# Config file parsing
-config = { version = "0.15", features = ["toml", "yaml", "json"] }
-
-# Regex for heuristic log parsing
-regex = "1.2"
-
-# inotify-based file watching
-notify = "8.2"
-
-# HTTP client for Docker API
-hyper = { version = "1.8", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
-http-body-util = "0.1"
-tower = "0.5"
-
-# Unix socket support
-tokio-util = { version = "0.7", features = ["compat"] }
-
-# MCP
-axum = { version = "0.8", features = ["macros"] }
-
-# Error handling
-anyhow = "1.0"
-thiserror = "2.0"
-
-# Time handling
-chrono = { version = "0.4", features = ["serde"] }
-
-# Logging for the binary itself
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+fml-core = { path = "crates/fml-core" }
+fml-feeds = { path = "crates/fml-feeds" }
+fml-tui = { path = "crates/fml-tui" }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = { workspace = true }
 
 [dev-dependencies]
-# Benchmarking — HTML reports with violin plots; requires gnuplot for graphs
-criterion = { version = "0.8", features = ["async_tokio", "html_reports", "csv_output"] }
-
-# Property-based testing
-proptest = "1.10"
-proptest-derive = "0.8"
-
-# Snapshot testing
-insta = { version = "1.46", features = ["json", "toml"] }
-
-# Test async code
-tokio = { version = "1.49", features = ["full", "test-util"] }
-
-# Fake Docker API server in tests
-axum = { version = "0.8", features = ["macros"] }
-
-# Temp files/dirs for tests
-tempfile = "3"
-
-# Better test failure output
-pretty_assertions = "1"
-
-# Parameterised tests
-rstest = "0.26"
-
-# Generate fake data for tests
-fake = { version = "4.4", features = ["derive"] }
-
-# Async stream utilities for test helpers
-futures = "0.3"
-bytes = "1"
+criterion = { workspace = true }
+proptest = { workspace = true }
+proptest-derive = { workspace = true }
+insta = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tempfile = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
+fake = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+fml-core = { path = "crates/fml-core" }

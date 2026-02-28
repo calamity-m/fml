@@ -4,7 +4,7 @@
 //! make it clear *what* fml invariant was violated and *where* in the log
 //! pipeline the violation occurred.
 
-use fml::{FeedKind, LogEntry, LogLevel};
+use fml_core::{FeedKind, LogEntry, LogLevel};
 
 // ---------------------------------------------------------------------------
 // Field assertions
@@ -18,7 +18,7 @@ use fml::{FeedKind, LogEntry, LogLevel};
 #[macro_export]
 macro_rules! assert_has_field {
     ($entry:expr, $key:expr, $value:expr) => {{
-        let entry: &fml::LogEntry = &$entry;
+        let entry: &fml_core::LogEntry = &$entry;
         let key: &str = $key;
         let expected = serde_json::json!($value);
         match entry.fields.get(key) {
@@ -40,7 +40,7 @@ macro_rules! assert_has_field {
 #[macro_export]
 macro_rules! assert_field_exists {
     ($entry:expr, $key:expr) => {{
-        let entry: &fml::LogEntry = &$entry;
+        let entry: &fml_core::LogEntry = &$entry;
         let key: &str = $key;
         if !entry.fields.contains_key(key) {
             panic!(
@@ -64,8 +64,8 @@ macro_rules! assert_field_exists {
 #[macro_export]
 macro_rules! assert_level {
     ($entry:expr, $level:expr) => {{
-        let entry: &fml::LogEntry = &$entry;
-        let expected: fml::LogLevel = $level;
+        let entry: &fml_core::LogEntry = &$entry;
+        let expected: fml_core::LogLevel = $level;
         match entry.level {
             Some(actual) if actual == expected => {}
             Some(actual) => panic!(
@@ -84,7 +84,7 @@ macro_rules! assert_level {
 #[macro_export]
 macro_rules! assert_has_level {
     ($entry:expr) => {{
-        let entry: &fml::LogEntry = &$entry;
+        let entry: &fml_core::LogEntry = &$entry;
         if entry.level.is_none() {
             panic!(
                 "assert_has_level! failed: level is None.\n  raw: {:?}",
@@ -106,7 +106,7 @@ macro_rules! assert_has_level {
 #[macro_export]
 macro_rules! assert_producer {
     ($entry:expr, $producer:expr) => {{
-        let entry: &fml::LogEntry = &$entry;
+        let entry: &fml_core::LogEntry = &$entry;
         let expected: &str = $producer;
         if entry.producer != expected {
             panic!(
@@ -121,8 +121,8 @@ macro_rules! assert_producer {
 #[macro_export]
 macro_rules! assert_source {
     ($entry:expr, $source:expr) => {{
-        let entry: &fml::LogEntry = &$entry;
-        let expected: fml::FeedKind = $source;
+        let entry: &fml_core::LogEntry = &$entry;
+        let expected: fml_core::FeedKind = $source;
         if entry.source != expected {
             panic!(
                 "assert_source! failed:\n  expected: {:?}\n  actual:   {:?}",
@@ -145,7 +145,7 @@ macro_rules! assert_source {
 #[macro_export]
 macro_rules! assert_results_contain {
     ($results:expr, $pred:expr) => {{
-        let results: &[fml::LogEntry] = &$results;
+        let results: &[fml_core::LogEntry] = &$results;
         let pred = $pred;
         if !results.iter().any(pred) {
             panic!(
@@ -164,7 +164,7 @@ macro_rules! assert_results_contain {
 #[macro_export]
 macro_rules! assert_results_all {
     ($results:expr, $pred:expr) => {{
-        let results: &[fml::LogEntry] = &$results;
+        let results: &[fml_core::LogEntry] = &$results;
         let pred = $pred;
         let failing: Vec<_> = results.iter().filter(|e| !pred(e)).collect();
         if !failing.is_empty() {

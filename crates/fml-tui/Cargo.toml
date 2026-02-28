@@ -1,0 +1,14 @@
+[package]
+name = "fml-tui"
+version = "0.1.0"
+edition = "2021"
+description = "TUI application shell for fml"
+license = "MIT"
+
+[dependencies]
+fml-core = { path = "../fml-core" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+skim = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

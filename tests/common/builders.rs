@@ -3,7 +3,7 @@
 //! These builders are designed for readability in test assertions, not for
 //! production use. They panic on invalid input rather than returning `Result`.
 
-use fml::{FeedKind, LogEntry, LogLevel};
+use fml_core::{FeedKind, LogEntry, LogLevel};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
