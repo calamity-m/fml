@@ -164,7 +164,7 @@ impl Widget for CommandBar<'_> {
 
         let block = Block::bordered()
             .title("Command")
-            .border_style(self.theme.border_focused);
+            .border_style(self.theme.border_command_bar);
         let inner = block.inner(area);
         block.render(area, buf);
 

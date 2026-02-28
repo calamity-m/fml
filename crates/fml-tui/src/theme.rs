@@ -79,6 +79,7 @@ struct RawLevels {
 #[derive(Debug, Deserialize)]
 struct RawBorders {
     focused: RawStyle,
+    command_bar: RawStyle,
     unfocused: RawStyle,
 }
 
@@ -121,6 +122,8 @@ pub struct Theme {
 
     /// Border style for the currently focused pane.
     pub border_focused: Style,
+    /// Border style for the command bar pane
+    pub border_command_bar: Style,
     /// Border style for unfocused panes.
     pub border_unfocused: Style,
 
@@ -140,8 +143,7 @@ impl Theme {
     /// validated at compile time via `include_str!`, so this should never
     /// happen in practice.
     pub fn load_default() -> Self {
-        Self::from_toml_str(DEFAULT_THEME_SRC)
-            .expect("embedded default theme must be valid TOML")
+        Self::from_toml_str(DEFAULT_THEME_SRC).expect("embedded default theme must be valid TOML")
     }
 
     /// Load and parse the embedded Gruvbox Dark theme.
@@ -173,6 +175,7 @@ impl Theme {
             level_error: raw.levels.error.into_style(),
             level_fatal: raw.levels.fatal.into_style(),
             border_focused: raw.borders.focused.into_style(),
+            border_command_bar: raw.borders.command_bar.into_style(),
             border_unfocused: raw.borders.unfocused.into_style(),
             search_highlight: raw.search.highlight.into_style(),
             producer_palette: raw
@@ -219,8 +222,9 @@ impl Theme {
 /// Simple djb2-style hash that is stable across Rust versions and process
 /// restarts, making producer colour assignment deterministic.
 fn stable_hash(s: &str) -> usize {
-    s.bytes()
-        .fold(5381usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize))
+    s.bytes().fold(5381usize, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(b as usize)
+    })
 }
 
 /// Parse a colour name into a ratatui [`Color`].

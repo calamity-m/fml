@@ -19,6 +19,7 @@ fatal      = { fg = "white",   bg = "red", bold = true }
 
 [borders]
 focused    = { fg = "cyan" }
+command_bar = { fg = "red" }
 unfocused  = { fg = "dark_gray" }
 
 [search]
