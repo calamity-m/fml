@@ -358,7 +358,7 @@ fn draw(frame: &mut Frame, state: &AppState) {
     let pct = state.config.ui.producer_pane_width_pct;
     let horiz = Layout::default()
         .direction(LayoutDir::Horizontal)
-        .constraints([Constraint::Percentage(pct as u16), Constraint::Fill(1)])
+        .constraints([Constraint::Percentage(pct), Constraint::Fill(1)])
         .split(vert[1]);
 
     let tab = &state.tabs[state.active_tab];
