@@ -26,59 +26,6 @@ use ratatui::{
 };
 
 // ---------------------------------------------------------------------------
-// Command
-// ---------------------------------------------------------------------------
-
-/// A parsed, validated command ready to be executed by the app shell.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
-    Quit,
-    Help,
-    Theme(String),
-    Timestamps,
-    Tail,
-    Greed(u8),
-}
-
-impl Command {
-    /// Parse a raw command string (the text after the `:` prefix).
-    ///
-    /// Returns `Ok(cmd)` on success, `Err(message)` on failure. An empty
-    /// string returns `Err("")` as a sentinel meaning "close without acting".
-    pub fn parse(input: &str) -> Result<Command, String> {
-        let input = input.trim();
-        if input.is_empty() {
-            return Err(String::new());
-        }
-
-        let (word, rest) = input
-            .split_once(char::is_whitespace)
-            .map(|(w, r)| (w, r.trim()))
-            .unwrap_or((input, ""));
-
-        match word {
-            "q" | "quit" => Ok(Command::Quit),
-            "help" => Ok(Command::Help),
-            "ts" | "timestamps" => Ok(Command::Timestamps),
-            "tail" => Ok(Command::Tail),
-            "theme" => {
-                if rest.is_empty() {
-                    Err("usage: theme <default|gruvbox>".to_string())
-                } else {
-                    Ok(Command::Theme(rest.to_string()))
-                }
-            }
-            "greed" => match rest.parse::<u8>() {
-                Ok(n) if n <= 10 => Ok(Command::Greed(n)),
-                Ok(_) => Err("greed must be 0–10".to_string()),
-                Err(_) => Err("usage: greed <0-10>".to_string()),
-            },
-            other => Err(format!("unknown command: {other}")),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
@@ -170,7 +117,10 @@ pub struct CommandBar<'a> {
 
 impl<'a> CommandBar<'a> {
     pub fn new(state: &'a CommandBarState, theme: &'a Theme) -> Self {
-        Self { state, _theme: theme }
+        Self {
+            state,
+            _theme: theme,
+        }
     }
 }
 
@@ -200,6 +150,8 @@ impl Widget for CommandBar<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::commands::Command;
+
     use super::*;
 
     #[test]

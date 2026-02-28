@@ -4,10 +4,11 @@
 //! tears everything down cleanly on exit or panic.
 
 use crate::{
+    commands::{execute_command, Command},
     event::{self, AppEvent},
     theme::Theme,
     widgets::{
-        command_bar::{Command, CommandBar, CommandBarState},
+        command_bar::{CommandBar, CommandBarState},
         help::HelpPopup,
         log_stream::{LogStream, LogStreamState},
         producer_tree::{ProducerTree, ProducerTreeState, TreeNode},
@@ -171,9 +172,7 @@ impl App {
 
             if ct_event::poll(Duration::from_millis(16))? {
                 match ct_event::read()? {
-                    Event::Key(key)
-                        if key.kind == crossterm::event::KeyEventKind::Press =>
-                    {
+                    Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
                         let raw = Event::Key(key);
                         // Use insert-mode mapping when a text widget is focused
                         let app_event = if is_insert_mode(self.state.focus) {
@@ -320,40 +319,6 @@ fn is_insert_mode(focus: Focus) -> bool {
     matches!(focus, Focus::QueryBar | Focus::Command)
 }
 
-/// Execute a parsed [`Command`] against the application state.
-fn execute_command(s: &mut AppState, cmd: Command) {
-    match cmd {
-        Command::Quit => {
-            if s.active_tab == 0 {
-                s.quit = true;
-            } else {
-                s.tabs.remove(s.active_tab);
-                s.active_tab = s.active_tab.saturating_sub(1);
-            }
-        }
-        Command::Help => {
-            s.show_help = !s.show_help;
-        }
-        Command::Theme(name) => {
-            s.theme = match name.to_ascii_lowercase().as_str() {
-                "gruvbox" | "gruvbox_dark" | "gruvbox-dark" => Theme::load_gruvbox_dark(),
-                _ => Theme::load_default(),
-            };
-        }
-        Command::Timestamps => {
-            let tab = &mut s.tabs[s.active_tab];
-            tab.stream.show_timestamps = !tab.stream.show_timestamps;
-        }
-        Command::Tail => {
-            let tab = &mut s.tabs[s.active_tab];
-            tab.stream.handle(&AppEvent::ScrollToTail);
-        }
-        Command::Greed(n) => {
-            s.tabs[s.active_tab].query.greed = n;
-        }
-    }
-}
-
 /// Route an event to the widget that owns the current focus.
 fn dispatch_to_focused(s: &mut AppState, event: AppEvent) {
     let tab = &mut s.tabs[s.active_tab];
@@ -391,7 +356,10 @@ fn draw(frame: &mut Frame, state: &AppState) {
 
     let tab = &state.tabs[state.active_tab];
 
-    frame.render_widget(TabBar::new(&state.tabs, state.active_tab, &state.theme), vert[0]);
+    frame.render_widget(
+        TabBar::new(&state.tabs, state.active_tab, &state.theme),
+        vert[0],
+    );
     frame.render_widget(
         ProducerTree::new(&tab.tree, state.focus == Focus::Tree, &state.theme),
         horiz[0],
@@ -411,7 +379,11 @@ fn draw(frame: &mut Frame, state: &AppState) {
 
     // Command bar overlays the bottom row of the screen
     if state.focus == Focus::Command {
-        let cmd_area = Rect { y: area.bottom() - 1, height: 1, ..area };
+        let cmd_area = Rect {
+            y: area.bottom() - 1,
+            height: 1,
+            ..area
+        };
         frame.render_widget(CommandBar::new(&state.command_bar, &state.theme), cmd_area);
         let col = state.command_bar.cursor_col(cmd_area);
         frame.set_cursor_position((col, cmd_area.y));

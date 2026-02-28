@@ -154,15 +154,9 @@ fn map_key(key: KeyEvent) -> Option<AppEvent> {
         Char('[') if key.modifiers == Mod::NONE => Some(AppEvent::GreedDown),
 
         // Tree / list navigation
-        Up | Char('k') if key.modifiers == Mod::NONE => {
-            Some(AppEvent::TreeNav(Direction::Up))
-        }
-        Down | Char('j') if key.modifiers == Mod::NONE => {
-            Some(AppEvent::TreeNav(Direction::Down))
-        }
-        Left | Char('h') if key.modifiers == Mod::NONE => {
-            Some(AppEvent::TreeNav(Direction::Left))
-        }
+        Up | Char('k') if key.modifiers == Mod::NONE => Some(AppEvent::TreeNav(Direction::Up)),
+        Down | Char('j') if key.modifiers == Mod::NONE => Some(AppEvent::TreeNav(Direction::Down)),
+        Left | Char('h') if key.modifiers == Mod::NONE => Some(AppEvent::TreeNav(Direction::Left)),
         Right | Char('l') if key.modifiers == Mod::NONE => {
             Some(AppEvent::TreeNav(Direction::Right))
         }
@@ -245,7 +239,10 @@ mod tests {
 
     #[test]
     fn quit_keys() {
-        assert_eq!(to_app_event(press(KeyCode::Char('q'))), Some(AppEvent::Quit));
+        assert_eq!(
+            to_app_event(press(KeyCode::Char('q'))),
+            Some(AppEvent::Quit)
+        );
         assert_eq!(to_app_event(ctrl(KeyCode::Char('c'))), Some(AppEvent::Quit));
     }
 
@@ -329,7 +326,10 @@ mod tests {
 
     #[test]
     fn scroll_page_keys() {
-        assert_eq!(to_app_event(press(KeyCode::PageUp)), Some(AppEvent::ScrollUp));
+        assert_eq!(
+            to_app_event(press(KeyCode::PageUp)),
+            Some(AppEvent::ScrollUp)
+        );
         assert_eq!(
             to_app_event(press(KeyCode::PageDown)),
             Some(AppEvent::ScrollDown)
