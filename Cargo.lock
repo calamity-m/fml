@@ -1187,6 +1187,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "config",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1214,6 +1215,7 @@ name = "fml-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "config",
  "crossterm",
  "fml-core",
@@ -1221,6 +1223,7 @@ dependencies = [
  "serde",
  "skim",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

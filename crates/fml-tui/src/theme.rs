@@ -17,6 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
 const DEFAULT_THEME_SRC: &str = include_str!("themes/default.toml");
+const GRUVBOX_DARK_THEME_SRC: &str = include_str!("themes/gruvbox_dark.toml");
 
 // ---------------------------------------------------------------------------
 // Raw (serde) types — mirror the TOML structure
@@ -143,6 +144,16 @@ impl Theme {
             .expect("embedded default theme must be valid TOML")
     }
 
+    /// Load and parse the embedded Gruvbox Dark theme.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded TOML is malformed.
+    pub fn load_gruvbox_dark() -> Self {
+        Self::from_toml_str(GRUVBOX_DARK_THEME_SRC)
+            .expect("embedded gruvbox dark theme must be valid TOML")
+    }
+
     /// Parse a theme from a TOML string.
     ///
     /// Returns an error if the string cannot be deserialised into a valid
@@ -262,6 +273,15 @@ mod tests {
     fn default_theme_loads() {
         let theme = Theme::load_default();
         // Spot-check a few resolved styles.
+        assert_ne!(theme.level_error, Style::default());
+        assert_ne!(theme.border_focused, Style::default());
+        assert_ne!(theme.search_highlight, Style::default());
+        assert!(!theme.producer_palette.is_empty());
+    }
+
+    #[test]
+    fn gruvbox_dark_theme_loads() {
+        let theme = Theme::load_gruvbox_dark();
         assert_ne!(theme.level_error, Style::default());
         assert_ne!(theme.border_focused, Style::default());
         assert_ne!(theme.search_highlight, Style::default());
