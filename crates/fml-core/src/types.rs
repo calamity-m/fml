@@ -6,10 +6,14 @@
 
 /// A normalised log entry produced by the ingestor and stored in the ring buffer.
 ///
-/// Every field is optional except `raw` and `ts`. The normalizer populates as
-/// many fields as it can from the raw line; the remainder are left as `None`.
+/// Non-optional fields: `seq`, `raw`, `ts`, `source`, `producer`. The normalizer
+/// populates the remaining fields as best-effort; they are `None` / empty when
+/// the information could not be extracted from the raw line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogEntry {
+    /// Monotonically increasing sequence number assigned by the store on insert.
+    /// Unique within a session; used for ordering and deduplication.
+    pub seq: u64,
     /// Raw log line as received from the feed (UTF-8 lossy converted).
     pub raw: String,
     /// Ingest timestamp (UTC). May be overridden by a parsed timestamp from
@@ -25,7 +29,10 @@ pub struct LogEntry {
     /// For JSON logs these are all top-level keys; for logfmt they are the
     /// parsed key-value pairs.
     pub fields: std::collections::HashMap<String, serde_json::Value>,
-    /// The human-readable message field, if one could be identified.
+    /// Human-readable message text, if one could be identified. Populated by
+    /// the normalizer when a recognised message key is found (e.g. `"message"`,
+    /// `"msg"` in JSON or logfmt). Falls back to the full raw line for
+    /// unstructured input where no message key exists.
     pub message: Option<String>,
 }
 

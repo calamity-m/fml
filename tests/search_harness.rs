@@ -238,3 +238,12 @@ fn prop_results_subset_of_store() {
 fn prop_greed_monotonicity() {
     todo!("proptest: random corpus and term; for g in 0..10 assert results(g+1) ⊇ results(g)")
 }
+
+/// Property: backwards resolution — for every (A, B) pair where A expands to
+/// include B at greed G, B must expand to include A at some greed H where
+/// G < H ≤ 10. Verified across all ontology pairs.
+#[test]
+#[ignore = "not yet implemented"]
+fn prop_backwards_resolution() {
+    todo!("for every (seed, peer) pair in the ontology: assert that peer expands to include seed at some greed level higher than the forward direction")
+}
