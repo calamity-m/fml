@@ -17,6 +17,8 @@
 
 use crate::event::{AppEvent, Direction};
 use crate::theme::Theme;
+use ratatui::layout::{Constraint, Direction as LayoutDir, Layout};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -53,6 +55,9 @@ impl CommandBarState {
     /// If there is Some(AppEvent) the command bar should be closed. If none, the command bar should remain open.
     pub fn handle(&mut self, event: &AppEvent) -> Option<AppEvent> {
         // Any keypress dismisses the error display so the user can edit again.
+        if self.error.is_some() {
+            self.clear();
+        }
         self.error = None;
 
         match event {
@@ -126,8 +131,9 @@ impl CommandBarState {
     /// Absolute terminal column of the text cursor within `area`.
     ///
     /// The `:` glyph occupies column 0, so the cursor starts at column 1.
+    /// but then we have a border - so we'll use column 2.
     pub fn cursor_col(&self, area: Rect) -> u16 {
-        let col = 1 + self.input[..self.cursor].chars().count() as u16;
+        let col = 2 + self.input[..self.cursor].chars().count() as u16;
         (area.x + col).min(area.right().saturating_sub(1))
     }
 }
@@ -143,21 +149,24 @@ impl CommandBarState {
 /// the `:<input>` prompt or an error message.
 pub struct CommandBar<'a> {
     state: &'a CommandBarState,
-    _theme: &'a Theme,
+    theme: &'a Theme,
 }
 
 impl<'a> CommandBar<'a> {
     pub fn new(state: &'a CommandBarState, theme: &'a Theme) -> Self {
-        Self {
-            state,
-            _theme: theme,
-        }
+        Self { state, theme }
     }
 }
 
 impl Widget for CommandBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
+
+        let block = Block::bordered()
+            .title("Command")
+            .border_style(self.theme.border_focused);
+        let inner = block.inner(area);
+        block.render(area, buf);
 
         let line = if let Some(ref err) = self.state.error {
             Line::from(Span::styled(
@@ -171,7 +180,12 @@ impl Widget for CommandBar<'_> {
             ])
         };
 
-        buf.set_line(area.x, area.y, &line, area.width);
+        let chunks = Layout::default()
+            .direction(LayoutDir::Horizontal)
+            .constraints([Constraint::Fill(1)])
+            .split(inner);
+
+        Paragraph::new(line).render(chunks[0], buf);
     }
 }
 

@@ -23,7 +23,7 @@ impl<'a> HelpPopup<'a> {
 
 impl Widget for HelpPopup<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let popup = centered_rect(62, 20, area);
+        let popup = centered_rect(80, 20, area);
         Clear.render(popup, buf);
 
         let block = Block::bordered()
@@ -34,20 +34,20 @@ impl Widget for HelpPopup<'_> {
         block.render(popup, buf);
 
         const BINDINGS: &[(&str, &str)] = &[
-            ("q  /  Ctrl+c",      "Quit / close tab"),
-            ("Tab",               "Cycle focus: tree → stream → query"),
-            ("/",                 "Focus query bar"),
-            ("Escape",            "Return focus from query bar"),
-            ("↑ k  /  ↓ j",      "Navigate tree or scroll list"),
-            ("← h  /  → l",      "Collapse / expand tree node"),
-            ("Space",             "Toggle producer selection"),
-            ("Enter",             "Expand/collapse tree node"),
+            ("q  /  Ctrl+c", "Quit / close tab"),
+            ("Tab", "Cycle focus: tree → stream → query"),
+            ("/", "Focus query bar"),
+            ("Escape", "Return focus from query bar"),
+            ("↑ k  /  ↓ j", "Navigate tree or scroll list"),
+            ("← h  /  → l", "Collapse / expand tree node"),
+            ("Space", "Toggle producer selection"),
+            ("Enter", "Expand/collapse tree node"),
             ("PageUp  /  Ctrl+u", "Scroll log stream up"),
             ("PageDown / Ctrl+d", "Scroll log stream down"),
-            ("G",                 "Jump to log tail and resume"),
-            ("]",                 "Increase search greed level"),
-            ("[",                 "Decrease search greed level"),
-            ("?",                 "Toggle this help popup"),
+            ("G", "Jump to log tail and resume"),
+            ("]", "Increase search greed level"),
+            ("[", "Decrease search greed level"),
+            ("?", "Toggle this help popup"),
         ];
 
         let lines: Vec<Line> = BINDINGS

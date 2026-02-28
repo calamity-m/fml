@@ -387,11 +387,11 @@ fn draw(frame: &mut Frame, state: &AppState) {
     // Command bar overlays the bottom row of the screen
     if state.focus == Focus::Command {
         let cmd_area = Rect {
-            y: area.bottom() - 1,
-            height: 1,
+            y: area.bottom() - 2,
+            height: 2,
             ..area
         };
-        frame.render_widget(CommandBar::new(&state.command_bar, &state.theme), cmd_area);
+        frame.render_widget(CommandBar::new(&state.command_bar, &state.theme), vert[2]);
         let col = state.command_bar.cursor_col(cmd_area);
         frame.set_cursor_position((col, cmd_area.y));
         return; // cursor is set; skip query-bar cursor below
