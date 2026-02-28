@@ -29,3 +29,7 @@ desktop.ini
 *.tmp
 /tmp/
 
+# Flamegraphs — always regenerate from source, never commit
+flamegraph.svg
+flamegraph.svg.*
+

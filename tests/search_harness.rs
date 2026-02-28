@@ -40,7 +40,7 @@
 
 mod common;
 use common::*;
-use fml::LogLevel;
+use fml_core::LogLevel;
 
 // ---------------------------------------------------------------------------
 // Exact mode (greed = 0)

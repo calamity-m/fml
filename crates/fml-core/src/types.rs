@@ -1,26 +1,8 @@
-//! fml — Feed Me Logs
+//! Core types for fml-core — Feed Me Logs.
 //!
-//! Terminal TUI for log aggregation, triage, and searching. This crate exposes
-//! the four architectural layers as public modules so that integration tests
-//! and the MCP server can import them directly.
-//!
-//! # Architecture
-//!
-//! ```text
-//! Ingestor ──► Store ──► Search ──► UI
-//!    │           │
-//!    └───────────┴──► Export
-//! ```
-//!
-//! All inter-layer communication uses `tokio` channels. The UI drives the
-//! main thread; everything else runs on background tasks.
-
-pub mod export;
-pub mod ingestor;
-pub mod normalizer;
-pub mod search;
-pub mod store;
-pub mod ui;
+//! This module defines the fundamental data structures shared across all
+//! architectural layers: the normalised [`LogEntry`], its [`LogLevel`], and
+//! the [`FeedKind`] discriminant.
 
 /// A normalised log entry produced by the ingestor and stored in the ring buffer.
 ///

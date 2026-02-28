@@ -1,0 +1,18 @@
+[package]
+name = "fml-feeds"
+version = "0.1.0"
+edition = "2021"
+description = "Log feed sources (Kubernetes, Docker, file, stdin) for fml"
+license = "MIT"
+
+[dependencies]
+fml-core = { path = "../fml-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+notify = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+tower = { workspace = true }
+tokio-util = { workspace = true }
