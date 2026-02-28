@@ -1,0 +1,37 @@
+# fml default colour theme.
+#
+# All colour values are one of:
+#   Named:   black, red, green, yellow, blue, magenta, cyan, gray,
+#            dark_gray, light_red, light_green, light_yellow, light_blue,
+#            light_magenta, light_cyan, white
+#   Hex RGB: "#rrggbb"
+#   Indexed: "indexed:N"  (256-colour palette entry)
+#
+# Modifier flags: bold, dim, italic, underlined (all default false).
+
+[levels]
+trace      = { fg = "dark_gray" }
+debug      = { fg = "gray" }
+info       = { fg = "white" }
+warn       = { fg = "yellow",  bold = true }
+error      = { fg = "red",     bold = true }
+fatal      = { fg = "white",   bg = "red", bold = true }
+
+[borders]
+focused    = { fg = "cyan" }
+unfocused  = { fg = "dark_gray" }
+
+[search]
+highlight  = { fg = "black", bg = "yellow", bold = true }
+
+[producers]
+# Colours are assigned by hashing the producer name mod palette length,
+# so the same producer always gets the same colour within a session.
+palette = [
+    "cyan",
+    "green",
+    "magenta",
+    "light_blue",
+    "light_yellow",
+    "light_red",
+]

@@ -1,5 +1,6 @@
 //! fml TUI — ratatui application shell.
-//! Full implementation in Phase 2.
+
+pub mod theme;
 
 pub struct App;
 
