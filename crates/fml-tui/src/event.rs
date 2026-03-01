@@ -485,4 +485,84 @@ mod tests {
             Some(AppEvent::Quit)
         );
     }
+
+    // ── parse_str ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_str_quit_short_and_long() {
+        assert_eq!(AppEvent::parse_str("q"), Ok(AppEvent::Quit));
+        assert_eq!(AppEvent::parse_str("quit"), Ok(AppEvent::Quit));
+        assert_eq!(AppEvent::parse_str("  quit  "), Ok(AppEvent::Quit));
+    }
+
+    #[test]
+    fn parse_str_force_quit() {
+        assert_eq!(AppEvent::parse_str("q!"), Ok(AppEvent::Exit));
+        assert_eq!(AppEvent::parse_str("quit!"), Ok(AppEvent::Exit));
+    }
+
+    #[test]
+    fn parse_str_help() {
+        assert_eq!(AppEvent::parse_str("help"), Ok(AppEvent::Help));
+        assert_eq!(AppEvent::parse_str("?"), Ok(AppEvent::Help));
+    }
+
+    #[test]
+    fn parse_str_timestamps() {
+        assert_eq!(AppEvent::parse_str("ts"), Ok(AppEvent::Timestamps));
+        assert_eq!(AppEvent::parse_str("timestamps"), Ok(AppEvent::Timestamps));
+    }
+
+    #[test]
+    fn parse_str_tail() {
+        assert_eq!(AppEvent::parse_str("tail"), Ok(AppEvent::ScrollToTail));
+    }
+
+    #[test]
+    fn parse_str_theme_with_arg() {
+        assert_eq!(
+            AppEvent::parse_str("theme gruvbox"),
+            Ok(AppEvent::Theme("gruvbox".to_string()))
+        );
+        assert_eq!(
+            AppEvent::parse_str("theme default"),
+            Ok(AppEvent::Theme("default".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_str_theme_without_arg_is_err() {
+        assert!(AppEvent::parse_str("theme").is_err());
+        let err = AppEvent::parse_str("theme").unwrap_err();
+        assert!(err.contains("usage"));
+    }
+
+    #[test]
+    fn parse_str_greed_valid_range() {
+        assert_eq!(AppEvent::parse_str("greed 0"), Ok(AppEvent::Greed(0)));
+        assert_eq!(AppEvent::parse_str("greed 5"), Ok(AppEvent::Greed(5)));
+        assert_eq!(AppEvent::parse_str("greed 10"), Ok(AppEvent::Greed(10)));
+    }
+
+    #[test]
+    fn parse_str_greed_out_of_range_is_err() {
+        assert!(AppEvent::parse_str("greed 11").is_err());
+    }
+
+    #[test]
+    fn parse_str_greed_non_numeric_is_err() {
+        assert!(AppEvent::parse_str("greed abc").is_err());
+    }
+
+    #[test]
+    fn parse_str_empty_returns_sentinel_err() {
+        assert_eq!(AppEvent::parse_str(""), Err(String::new()));
+        assert_eq!(AppEvent::parse_str("   "), Err(String::new()));
+    }
+
+    #[test]
+    fn parse_str_unknown_command_is_err() {
+        let err = AppEvent::parse_str("frobnicate").unwrap_err();
+        assert!(err.contains("frobnicate"));
+    }
 }

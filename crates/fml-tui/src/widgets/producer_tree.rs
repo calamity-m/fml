@@ -326,20 +326,6 @@ mod tests {
         ])]
     }
 
-    fn sel(nodes: &[TreeNode], id: &str) -> NodeSelection {
-        for n in nodes {
-            if n.id == id {
-                return n.selection;
-            }
-            let s = sel(&n.children, id);
-            if s != NodeSelection::Unselected || n.children.iter().any(|c| c.id == id) {
-                return s;
-            }
-        }
-        NodeSelection::Unselected
-    }
-
-    // Helper that just finds the node and returns its selection, for clarity.
     fn find_sel(nodes: &[TreeNode], id: &str) -> NodeSelection {
         for n in nodes {
             if n.id == id {

@@ -195,64 +195,232 @@ impl Widget for CommandBar<'_> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
-    // #[test]
-    // fn parse_quit() {
-    //     assert_eq!(Command::parse("q"), Ok(Command::Quit));
-    //     assert_eq!(Command::parse("quit"), Ok(Command::Quit));
-    //     assert_eq!(Command::parse("  quit  "), Ok(Command::Quit));
-    // }
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
-    // #[test]
-    // fn parse_theme() {
-    //     assert_eq!(
-    //         Command::parse("theme gruvbox"),
-    //         Ok(Command::Theme("gruvbox".to_string()))
-    //     );
-    //     assert!(Command::parse("theme").is_err());
-    // }
+    /// Type a string into the bar one character at a time.
+    fn type_str(s: &mut CommandBarState, text: &str) {
+        for c in text.chars() {
+            s.handle(&AppEvent::Char(c));
+        }
+    }
 
-    // #[test]
-    // fn parse_greed() {
-    //     assert_eq!(Command::parse("greed 5"), Ok(Command::Greed(5)));
-    //     assert_eq!(Command::parse("greed 0"), Ok(Command::Greed(0)));
-    //     assert_eq!(Command::parse("greed 10"), Ok(Command::Greed(10)));
-    //     assert!(Command::parse("greed 11").is_err());
-    //     assert!(Command::parse("greed abc").is_err());
-    // }
+    // ── Typing & editing ─────────────────────────────────────────────────────
 
-    // #[test]
-    // fn parse_empty_returns_sentinel_err() {
-    //     assert_eq!(Command::parse(""), Err(String::new()));
-    //     assert_eq!(Command::parse("  "), Err(String::new()));
-    // }
+    #[test]
+    fn char_inserts_and_advances_cursor() {
+        let mut s = CommandBarState::default();
+        s.handle(&AppEvent::Char('f'));
+        s.handle(&AppEvent::Char('o'));
+        s.handle(&AppEvent::Char('o'));
+        assert_eq!(s.input, "foo");
+        assert_eq!(s.cursor, 3);
+    }
 
-    // #[test]
-    // fn parse_unknown() {
-    //     let err = Command::parse("frobnicate").unwrap_err();
-    //     assert!(err.contains("frobnicate"));
-    // }
+    #[test]
+    fn char_returns_none_bar_stays_open() {
+        let mut s = CommandBarState::default();
+        let result = s.handle(&AppEvent::Char('x'));
+        assert_eq!(result, None);
+    }
 
-    // #[test]
-    // fn state_char_insert_and_backspace() {
-    //     let mut s = CommandBarState::default();
-    //     s.handle(&AppEvent::Char('f'));
-    //     s.handle(&AppEvent::Char('o'));
-    //     s.handle(&AppEvent::Char('o'));
-    //     assert_eq!(s.input, "foo");
-    //     assert_eq!(s.cursor, 3);
-    //     s.handle(&AppEvent::Backspace);
-    //     assert_eq!(s.input, "fo");
-    //     assert_eq!(s.cursor, 2);
-    // }
+    #[test]
+    fn backspace_removes_last_char() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "foo");
+        s.handle(&AppEvent::Backspace);
+        assert_eq!(s.input, "fo");
+        assert_eq!(s.cursor, 2);
+    }
 
-    // #[test]
-    // fn state_error_cleared_on_next_key() {
-    //     let mut s = CommandBarState::default();
-    //     s.error = Some("oops".to_string());
-    //     s.handle(&AppEvent::Char('x'));
-    //     assert!(s.error.is_none());
-    // }
+    #[test]
+    fn backspace_at_start_is_noop() {
+        let mut s = CommandBarState::default();
+        s.handle(&AppEvent::Backspace);
+        assert_eq!(s.input, "");
+        assert_eq!(s.cursor, 0);
+    }
+
+    #[test]
+    fn backspace_returns_none() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "a");
+        assert_eq!(s.handle(&AppEvent::Backspace), None);
+    }
+
+    // ── Cursor movement ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cursor_left_moves_back() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "ab");
+        s.handle(&AppEvent::TreeNav(Direction::Left));
+        assert_eq!(s.cursor, 1);
+    }
+
+    #[test]
+    fn cursor_right_moves_forward() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "ab");
+        s.handle(&AppEvent::TreeNav(Direction::Left));
+        s.handle(&AppEvent::TreeNav(Direction::Right));
+        assert_eq!(s.cursor, 2);
+    }
+
+    #[test]
+    fn cursor_left_at_start_is_noop() {
+        let mut s = CommandBarState::default();
+        s.handle(&AppEvent::TreeNav(Direction::Left));
+        assert_eq!(s.cursor, 0);
+    }
+
+    #[test]
+    fn cursor_right_at_end_is_noop() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "a");
+        s.handle(&AppEvent::TreeNav(Direction::Right));
+        assert_eq!(s.cursor, 1);
+    }
+
+    #[test]
+    fn insert_at_cursor_mid_string() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "ac");
+        s.handle(&AppEvent::TreeNav(Direction::Left)); // cursor before 'c'
+        s.handle(&AppEvent::Char('b'));
+        assert_eq!(s.input, "abc");
+    }
+
+    // ── Escape ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn escape_clears_input_and_returns_noop() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "quit");
+        let result = s.handle(&AppEvent::Escape);
+        assert_eq!(result, Some(AppEvent::NoOp));
+        assert_eq!(s.input, "");
+        assert_eq!(s.cursor, 0);
+        assert!(s.error.is_none());
+    }
+
+    // ── Enter: valid commands ─────────────────────────────────────────────────
+
+    #[test]
+    fn enter_quit_emits_quit_event() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "q");
+        assert_eq!(s.handle(&AppEvent::Enter), Some(AppEvent::Quit));
+        assert_eq!(s.input, ""); // cleared after dispatch
+    }
+
+    #[test]
+    fn enter_quit_long_form() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "quit");
+        assert_eq!(s.handle(&AppEvent::Enter), Some(AppEvent::Quit));
+    }
+
+    #[test]
+    fn enter_timestamps_emits_timestamps_event() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "ts");
+        assert_eq!(s.handle(&AppEvent::Enter), Some(AppEvent::Timestamps));
+    }
+
+    #[test]
+    fn enter_tail_emits_scroll_to_tail() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "tail");
+        assert_eq!(s.handle(&AppEvent::Enter), Some(AppEvent::ScrollToTail));
+    }
+
+    #[test]
+    fn enter_theme_emits_theme_event() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "theme gruvbox");
+        assert_eq!(
+            s.handle(&AppEvent::Enter),
+            Some(AppEvent::Theme("gruvbox".to_string()))
+        );
+    }
+
+    #[test]
+    fn enter_greed_emits_greed_event() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "greed 7");
+        assert_eq!(s.handle(&AppEvent::Enter), Some(AppEvent::Greed(7)));
+    }
+
+    #[test]
+    fn enter_clears_state_on_success() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "tail");
+        s.handle(&AppEvent::Enter);
+        assert_eq!(s.input, "");
+        assert_eq!(s.cursor, 0);
+        assert!(s.error.is_none());
+    }
+
+    // ── Enter: empty / invalid ────────────────────────────────────────────────
+
+    #[test]
+    fn enter_on_empty_input_returns_noop() {
+        let mut s = CommandBarState::default();
+        assert_eq!(s.handle(&AppEvent::Enter), Some(AppEvent::NoOp));
+    }
+
+    #[test]
+    fn enter_unknown_command_sets_error_and_returns_noop() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "frobnicate");
+        let result = s.handle(&AppEvent::Enter);
+        assert_eq!(result, Some(AppEvent::NoOp));
+        assert!(s.error.is_some());
+        assert!(s.error.as_ref().unwrap().contains("frobnicate"));
+    }
+
+    #[test]
+    fn enter_theme_without_arg_sets_error() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "theme");
+        let result = s.handle(&AppEvent::Enter);
+        assert_eq!(result, Some(AppEvent::NoOp));
+        assert!(s.error.is_some());
+    }
+
+    // ── Error state ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn error_is_cleared_on_next_keypress() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "bad");
+        s.handle(&AppEvent::Enter); // sets error
+        assert!(s.error.is_some());
+        s.handle(&AppEvent::Char('x')); // any key clears error
+        assert!(s.error.is_none());
+    }
+
+    #[test]
+    fn input_is_cleared_when_error_is_dismissed() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "bad");
+        s.handle(&AppEvent::Enter);
+        s.handle(&AppEvent::Char('q')); // dismiss + start fresh
+        assert_eq!(s.input, "q");
+    }
+
+    // ── clear() ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn clear_resets_all_fields() {
+        let mut s = CommandBarState::default();
+        type_str(&mut s, "something");
+        s.error = Some("oops".to_string());
+        s.clear();
+        assert_eq!(s.input, "");
+        assert_eq!(s.cursor, 0);
+        assert!(s.error.is_none());
+    }
 }
