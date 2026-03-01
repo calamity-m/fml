@@ -12,3 +12,7 @@ crossterm = { workspace = true }
 skim = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+config = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
