@@ -51,8 +51,10 @@ impl CommandBarState {
     }
 
     /// Handle a key event while the command bar is focused.
-    /// the command bar will essentially take an app event, and then re-emit a new app event.
-    /// If there is Some(AppEvent) the command bar should be closed. If none, the command bar should remain open.
+    ///
+    /// Returns `Some(AppEvent)` when the bar should close and dispatch an event
+    /// to the app (e.g. `Some(Quit)` after `:q`, `Some(NoOp)` on Escape or
+    /// empty Enter). Returns `None` to keep the bar open (typing, cursor movement).
     pub fn handle(&mut self, event: &AppEvent) -> Option<AppEvent> {
         // Any keypress dismisses the error display so the user can edit again.
         if self.error.is_some() {

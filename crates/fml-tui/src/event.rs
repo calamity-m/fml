@@ -101,6 +101,10 @@ pub enum AppEvent {
 }
 
 impl AppEvent {
+    /// Parse a command-bar input string into an [`AppEvent`].
+    ///
+    /// Returns `Err(String::new())` for empty input (close bar silently),
+    /// or `Err(message)` for unknown/invalid commands (display to the user).
     pub fn parse_str(input: &str) -> Result<AppEvent, String> {
         let input = input.trim();
         if input.is_empty() {
@@ -242,6 +246,9 @@ impl AppEvent {
         }
     }
 
+    /// Map a raw crossterm [`Event`] to an [`AppEvent`] for normal (non-insert) mode.
+    ///
+    /// Returns `None` for events that have no binding (e.g. function keys).
     pub fn parse_event(input: Event) -> Option<AppEvent> {
         match input {
             Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),

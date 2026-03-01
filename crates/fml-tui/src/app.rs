@@ -42,17 +42,22 @@ pub enum Focus {
 }
 
 pub enum TabKind {
+    /// The primary tab — receives all selected producers.
     Main,
+    /// Scoped to a single producer. Label is `freeze:<producer>`.
     Freeze(String),
+    /// Filtered to a specific field value across all producers. Label is `correlate:<value>`.
     Correlate { field: String, value: String },
 }
 
 pub struct TabState {
+    /// Display label shown in the tab bar (e.g. `1:main`, `freeze:api-7f9b4d`).
     pub label: String,
     pub kind: TabKind,
     pub tree: ProducerTreeState,
     pub stream: LogStreamState,
     pub query: QueryBarState,
+    /// True when the tab has unsaved or unacknowledged state (rendered as `●`).
     pub dirty: bool,
 }
 
@@ -82,6 +87,9 @@ pub struct App {
 }
 
 impl App {
+    /// Create an App pre-loaded with `entries`. `config` and `theme` drive
+    /// layout and colours. A single `main` tab is created; additional tabs
+    /// are opened at runtime via freeze/correlate actions.
     pub fn new(entries: Vec<LogEntry>, config: Config, theme: Theme) -> Self {
         // Build producer tree from unique producers in the mock data
         let producers: Vec<String> = {
@@ -199,6 +207,11 @@ impl App {
         Ok(())
     }
 
+    /// Dispatch a single [`AppEvent`] to the correct handler.
+    ///
+    /// The help popup and command bar each short-circuit the normal dispatch
+    /// path: when either is active, most events are consumed before reaching
+    /// the focused widget.
     fn handle(&mut self, event: AppEvent) {
         let s = &mut self.state;
 

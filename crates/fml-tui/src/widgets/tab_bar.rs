@@ -10,6 +10,10 @@ use ratatui::{
     widgets::{Tabs, Widget},
 };
 
+/// Renders the 1-line strip of open tabs at the top of the screen.
+///
+/// The active tab is highlighted; a `●` suffix marks tabs with unsaved state.
+/// Keybinding hints (`q:quit  ?:help`) are right-aligned in the same row.
 pub struct TabBar<'a> {
     tabs: &'a [TabState],
     active: usize,

@@ -27,13 +27,20 @@ const GREED_MAX: u8 = 10;
 
 #[derive(Debug, Default)]
 pub struct QueryBarState {
+    /// The search expression typed by the user.
     pub query: String,
     /// Byte offset of the cursor within `query`.
     pub cursor: usize,
+    /// Current greed level (0 = exact match only, 10 = maximum expansion).
     pub greed: u8,
 }
 
 impl QueryBarState {
+    /// Handle a key event from the app shell.
+    ///
+    /// Text-editing events (`Char`, `Backspace`, arrow keys) update the query
+    /// string. `GreedUp` / `GreedDown` adjust the greed slider; all other
+    /// events are ignored.
     pub fn handle(&mut self, event: &AppEvent) {
         match event {
             AppEvent::Char(c) => {

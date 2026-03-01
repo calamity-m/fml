@@ -44,9 +44,11 @@ pub struct LogStreamState {
     pub scroll_offset: usize,
     /// Absolute index into `entries` of the highlighted line.
     pub cursor: usize,
+    /// When true, new entries accumulate in `buffered_new` instead of advancing the view.
     pub paused: bool,
-    /// New lines that arrived while paused, not yet shown.
+    /// Count of entries that arrived while paused and are not yet visible.
     pub buffered_new: usize,
+    /// Whether timestamps are shown on each log line.
     pub show_timestamps: bool,
     /// Cached from the last render so `handle()` can do cursor-aware scrolling.
     last_height: Cell<usize>,
@@ -78,6 +80,10 @@ impl LogStreamState {
         (start, end)
     }
 
+    /// Handle a navigation event from the app shell.
+    ///
+    /// Scrolling up sets `paused = true`; pressing `G` or scrolling back to the
+    /// tail clears it and resets `buffered_new`.
     pub fn handle(&mut self, event: &AppEvent) {
         let total = self.entries.len();
         if total == 0 {

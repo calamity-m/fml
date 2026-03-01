@@ -155,6 +155,7 @@ fn flatten(nodes: &[TreeNode], depth: usize) -> Vec<(usize, &TreeNode)> {
     out
 }
 
+/// Set the `expanded` flag on the node with `id`. Returns `true` if found.
 fn set_expanded(nodes: &mut Vec<TreeNode>, id: &str, expanded: bool) -> bool {
     for node in nodes.iter_mut() {
         if node.id == id {
@@ -168,6 +169,7 @@ fn set_expanded(nodes: &mut Vec<TreeNode>, id: &str, expanded: bool) -> bool {
     false
 }
 
+/// Flip the `expanded` flag on the node with `id`. Returns `true` if found.
 fn toggle_expanded(nodes: &mut Vec<TreeNode>, id: &str) -> bool {
     for node in nodes.iter_mut() {
         if node.id == id {
@@ -199,6 +201,12 @@ fn is_leaf(nodes: &[TreeNode], id: &str) -> bool {
     find_is_leaf(nodes, id).unwrap_or(true)
 }
 
+/// Toggle the selection state of the node with `id`.
+///
+/// When the toggled node is found, its new state is pushed down to every
+/// descendant via [`set_all_selection`]. On the way back up the call stack,
+/// each ancestor recomputes its own state from its children via
+/// [`compute_selection_from_children`].
 fn toggle_selection(nodes: &mut Vec<TreeNode>, id: &str) -> bool {
     for node in nodes.iter_mut() {
         if node.id == id {
