@@ -1,40 +1,47 @@
 # fml — System Architecture
 
-`fml` is split into four loosely coupled layers that communicate exclusively through `tokio` async channels. No layer holds a reference to another; they share data only through the channel boundaries.
+fml follows a message-bus pattern: many independent producers write to a single central store, and many independent consumers read from it. Producers and consumers never communicate directly — the store is the only shared state.
 
 ```
-┌─────────────┐   raw bytes    ┌────────────┐  LogEntry   ┌───────┐
-│  Ingestor   │ ─────────────▶ │ Normalizer │ ──────────▶ │ Store │
-│ (feed task) │                │            │             │       │
-└─────────────┘                └────────────┘             └───┬───┘
-                                                              │ read
-                                                         ┌────▼────┐
-                                                         │ Search  │
-                                                         └────┬────┘
-                                                              │ results
-                                                         ┌────▼────┐
-                                                         │   UI    │
-                                                         └─────────┘
+  PRODUCERS                     BUS                    CONSUMERS
+
+ ┌─────────────────┐
+ │ Ingestor        │  LogEntry
+ │ (api-7f9b4d)    │ ──────────┐
+ └─────────────────┘           │
+                               │
+ ┌─────────────────┐           ▼          ┌──────────────────────────┐
+ │ Ingestor        │  ┌──────────────┐    │ Tab 1: main              │
+ │ (worker-4c2a)   │─▶│    Store     │───▶│ query: level:error       │
+ └─────────────────┘  │ (ring buffer)│    └──────────────────────────┘
+                      │              │
+ ┌─────────────────┐  │              │    ┌──────────────────────────┐
+ │ Ingestor        │─▶│              │───▶│ Tab 2: freeze:api-7f9b4d │
+ │ (worker-9e1b)   │  └──────────────┘    │ query: timeout           │
+ └─────────────────┘                      └──────────────────────────┘
+
+                                          ┌──────────────────────────┐
+                                          │ Tab 3: correlate:req-123 │
+                                          │ query: request_id:req-123│
+                                          └──────────────────────────┘
 ```
 
-## Layers
+One ingestor task runs per active producer. Each tab is an independent consumer with its own query and scroll position. Adding a tab does not start new ingestion — it opens another read view over the same store.
 
-### 1. Ingestor
+## Components
 
-Connects to the chosen source feed, reads raw bytes (subprocess stdout, API stream, file tail), and forwards lines to the Normalizer. One ingestor task runs per active producer (pod, container, file). All ingestor tasks are supervised so crashes trigger reconnect rather than silently dropping the stream.
+### Ingestors (`fml-feeds`)
 
-See `docs/FEATURES.md` for the producer/feed model.
+Each ingestor connects to one producer (a pod, container, or file), reads raw bytes, normalises each line into a `LogEntry`, and writes it to the store. Ingestors run as supervised `tokio` tasks; a crash triggers reconnect rather than silently dropping the stream.
 
-### 2. Normalizer (`fml-core::normalizer`)
-
-Converts raw log lines to `LogEntry` structs. Parsing is attempted in priority order:
+Normalisation converts raw log lines to `LogEntry` structs. Parsing is attempted in priority order:
 
 1. **JSON** — valid JSON objects have all top-level keys promoted to searchable fields.
 2. **Logfmt** — `key=value` pairs extracted.
 3. **Heuristic regexes** — detect log level, timestamp, and request IDs in unstructured text.
 4. **Fallback** — raw line stored as `message`.
 
-Synthetic fields injected unconditionally regardless of parse result:
+Synthetic fields are injected unconditionally regardless of parse result:
 
 | Field | Value |
 |-------|-------|
@@ -43,69 +50,66 @@ Synthetic fields injected unconditionally regardless of parse result:
 | `ts` | Ingest time (overridden if parsed from the line) |
 | `level` | Best-effort (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) |
 
-### 3. Store (`fml-core::store`)
+### Store (`fml-core::store`)
 
-An in-memory ring buffer of `LogEntry` values. The store is the **single source of truth** — the UI and search engine read from it; the ingestor writes to it; nothing else touches the data.
+The store is an in-memory ring buffer that all ingestors write to and all tabs read from. It is the only point of contact between producers and consumers.
 
-Key properties:
 - Fixed capacity (configurable, default 100 000 entries); oldest entries evict when full.
 - Monotonic sequence numbers on every entry for deterministic ordering.
-- Concurrent-safe: multiple reader tasks (UI, search) alongside one writer (ingestor).
+- Concurrent-safe: multiple reader tasks alongside one writer per active ingestor.
 
-### 4. Search (`fml-core::search`)
+### Tabs / Search consumers (`fml-core::search`, `fml-tui`)
 
-A query engine that runs against the store. See `docs/search/GREEDY_ALGORITHM.md` for the full expansion spec.
+Each open tab holds an independent query and scroll position. When a tab renders, it runs its query against the store and displays the matching subset. Tabs share the store — no data is copied per tab.
 
-Pipeline:
+The search pipeline each tab runs:
 
 1. **Key filter** — optional `key:value` prefix restricts which fields are scanned.
 2. **Term expansion** — each bare term is expanded via the greedy algorithm.
 3. **FST scan** — expanded terms looked up against an `fst`-backed index for prefix/infix matches.
 4. **Ranking** — results scored by match density and recency.
 
-At greed 0 the expansion step is skipped; exact substring / regex matching only.
+At greed 0 the expansion step is skipped; exact substring or regex matching only.
 
-### 5. UI (`fml-tui`)
+See [`docs/search/GREEDY_ALGORITHM.md`](search/GREEDY_ALGORITHM.md) for the full expansion spec.
 
-A `ratatui` application that renders the current view, handles input, and dispatches `AppEvent` values back to the store and search layers. Runs on the main thread driven by a `crossterm` event loop at 16 ms poll intervals (≈60 fps).
+The UI layer renders tabs and handles input. See [`docs/tui/ARCHITECTURE.md`](tui/ARCHITECTURE.md) for TUI internals.
 
-See `docs/tui/ARCHITECTURE.md` for the full TUI internals.
+## Source feeds
 
-## Data types (`fml-core`)
-
-```rust
-pub struct LogEntry {
-    pub seq: u64,                              // monotonic sequence number
-    pub ts: chrono::DateTime<Utc>,
-    pub level: Option<LogLevel>,
-    pub source: FeedKind,
-    pub producer: String,
-    pub message: String,
-    pub fields: IndexMap<String, String>,      // parsed key-value pairs
-}
-
-pub enum LogLevel { Trace, Debug, Info, Warn, Error, Fatal }
-pub enum FeedKind { Docker, Kubernetes, File, Stdin }
-```
-
-## Source Feeds
-
-Only one feed is active at a time. Within a feed, multiple **producers** can be selected simultaneously; their streams are merged and tagged.
+One feed type is active at a time. Within a feed, any number of producers can be selected; each gets its own ingestor task.
 
 | Feed | Producer unit | Transport |
 |------|---------------|-----------|
 | `docker` | container name/id | Docker API over Unix socket |
 | `kubernetes` | pod name (+ optional container) | `kubectl logs -f` subprocess |
 | `file` | file path | `inotify`-based tail with rotation detection |
-| `stdin` | — | raw stdin, useful for piping |
+| `stdin` | — | raw stdin |
+
+## Data types (`fml-core`)
+
+```rust
+pub struct LogEntry {
+    pub seq: u64,                          // monotonic sequence number
+    pub ts: chrono::DateTime<Utc>,
+    pub level: Option<LogLevel>,
+    pub source: FeedKind,
+    pub producer: String,
+    pub message: String,
+    pub fields: IndexMap<String, String>,  // parsed key-value pairs
+}
+
+pub enum LogLevel { Trace, Debug, Info, Warn, Error, Fatal }
+pub enum FeedKind { Docker, Kubernetes, File, Stdin }
+```
 
 ## Crate layout
 
 ```
-fml/                  workspace root + binary entry point (src/main.rs)
+fml/                  workspace root + binary (src/main.rs)
 ├── crates/
 │   ├── fml-core/     LogEntry, LogLevel, FeedKind, Config, Store, Search, Normalizer
 │   ├── fml-feeds/    Feed-specific ingestors (docker, kubernetes, file, stdin)
-│   └── fml-tui/      Ratatui application shell, widgets, themes, event system
-└── docs/             This documentation tree
+│   └── fml-tui/      Ratatui app shell, widgets, themes, event system
+└── docs/
 ```
