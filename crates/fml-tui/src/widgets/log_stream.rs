@@ -19,7 +19,6 @@
 use std::cell::Cell;
 
 use crate::event::{AppEvent, Direction};
-use tracing;
 use crate::theme::Theme;
 use fml_core::LogEntry;
 use ratatui::{
@@ -31,6 +30,7 @@ use ratatui::{
         Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget,
     },
 };
+use tracing;
 
 const PAGE_STEP: usize = 10;
 
@@ -100,8 +100,7 @@ impl LogStreamState {
                 // If cursor scrolled above the window, pull the window up
                 let (start, _) = self.visible_range();
                 if self.cursor < start {
-                    self.scroll_offset =
-                        total.saturating_sub(self.cursor + self.height());
+                    self.scroll_offset = total.saturating_sub(self.cursor + self.height());
                 }
                 tracing::debug!(
                     cursor = self.cursor,
@@ -186,7 +185,11 @@ pub struct LogStream<'a> {
 
 impl<'a> LogStream<'a> {
     pub fn new(state: &'a LogStreamState, focused: bool, theme: &'a Theme) -> Self {
-        Self { state, focused, theme }
+        Self {
+            state,
+            focused,
+            theme,
+        }
     }
 }
 
@@ -222,11 +225,9 @@ impl Widget for LogStream<'_> {
             .iter()
             .enumerate()
             .map(|(row, entry)| {
-                let mut line =
-                    render_entry(entry, self.state.show_timestamps, self.theme);
+                let mut line = render_entry(entry, self.state.show_timestamps, self.theme);
                 if Some(row) == cursor_row {
-                    line = line
-                        .patch_style(Style::default().add_modifier(Modifier::REVERSED));
+                    line = line.patch_style(Style::default().add_modifier(Modifier::REVERSED));
                 }
                 line
             })
@@ -260,7 +261,10 @@ impl Widget for LogStream<'_> {
         // The strip is inside the block borders so the track height exactly
         // matches the number of visible content rows — keeping thumb position
         // mathematically aligned with the entries on screen.
-        let text_area = Rect { width: inner.width.saturating_sub(1), ..inner };
+        let text_area = Rect {
+            width: inner.width.saturating_sub(1),
+            ..inner
+        };
         let sb_area = Rect {
             x: inner.right().saturating_sub(1),
             width: 1,

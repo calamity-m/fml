@@ -6,7 +6,6 @@
 //! - `Space` toggles the selection state of the focused node.
 
 use crate::event::{AppEvent, Direction};
-use tracing;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -14,6 +13,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, List, ListItem, ListState, StatefulWidget, Widget},
 };
+use tracing;
 
 // ---------------------------------------------------------------------------
 // Selection state
@@ -75,7 +75,10 @@ pub struct ProducerTreeState {
 impl ProducerTreeState {
     /// Return the id of the node at the cursor, if any.
     fn cursor_id(&self) -> Option<String> {
-        self.visible().into_iter().nth(self.cursor).map(|(_, n)| n.id.clone())
+        self.visible()
+            .into_iter()
+            .nth(self.cursor)
+            .map(|(_, n)| n.id.clone())
     }
 
     /// Flatten the tree into `(depth, &node)` pairs, respecting expanded state.
@@ -156,6 +159,7 @@ fn flatten(nodes: &[TreeNode], depth: usize) -> Vec<(usize, &TreeNode)> {
 }
 
 /// Set the `expanded` flag on the node with `id`. Returns `true` if found.
+#[allow(clippy::ptr_arg)] // Vec retained for future dynamic-size tree operations
 fn set_expanded(nodes: &mut Vec<TreeNode>, id: &str, expanded: bool) -> bool {
     for node in nodes.iter_mut() {
         if node.id == id {
@@ -170,6 +174,7 @@ fn set_expanded(nodes: &mut Vec<TreeNode>, id: &str, expanded: bool) -> bool {
 }
 
 /// Flip the `expanded` flag on the node with `id`. Returns `true` if found.
+#[allow(clippy::ptr_arg)]
 fn toggle_expanded(nodes: &mut Vec<TreeNode>, id: &str) -> bool {
     for node in nodes.iter_mut() {
         if node.id == id {
@@ -207,6 +212,7 @@ fn is_leaf(nodes: &[TreeNode], id: &str) -> bool {
 /// descendant via [`set_all_selection`]. On the way back up the call stack,
 /// each ancestor recomputes its own state from its children via
 /// [`compute_selection_from_children`].
+#[allow(clippy::ptr_arg)]
 fn toggle_selection(nodes: &mut Vec<TreeNode>, id: &str) -> bool {
     for node in nodes.iter_mut() {
         if node.id == id {
@@ -229,6 +235,7 @@ fn toggle_selection(nodes: &mut Vec<TreeNode>, id: &str) -> bool {
 }
 
 /// Recursively set every node in the subtree to `state`.
+#[allow(clippy::ptr_arg)]
 fn set_all_selection(nodes: &mut Vec<TreeNode>, state: NodeSelection) {
     for node in nodes.iter_mut() {
         node.selection = state;
@@ -245,8 +252,12 @@ fn compute_selection_from_children(children: &[TreeNode]) -> NodeSelection {
     if children.is_empty() {
         return NodeSelection::Unselected;
     }
-    let all_sel = children.iter().all(|c| c.selection == NodeSelection::Selected);
-    let all_unsel = children.iter().all(|c| c.selection == NodeSelection::Unselected);
+    let all_sel = children
+        .iter()
+        .all(|c| c.selection == NodeSelection::Selected);
+    let all_unsel = children
+        .iter()
+        .all(|c| c.selection == NodeSelection::Unselected);
     if all_sel {
         NodeSelection::Selected
     } else if all_unsel {
@@ -267,8 +278,16 @@ pub struct ProducerTree<'a> {
 }
 
 impl<'a> ProducerTree<'a> {
-    pub fn new(state: &'a ProducerTreeState, focused: bool, theme: &'a crate::theme::Theme) -> Self {
-        Self { state, focused, theme }
+    pub fn new(
+        state: &'a ProducerTreeState,
+        focused: bool,
+        theme: &'a crate::theme::Theme,
+    ) -> Self {
+        Self {
+            state,
+            focused,
+            theme,
+        }
     }
 }
 
@@ -301,16 +320,19 @@ impl Widget for ProducerTree<'_> {
                     "▶ "
                 };
                 let sel = match node.selection {
-                    NodeSelection::Selected   => " ✓",
+                    NodeSelection::Selected => " ✓",
                     NodeSelection::Unselected => " ○",
-                    NodeSelection::Partial    => " ◐",
+                    NodeSelection::Partial => " ◐",
                 };
-                ListItem::new(Line::from(format!("{}{}{}{}", indent, expand, node.label, sel)))
+                ListItem::new(Line::from(format!(
+                    "{}{}{}{}",
+                    indent, expand, node.label, sel
+                )))
             })
             .collect();
 
-        let list = List::new(items)
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let list =
+            List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         let mut list_state = ListState::default().with_selected(Some(self.state.cursor));
         StatefulWidget::render(list, inner, buf, &mut list_state);

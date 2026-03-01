@@ -22,7 +22,11 @@ pub struct TabBar<'a> {
 
 impl<'a> TabBar<'a> {
     pub fn new(tabs: &'a [TabState], active: usize, theme: &'a Theme) -> Self {
-        Self { tabs, active, _theme: theme }
+        Self {
+            tabs,
+            active,
+            _theme: theme,
+        }
     }
 }
 

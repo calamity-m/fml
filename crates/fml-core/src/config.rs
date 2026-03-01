@@ -52,9 +52,15 @@ pub struct UiConfig {
     pub producer_pane_width_pct: u16,
 }
 
-fn default_show_timestamps() -> bool { true }
-fn default_timestamp_format() -> String { "%H:%M:%S%.3f".to_string() }
-fn default_producer_pane_width_pct() -> u16 { 25 }
+fn default_show_timestamps() -> bool {
+    true
+}
+fn default_timestamp_format() -> String {
+    "%H:%M:%S%.3f".to_string()
+}
+fn default_producer_pane_width_pct() -> u16 {
+    25
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -87,14 +93,30 @@ pub struct KeybindingsConfig {
     pub scroll_to_tail: String,
 }
 
-fn default_toggle_focus() -> String { "Tab".to_string() }
-fn default_query_focus() -> String { "/".to_string() }
-fn default_greed_up() -> String { "]".to_string() }
-fn default_greed_down() -> String { "[".to_string() }
-fn default_yank_producer() -> String { "y".to_string() }
-fn default_correlate() -> String { "c".to_string() }
-fn default_export() -> String { "e".to_string() }
-fn default_scroll_to_tail() -> String { "G".to_string() }
+fn default_toggle_focus() -> String {
+    "Tab".to_string()
+}
+fn default_query_focus() -> String {
+    "/".to_string()
+}
+fn default_greed_up() -> String {
+    "]".to_string()
+}
+fn default_greed_down() -> String {
+    "[".to_string()
+}
+fn default_yank_producer() -> String {
+    "y".to_string()
+}
+fn default_correlate() -> String {
+    "c".to_string()
+}
+fn default_export() -> String {
+    "e".to_string()
+}
+fn default_scroll_to_tail() -> String {
+    "G".to_string()
+}
 
 impl Default for KeybindingsConfig {
     fn default() -> Self {
@@ -131,7 +153,10 @@ impl Config {
         }
 
         config::Config::builder()
-            .add_source(config::File::from_str(DEFAULT_CONFIG, config::FileFormat::Toml))
+            .add_source(config::File::from_str(
+                DEFAULT_CONFIG,
+                config::FileFormat::Toml,
+            ))
             .add_source(config::File::from(path.as_path()).required(false))
             .build()?
             .try_deserialize()
@@ -141,7 +166,10 @@ impl Config {
     /// Return the built-in defaults without touching the filesystem.
     pub fn defaults() -> Self {
         config::Config::builder()
-            .add_source(config::File::from_str(DEFAULT_CONFIG, config::FileFormat::Toml))
+            .add_source(config::File::from_str(
+                DEFAULT_CONFIG,
+                config::FileFormat::Toml,
+            ))
             .build()
             .expect("built-in default config must be valid TOML")
             .try_deserialize()
@@ -157,8 +185,7 @@ fn config_path() -> PathBuf {
     std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
-                .join(".config")
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
         })
         .join("fml")
         .join("config.toml")

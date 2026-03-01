@@ -113,8 +113,10 @@ impl App {
 
         let root = TreeNode::new("__root__", "fml-demo").with_children(children);
 
-        let mut tree = ProducerTreeState::default();
-        tree.nodes = vec![root];
+        let tree = ProducerTreeState {
+            nodes: vec![root],
+            ..Default::default()
+        };
 
         let show_timestamps = config.ui.show_timestamps;
         let mut stream = LogStreamState::new(entries);

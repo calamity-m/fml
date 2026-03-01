@@ -9,7 +9,6 @@
 //! - `[` / `]` adjust the greed level (0–10).
 
 use crate::event::{AppEvent, Direction};
-use tracing;
 use crate::theme::Theme;
 use ratatui::{
     buffer::Buffer,
@@ -18,6 +17,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph, Widget},
 };
+use tracing;
 
 const GREED_MAX: u8 = 10;
 
@@ -112,7 +112,11 @@ pub struct QueryBar<'a> {
 
 impl<'a> QueryBar<'a> {
     pub fn new(state: &'a QueryBarState, focused: bool, theme: &'a Theme) -> Self {
-        Self { state, focused, theme }
+        Self {
+            state,
+            focused,
+            theme,
+        }
     }
 
     /// Absolute terminal position of the text cursor within this widget's
@@ -134,9 +138,7 @@ impl Widget for QueryBar<'_> {
             self.theme.border_unfocused
         };
 
-        let block = Block::bordered()
-            .title("Query")
-            .border_style(border_style);
+        let block = Block::bordered().title("Query").border_style(border_style);
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -161,7 +163,12 @@ impl Widget for QueryBar<'_> {
         // Greed slider:  greed: [=====-----] 5
         let filled = self.state.greed as usize;
         let empty = GREED_MAX as usize - filled;
-        let slider = format!("greed:[{}{}]{}", "=".repeat(filled), "-".repeat(empty), self.state.greed);
+        let slider = format!(
+            "greed:[{}{}]{}",
+            "=".repeat(filled),
+            "-".repeat(empty),
+            self.state.greed
+        );
         Paragraph::new(Line::from(slider)).render(chunks[1], buf);
     }
 }
