@@ -47,4 +47,5 @@ When adding or modifying a feature:
 4. **For normalizer changes**, run `cargo insta review` and commit updated snapshots intentionally — never silently accept snapshot diffs.
 5. **For performance-sensitive paths** (normalizer, search pipeline, store insert), run `cargo bench` before and after and check for regressions with `critcmp`. Applies from Phase 3 onward.
 6. **For any regression or suspected bottleneck**, generate a flamegraph with `--profile-time 10` before touching code.
-7. **At the end of each phase**, run the `/code-review` skill to review all changes before merging via `gh pr`.
+7. **When writing or updating documentation files**, use the `write-docs` skill
+8. **At the end of each phase**, run the `/code-review` skill to review all changes before merging via `gh pr`.
