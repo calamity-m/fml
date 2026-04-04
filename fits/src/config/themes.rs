@@ -42,7 +42,7 @@ pub fn resolve_theme(
         .iter()
         .find(|builtin| builtin.name == normalized)
         .ok_or_else(|| {
-            FmlError::ThemeError(format!(
+            FmlError::Theme(format!(
                 "unknown theme `{theme_name}`; available themes: {}",
                 available_theme_names().join(", ")
             ))
@@ -62,13 +62,13 @@ fn parse_theme_source(theme_name: &str, source: &str) -> Result<ThemeConfig, Fml
         .add_source(File::from_str(source, FileFormat::Toml))
         .build()
         .map_err(|error| {
-            FmlError::ThemeError(format!(
+            FmlError::Theme(format!(
                 "failed to parse built-in theme `{theme_name}`: {error}"
             ))
         })?
         .try_deserialize::<ThemeConfig>()
         .map_err(|error| {
-            FmlError::ThemeError(format!(
+            FmlError::Theme(format!(
                 "failed to parse built-in theme `{theme_name}`: {error}"
             ))
         })

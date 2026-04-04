@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(config)?;
 
-    let _ = app.run().await?;
+    app.run().await?;
 
     info!("exiting");
 

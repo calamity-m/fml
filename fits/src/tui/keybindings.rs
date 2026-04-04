@@ -183,7 +183,7 @@ impl ResolvedBindings {
 /// ```
 pub fn parse_key_spec(spec: &str) -> Result<KeyBinding, FmlError> {
     if spec.is_empty() {
-        return Err(FmlError::KeybindingError(
+        return Err(FmlError::Keybinding(
             "key spec must not be empty".to_string(),
         ));
     }
@@ -202,7 +202,7 @@ pub fn parse_key_spec(spec: &str) -> Result<KeyBinding, FmlError> {
             "alt" => modifiers |= KeyModifiers::ALT,
             "shift" => modifiers |= KeyModifiers::SHIFT,
             other => {
-                return Err(FmlError::KeybindingError(format!(
+                return Err(FmlError::Keybinding(format!(
                     "unknown modifier {other:?} in key spec {spec:?}"
                 )));
             }
@@ -249,7 +249,7 @@ fn parse_key_code(name: &str, spec: &str) -> Result<KeyCode, FmlError> {
             let c = single.chars().next().expect("count == 1 guarantees a char");
             Ok(KeyCode::Char(c))
         }
-        _ => Err(FmlError::KeybindingError(format!(
+        _ => Err(FmlError::Keybinding(format!(
             "unrecognized key name {name:?} in spec {spec:?}"
         ))),
     }
@@ -273,7 +273,7 @@ pub fn validate_conflicts(actions: &[(&str, &[KeyBinding])]) -> Result<(), FmlEr
             let key = (binding.code.clone(), binding.modifiers);
             match seen.get(&key) {
                 Some(first) if *first != *action_name => {
-                    return Err(FmlError::KeybindingError(format!(
+                    return Err(FmlError::Keybinding(format!(
                         "keybinding conflict: the same binding is assigned to both \
                          '{first}' and '{action_name}'"
                     )));

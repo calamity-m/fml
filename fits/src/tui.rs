@@ -74,7 +74,6 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
                         CrosstermEvent::FocusLost => TuiEvent::FocusLost,
                         CrosstermEvent::FocusGained => TuiEvent::FocusGained,
                         CrosstermEvent::Paste(s) => TuiEvent::Paste(s),
-                        _ => continue,
                     }
                     Some(Err(err)) => {
                         warn!(error = %err, "tui event reader received crossterm error");
@@ -101,11 +100,8 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
     match event {
         TuiEvent::Render => todo!(),
-        TuiEvent::FocusGained => todo!(),
-        TuiEvent::FocusLost => todo!(),
         TuiEvent::Mouse(mouse_event) => todo!(),
         TuiEvent::Resize(_, _) => todo!(),
-        TuiEvent::Paste(_) => todo!(),
         TuiEvent::Scroll(scroll_direction) => todo!(),
         TuiEvent::Input(key) => {
             let (static_key, custom_key) = keybinds::match_key(&key, &state.tui.focused);
@@ -130,5 +126,6 @@ pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
             }
         }
         TuiEvent::Error(_) => todo!(),
+        _ => {}
     }
 }
