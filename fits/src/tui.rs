@@ -99,7 +99,25 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 /// Process a TUI event
 pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
     match event {
-        TuiEvent::Render => todo!(),
+        TuiEvent::Render => {
+            // Attempt to render the TUI, and if we fail send a new event
+            // to our event handler telling them the TUI failed to render.
+            if let Err(err) = render(state) {
+                if let Err(err) = state
+                    .events
+                    .tui_event_tx
+                    .send(TuiEvent::Error(err.to_string()))
+                {
+                    // If we failed to send even the error that we errored, we
+                    // can't really do anything but either panic or log and try
+                    // again in the render event.
+                    error!(
+                        "failed to send tui_event error after failed render - {}",
+                        err
+                    );
+                }
+            }
+        }
         TuiEvent::Mouse(mouse_event) => todo!(),
         TuiEvent::Resize(_, _) => todo!(),
         TuiEvent::Scroll(scroll_direction) => todo!(),
@@ -128,4 +146,15 @@ pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
         TuiEvent::Error(_) => todo!(),
         _ => {}
     }
+}
+
+pub fn render(state: &mut AppState) -> Result<(), FmlError> {
+    state.terminal.draw(|frame| {
+        let areas = layout::build_layout(frame.area(), state.config.tui.sidebar_width_percent);
+
+        // Reassign the areas to our state to cache them for next render
+        state.tui.areas = areas;
+    })?;
+
+    Ok(())
 }

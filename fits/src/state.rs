@@ -24,10 +24,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config) -> Result<Self, FmlError> {
         Ok(AppState {
-            config,
+            config: config.clone(),
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
             events: EventBus::new(),
-            tui: TuiState::new(),
+            tui: TuiState::new(&config.tui)?,
         })
     }
 }
