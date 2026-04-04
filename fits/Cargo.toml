@@ -1,0 +1,40 @@
+[package]
+name = "fits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+notify.workspace = true
+regex.workspace = true
+bollard.workspace = true
+futures-util.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+anyhow.workspace = true
+color-eyre.workspace = true
+lazy_static.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-error.workspace = true
+tracing-appender.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+fake.workspace = true
+rand.workspace = true
+config.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+vergen-gix = { version = "9.1.0", features = ["build", "cargo"] }

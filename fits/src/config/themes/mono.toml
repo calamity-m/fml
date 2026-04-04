@@ -1,0 +1,16 @@
+background = "#141414"
+border_unfocused_fg = "DarkGray"
+query_prompt_fg = "Gray"
+log_selected_bg = "DarkGray"
+log_match_fg = "White"
+log_match_bold = true
+status_dim = true
+
+[log_level]
+default_fg = "Gray"
+trace_fg = "DarkGray"
+debug_fg = "DarkGray"
+info_fg = "Gray"
+warn_fg = "White"
+error_fg = "LightGray"
+fatal_fg = "White"

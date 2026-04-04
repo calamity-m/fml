@@ -1,0 +1,59 @@
+[workspace]
+members = [
+    "fits",
+]
+default-members = ["fits"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Terminal-first log parsing, aggregation, and search for fast debugging."
+
+
+[workspace.dependencies]
+clap = { version = "4.6", features = ["derive", "env", "string", "wrap_help", "unicode", "cargo"] }
+crossterm = { version = "0.29", features = ["serde", "event-stream"] }
+tokio = { version = "1", features = ["full", "tracing"] }
+ratatui = { version = "0.30", features = ["serde"] }
+ratatui-textarea = "0.8.0"
+tui-popup = "0.7.2"
+tui-scrollview = "0.6.2"
+async-trait = "0.1.89"
+chrono = { version = "0.4.44", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+glob = "0.3.3"
+hyper = { version = "1.8.1", features = ["full"] }
+hyper-util = { version = "0.1.20", features = ["full"] }
+http-body-util = "0.1.3"
+tower = "0.5.3"
+tokio-util = { version = "0.7.18", features = ["compat"] }
+config = "0.15"
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+thiserror = "2.0.18"
+bytes = "1.11.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["chrono", "env-filter", "serde_json"] }
+tracing-appender = "0.2.4"
+notify = "8.2.0"
+regex = "1.12.3"
+bollard = { version = "0.20.1", features = ["chrono"] }
+futures-util = "0.3.32"
+nucleo-matcher = "0.3.1"
+kube = "3.0.1"
+k8s-openapi = { version = "0.27.1", features = ["latest"] }
+color-eyre = "0.6.5"
+tracing-error = "0.2.1"
+lazy_static = "1.5.0"
+fake = "4.4.0"
+rand = "0.9.2"
+syn = { version = "2.0.100", features = ["full", "parsing"] }
+toml = "0.8.23"
+
+insta = "1"
+
+fml-core = { path = "fml-core" }
+fml-logs = { path = "fml-logs" }
+fml-ui = { path = "fml-ui" }
