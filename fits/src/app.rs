@@ -1,14 +1,13 @@
-use std::{io::stdout, time::Duration};
+use std::io::stdout;
 
 use crossterm::{
     ExecutableCommand as _,
     event::EnableMouseCapture,
     terminal::{EnterAlternateScreen, enable_raw_mode},
 };
-use tokio::time::interval;
 use tracing::info;
 
-use crate::{config::Config, error::FmlError, event::TuiEvent, state::AppState, tui};
+use crate::{error::FmlError, state::AppState, tui};
 
 pub struct App {
     pub state: AppState,

@@ -1,13 +1,10 @@
 use std::io::{Stdout, stdout};
 
 use ratatui::{Terminal, prelude::CrosstermBackend};
-use tokio::sync::mpsc;
 
 use crate::{
     config::Config,
     error::FmlError,
-    event::{QuitEvent, TuiEvent},
-    message::Message,
     state::{events_bus::EventBus, tui_state::TuiState},
 };
 

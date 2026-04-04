@@ -11,7 +11,7 @@ use crossterm::{
 };
 use futures_util::{FutureExt as _, StreamExt as _};
 use tokio::{sync::mpsc, time::interval};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     config::tui::TuiConfig,
@@ -100,6 +100,8 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
     match event {
         TuiEvent::Render => {
+            trace!("received render event");
+
             // Attempt to render the TUI, and if we fail send a new event
             // to our event handler telling them the TUI failed to render.
             if let Err(err) = render(state) {
@@ -118,10 +120,14 @@ pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
                 }
             }
         }
-        TuiEvent::Mouse(mouse_event) => todo!(),
-        TuiEvent::Resize(_, _) => todo!(),
-        TuiEvent::Scroll(scroll_direction) => todo!(),
+        TuiEvent::Mouse(mouse) => {
+            debug!("received mouse event - {:?}", mouse);
+        }
+        TuiEvent::Scroll(scroll) => {
+            debug!("received scroll event - {:?}", scroll);
+        }
         TuiEvent::Input(key) => {
+            debug!("received input event - {:?}", key);
             let (static_key, custom_key) = keybinds::match_key(&key, &state.tui.focused);
 
             // First we process static keys as higher relevance
@@ -143,7 +149,11 @@ pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
                 keybinds::CustomizedKeyAction::None => {}
             }
         }
-        TuiEvent::Error(_) => todo!(),
+        TuiEvent::Error(err) => {
+            error!("received error event - {}", err);
+
+            todo!()
+        }
         _ => {}
     }
 }

@@ -1,3 +1,4 @@
+use clap::Parser;
 use color_eyre::Result;
 use std::fs;
 use tracing::info;
@@ -11,9 +12,68 @@ mod config;
 mod error;
 mod event;
 mod log;
-mod message;
 mod state;
 mod tui;
+
+#[derive(Parser, Debug)]
+#[command(author, version = version(), about)]
+pub struct Cli {
+    /// Tick rate, i.e. number of ticks per second
+    #[arg(short, long)]
+    pub tick_rate: Option<f64>,
+
+    /// Frame rate, i.e. number of frames per second
+    #[arg(short, long)]
+    pub frame_rate: Option<f64>,
+
+    /// Enable debug mode, which will enable logging output
+    #[arg(short, long)]
+    pub debug: bool,
+
+    /// Start the app with a synthetic demo log source
+    #[arg(long)]
+    pub demo: bool,
+
+    /// Override the configured TUI theme name
+    #[arg(long)]
+    pub theme: Option<String>,
+}
+
+pub fn version() -> String {
+    format!(
+        "\n
+Version: {}
+Build Date: {}
+
+Config Dir: {}
+",
+        env!("CARGO_PKG_VERSION"),
+        env!("VERGEN_BUILD_DATE"),
+        config::default_config_dir()
+    )
+}
+
+impl Cli {
+    pub fn init(&self) -> Result<(Config, Option<tracing_appender::non_blocking::WorkerGuard>)> {
+        let mut config = Config::new()?;
+
+        if self.debug {
+            config.enable_logging = true;
+        }
+
+        if let Some(frame_rate) = self.frame_rate {
+            config.tui.frame_rate = frame_rate;
+        }
+
+        if let Some(theme) = &self.theme {
+            config.tui.theme = theme.clone();
+        }
+
+        let guard = init(&config)?;
+
+        Ok((config, guard))
+    }
+}
 pub fn init(
     config: &crate::config::Config,
 ) -> color_eyre::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
@@ -44,17 +104,19 @@ pub fn init(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Setup eyre panic hook
     color_eyre::install()?;
 
-    let config = Config::new()?;
-    let _guard = init(&config)?;
+    // Parse our CLI
+    let cli = Cli::try_parse()?;
 
+    // Init the CLI to retrieve our config and tracing guard
+    let (config, _guard) = cli.init()?;
     info!("config and logging intialized");
 
+    // Create the app and run it
     let mut app = App::new(config)?;
-
     app.run().await?;
-
     info!("exiting");
 
     Ok(())
