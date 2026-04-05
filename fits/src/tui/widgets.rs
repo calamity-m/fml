@@ -9,6 +9,7 @@ use crate::{
 
 pub mod log_pane;
 pub mod query_box;
+pub mod scrollable;
 pub mod status_bar;
 
 pub trait FmlWidget {
