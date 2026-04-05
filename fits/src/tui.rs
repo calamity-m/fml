@@ -3,6 +3,7 @@ use std::{io::stdout, time::Duration};
 pub mod keybindings;
 pub mod keybinds;
 pub mod layout;
+pub mod widgets;
 
 use crossterm::{
     ExecutableCommand as _,
@@ -97,34 +98,22 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 }
 
 /// Process a TUI event
-pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
-    match event {
+pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
+    let new_state = match event {
         TuiEvent::Render => {
             trace!("received render event");
 
-            // Attempt to render the TUI, and if we fail send a new event
-            // to our event handler telling them the TUI failed to render.
-            if let Err(err) = render(state) {
-                if let Err(err) = state
-                    .events
-                    .tui_event_tx
-                    .send(TuiEvent::Error(err.to_string()))
-                {
-                    // If we failed to send even the error that we errored, we
-                    // can't really do anything but either panic or log and try
-                    // again in the render event.
-                    error!(
-                        "failed to send tui_event error after failed render - {}",
-                        err
-                    );
-                }
-            }
+            render(state)
         }
         TuiEvent::Mouse(mouse) => {
             debug!("received mouse event - {:?}", mouse);
+
+            state
         }
         TuiEvent::Scroll(scroll) => {
             debug!("received scroll event - {:?}", scroll);
+
+            state
         }
         TuiEvent::Input(key) => {
             debug!("received input event - {:?}", key);
@@ -148,23 +137,50 @@ pub fn handle_tui_event(event: TuiEvent, state: &mut AppState) {
                 keybinds::CustomizedKeyAction::ShowInfo => todo!(),
                 keybinds::CustomizedKeyAction::None => {}
             }
+
+            state
         }
         TuiEvent::Error(err) => {
             error!("received error event - {}", err);
 
             todo!()
         }
-        _ => {}
-    }
+        _ => state,
+    };
+
+    new_state
 }
 
-pub fn render(state: &mut AppState) -> Result<(), FmlError> {
-    state.terminal.draw(|frame| {
+// Take ownership of the app state and mutate it, rendering to the terminal, then return
+// ownership of the updated state
+fn render(mut state: AppState) -> AppState {
+    let result = state.terminal.draw(|frame| {
         let areas = layout::build_layout(frame.area(), state.config.tui.sidebar_width_percent);
 
+        for widget in state.widgets.iter_mut() {
+            if let Some(&area) = areas.get(&widget.slot()) {
+                widget.render(frame, area, &mut state.tui);
+            }
+        }
         // Reassign the areas to our state to cache them for next render
         state.tui.areas = areas;
-    })?;
+    });
 
-    Ok(())
+    if let Err(err) = result {
+        if let Err(err) = state
+            .events
+            .tui_event_tx
+            .send(TuiEvent::Error(err.to_string()))
+        {
+            // If we failed to send even the error that we errored, we
+            // can't really do anything but either panic or log and try
+            // again in the render event.
+            error!(
+                "failed to send tui_event error after failed render - {}",
+                err
+            );
+        }
+    }
+
+    state
 }

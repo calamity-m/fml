@@ -9,6 +9,7 @@ description.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
+ratatui-textarea.workspace = true
 tokio.workspace = true
 bytes.workspace = true
 notify.workspace = true
@@ -31,6 +32,7 @@ fake.workspace = true
 rand.workspace = true
 config.workspace = true
 serde.workspace = true
+
 
 [dev-dependencies]
 insta.workspace = true

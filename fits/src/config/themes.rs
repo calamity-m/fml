@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn default_theme_name_uses_configured_default_theme() {
         let custom_theme = ThemeConfig {
-            query_prompt_fg: Color::LightBlue,
+            secondary_accent_fg: Color::LightBlue,
             ..ThemeConfig::default()
         };
 
@@ -97,7 +97,7 @@ mod tests {
         let resolved = resolve_theme("ocean", &ThemeConfig::default()).unwrap();
 
         assert_eq!(resolved.background, Some(Color::Rgb(0x11, 0x1C, 0x2D)));
-        assert_eq!(resolved.query_prompt_fg, Color::LightCyan);
+        assert_eq!(resolved.secondary_accent_fg, Color::LightCyan);
         assert_eq!(resolved.log_match_fg, Color::Cyan);
         assert_eq!(resolved.log_level.info_fg, Color::LightBlue);
     }
@@ -106,7 +106,7 @@ mod tests {
     fn theme_lookup_is_case_insensitive() {
         let resolved = resolve_theme("FoReSt", &ThemeConfig::default()).unwrap();
 
-        assert_eq!(resolved.query_prompt_fg, Color::LightGreen);
+        assert_eq!(resolved.secondary_accent_fg, Color::LightGreen);
     }
 
     #[test]
@@ -114,7 +114,7 @@ mod tests {
         let resolved = resolve_theme("kanagawa_dragon", &ThemeConfig::default()).unwrap();
 
         assert_eq!(resolved.background, Some(Color::Rgb(0x18, 0x16, 0x16)));
-        assert_eq!(resolved.query_prompt_fg, Color::Rgb(0x87, 0xA9, 0x87));
+        assert_eq!(resolved.secondary_accent_fg, Color::Rgb(0x87, 0xA9, 0x87));
         assert_eq!(resolved.log_level.warn_fg, Color::Rgb(0xC4, 0xB2, 0x8A));
     }
 
@@ -139,6 +139,6 @@ query_prompt_fg = "#40A0FF"
         .unwrap();
 
         assert_eq!(theme.background, Some(Color::Rgb(0x10, 0x20, 0x30)));
-        assert_eq!(theme.query_prompt_fg, Color::Rgb(0x40, 0xA0, 0xFF));
+        assert_eq!(theme.secondary_accent_fg, Color::Rgb(0x40, 0xA0, 0xFF));
     }
 }

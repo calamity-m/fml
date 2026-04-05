@@ -93,9 +93,13 @@ pub struct ThemeConfig {
     #[serde(default = "default_border_unfocused_fg")]
     pub border_unfocused_fg: Color,
 
-    /// Foreground color for the query prompt character (`>`).
-    #[serde(default = "default_query_prompt_fg")]
-    pub query_prompt_fg: Color,
+    /// Primary accent foreground color for things like status bar keys
+    #[serde(default = "default_primary_accent_fg")]
+    pub primary_accent_fg: Color,
+
+    /// Secondary accent foreground color for things like the query prompt character (`>`).
+    #[serde(default = "default_secondary_accent_fg")]
+    pub secondary_accent_fg: Color,
 
     /// Background color for the currently selected log row.
     #[serde(default = "default_log_selected_bg")]
@@ -123,7 +127,8 @@ impl Default for ThemeConfig {
         Self {
             background: None,
             border_unfocused_fg: default_border_unfocused_fg(),
-            query_prompt_fg: default_query_prompt_fg(),
+            primary_accent_fg: default_primary_accent_fg(),
+            secondary_accent_fg: default_secondary_accent_fg(),
             log_selected_bg: default_log_selected_bg(),
             log_match_fg: default_log_match_fg(),
             log_level: LogLevelThemeConfig::default(),
@@ -212,8 +217,12 @@ fn default_border_unfocused_fg() -> Color {
     Color::DarkGray
 }
 
-fn default_query_prompt_fg() -> Color {
+fn default_secondary_accent_fg() -> Color {
     Color::DarkGray
+}
+
+fn default_primary_accent_fg() -> Color {
+    Color::Yellow
 }
 
 fn default_log_selected_bg() -> Color {

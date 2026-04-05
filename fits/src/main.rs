@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     info!("config and logging intialized");
 
     // Create the app and run it
-    let mut app = App::new(config)?;
+    let app = App::new(config)?;
     app.run().await?;
     info!("exiting");
 

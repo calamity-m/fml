@@ -20,7 +20,7 @@ impl App {
         })
     }
 
-    pub async fn run(&mut self) -> Result<(), FmlError> {
+    pub async fn run(mut self) -> Result<(), FmlError> {
         // Setup the ratatui terminal tui
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
@@ -34,7 +34,7 @@ impl App {
         );
 
         // Sit on our event loop until we want to quit
-        self.event_loop().await;
+        self = self.event_loop().await;
 
         // Cleanup the tui - we will expect and panic here
         // so if our exit doesn't happen cleanly, we can rely
@@ -46,7 +46,7 @@ impl App {
     }
 
     /// Handle events as part of the main program
-    async fn event_loop(&mut self) {
+    async fn event_loop(mut self) -> Self {
         // Handle events as our main loop
 
         loop {
@@ -57,10 +57,13 @@ impl App {
 
                 },
                 Some(event) = self.state.events.tui_event_rx.recv() => {
-                    tui::handle_tui_event(event, &mut self.state);
+                    let new_state = tui::handle_tui_event(event, self.state);
+                    self.state = new_state;
                 },
 
             }
         }
+
+        self
     }
 }
