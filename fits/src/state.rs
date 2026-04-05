@@ -6,7 +6,7 @@ use crate::{
     config::Config,
     error::FmlError,
     state::{events_bus::EventBus, tui_state::TuiState},
-    tui::widgets::{FmlWidget, query_box::QueryBox, status_bar::StatusBar},
+    tui::widgets::{FmlWidget, log_pane::LogPane, query_box::QueryBox, status_bar::StatusBar},
 };
 
 pub mod events_bus;
@@ -26,7 +26,11 @@ impl AppState {
         Ok(AppState {
             config: config.clone(),
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
-            widgets: vec![Box::new(QueryBox::new()), Box::new(StatusBar::new())],
+            widgets: vec![
+                Box::new(QueryBox::new()),
+                Box::new(StatusBar::new()),
+                Box::new(LogPane::new()),
+            ],
             events: EventBus::new(),
             tui: TuiState::new(&config.tui)?,
         })

@@ -3,16 +3,14 @@ use std::collections::HashMap;
 use ratatui::layout::Rect;
 use ratatui_textarea::TextArea;
 
+pub mod log_pane_state;
+
+use log_pane_state::LogPaneState;
+
 use crate::{
     config::tui::{ThemeConfig, TuiConfig},
     error::FmlError,
-    tui::{
-        layout::Slot,
-        widgets::{
-            FmlWidget,
-            query_box::{self, QueryBox},
-        },
-    },
+    tui::{layout::Slot, widgets::query_box},
 };
 
 pub struct TuiState {
@@ -20,6 +18,7 @@ pub struct TuiState {
     pub areas: HashMap<Slot, Rect>,
     pub selected_theme: ThemeConfig,
     pub query_box_textarea: TextArea<'static>,
+    pub log_pane: LogPaneState,
 }
 
 impl TuiState {
@@ -30,6 +29,7 @@ impl TuiState {
             areas: HashMap::new(),
             selected_theme,
             query_box_textarea: query_box::query_box_textarea(),
+            log_pane: LogPaneState::default(),
         })
     }
 }
