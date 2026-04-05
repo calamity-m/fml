@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "fits",
+    "fits", "fml-scroll",
 ]
 default-members = ["fits"]
 resolver = "3"
