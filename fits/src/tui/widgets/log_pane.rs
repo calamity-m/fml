@@ -1,13 +1,21 @@
 use ratatui::{
     style::Style,
-    widgets::{Block, List, ListItem, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
 };
+use tracing::{debug, error, trace};
 
 use crate::{
     config::tui::ThemeConfig,
     event::TuiEvent,
-    state::tui_state::TuiState,
-    tui::{layout::Slot, widgets::FmlWidget},
+    state::{events_bus::EventBus, tui_state::TuiState},
+    tui::{
+        keybinds::{self, StaticKeyAction},
+        layout::Slot,
+        widgets::FmlWidget,
+    },
 };
 
 pub struct LogPane {}
@@ -51,14 +59,18 @@ impl FmlWidget for LogPane {
 
         // How many rows fit in the pane. Each ListItem is one line, so this is
         // also the number of visible log entries at any time.
-        let area_height = inner_area.height as usize;
+        state.log_pane.height = inner_area.height as usize;
 
         // Build a window of items slightly larger than the visible area so that
         // fast scrolling doesn't hit a visible edge before the next frame renders.
         // Eventually this slices the real backing buffer; for now it's fake data.
-        let window_size = area_height + 20;
+        let window_size = state.log_pane.height + 20;
         let items: Vec<ListItem> = (0..window_size)
-            .map(|i| ListItem::new(format!("[INFO] log line {i:>3} — lorem ipsum dolor sit amet")))
+            .map(|i| {
+                ListItem::new(format!(
+                    "[INFO] log line {i:>3} — lorem ipsum dolor sit amet"
+                ))
+            })
             .collect();
         let item_count = items.len();
 
@@ -75,26 +87,6 @@ impl FmlWidget for LogPane {
                     .bg(state.selected_theme.log_selected_bg),
             );
 
-        // We don't store ListState in TuiState because it only knows about indices
-        // into the Vec<ListItem> we just built — which is a throwaway slice, not
-        // the full log buffer. Instead we keep `absolute_cursor` in LogPaneState
-        // (an index into the full display list) and translate it here each frame.
-        //
-        // The window is centred on the cursor: we show `area_height / 2` rows
-        // above and below it. `window_start` is where that window begins in the
-        // full display list.
-        //
-        //   full display list:  [ 0 ... window_start ... cursor ... window_end ... N ]
-        //   Vec<ListItem>:                [ 0       ... cursor - window_start ... ]
-        //                                              ↑
-        //                                    this is what ListState.selected points at
-        //
-        // `saturating_sub` prevents underflow when the cursor is near the top.
-        let window_start = state
-            .log_pane
-            .absolute_cursor
-            .saturating_sub(area_height / 2);
-
         // ListState is constructed fresh every frame — it's just a render detail,
         // not persistent state. `with_selected` tells the List which item in the
         // Vec to highlight.
@@ -104,7 +96,7 @@ impl FmlWidget for LogPane {
         // These must use the same window_start or the highlight lands on the
         // wrong row.
         let mut list_state =
-            ListState::default().with_selected(Some(state.log_pane.absolute_cursor - window_start));
+            ListState::default().with_selected(Some(state.log_pane.absolute_cursor));
 
         frame.render_stateful_widget(list, inner_area, &mut list_state);
 
@@ -125,7 +117,7 @@ impl FmlWidget for LogPane {
         // size — it doesn't know what fraction of the content is on screen.
         // content_length is a placeholder until the backing buffer exists.
         let mut scrollbar_state = ScrollbarState::new(item_count)
-            .viewport_content_length(area_height)
+            .viewport_content_length(state.log_pane.height)
             .position(state.log_pane.absolute_cursor);
 
         // Inset by 1 row top and bottom so the track sits between the border
@@ -135,6 +127,11 @@ impl FmlWidget for LogPane {
             height: area.height.saturating_sub(2),
             ..area
         };
+
+        debug!(
+            "absolute_cursor - {}, log_pane.height: {}",
+            state.log_pane.absolute_cursor, state.log_pane.height
+        );
 
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -147,7 +144,63 @@ impl FmlWidget for LogPane {
         );
     }
 
-    fn handle_event(&self, _event: TuiEvent, _state: &mut TuiState) {
-        todo!()
+    fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {
+        match event {
+            TuiEvent::Scroll(scroll) => {
+                debug!("received scroll event - {:?}", scroll);
+
+                match scroll {
+                    ScrollDirection::Forward => {
+                        state.log_pane.absolute_cursor = state
+                            .log_pane
+                            .absolute_cursor
+                            .saturating_add(1)
+                            // TODO this needs to be items.len or something in the future
+                            .min(state.log_pane.height - 1);
+
+                        // TODO this actually needs to be real
+                        // if state.tui.log_pane.absolute_cursor - window-start >= items.len
+                        //   window-start += 1
+                    }
+                    ScrollDirection::Backward => {
+                        state.log_pane.absolute_cursor =
+                            state.log_pane.absolute_cursor.saturating_sub(1);
+                    }
+                }
+            }
+            TuiEvent::Input(key) => {
+                debug!("received input event - {:?}", key);
+                let (static_key, custom_key) = keybinds::match_key(&key, &state.focused);
+
+                // First we process static keys as higher relevance
+
+                match static_key {
+                    StaticKeyAction::ScrollUp => {
+                        if let Err(err) = events_bus
+                            .tui_event_tx
+                            .send(TuiEvent::Scroll(ScrollDirection::Backward))
+                        {
+                            error!("failed to send scroll up tui event - {}", err);
+                        }
+                    }
+                    StaticKeyAction::ScrollDown => {
+                        if let Err(err) = events_bus
+                            .tui_event_tx
+                            .send(TuiEvent::Scroll(ScrollDirection::Forward))
+                        {
+                            error!("failed to send scroll down tui event - {}", err);
+                        }
+                    }
+                    _ => {}
+                }
+
+                match custom_key {
+                    keybinds::CustomizedKeyAction::ToggleHelp => todo!(),
+                    keybinds::CustomizedKeyAction::ShowInfo => todo!(),
+                    keybinds::CustomizedKeyAction::None => {}
+                }
+            }
+            _ => {}
+        }
     }
 }

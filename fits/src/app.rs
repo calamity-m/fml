@@ -30,7 +30,7 @@ impl App {
         // blocking event loop
         tui::spawn(
             &self.state.config.tui,
-            self.state.events.tui_event_tx.clone(),
+            self.state.event_bus.tui_event_tx.clone(),
         );
 
         // Sit on our event loop until we want to quit
@@ -51,12 +51,12 @@ impl App {
 
         loop {
             tokio::select! {
-                _ = self.state.events.quit_rx.recv() =>  {
+                _ = self.state.event_bus.quit_rx.recv() =>  {
                     info!("quitting tui");
                     break;
 
                 },
-                Some(event) = self.state.events.tui_event_rx.recv() => {
+                Some(event) = self.state.event_bus.tui_event_rx.recv() => {
                     let new_state = tui::handle_tui_event(event, self.state);
                     self.state = new_state;
                 },

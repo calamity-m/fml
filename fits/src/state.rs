@@ -16,8 +16,7 @@ pub struct AppState {
     pub config: Config,
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
     pub widgets: Vec<Box<dyn FmlWidget>>,
-
-    pub events: EventBus,
+    pub event_bus: EventBus,
     pub tui: TuiState,
 }
 
@@ -31,7 +30,7 @@ impl AppState {
                 Box::new(StatusBar::new()),
                 Box::new(LogPane::new()),
             ],
-            events: EventBus::new(),
+            event_bus: EventBus::new(),
             tui: TuiState::new(&config.tui)?,
         })
     }

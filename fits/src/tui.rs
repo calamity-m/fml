@@ -11,6 +11,7 @@ use crossterm::{
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
 use futures_util::{FutureExt as _, StreamExt as _};
+use ratatui::widgets::ScrollDirection;
 use tokio::{sync::mpsc, time::interval};
 use tracing::{debug, error, trace, warn};
 
@@ -99,54 +100,44 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 
 /// Process a TUI event
 pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
-    let new_state = match event {
+    let mut new_state = match event {
         TuiEvent::Render => {
             trace!("received render event");
 
             render(state)
-        }
-        TuiEvent::Mouse(mouse) => {
-            debug!("received mouse event - {:?}", mouse);
-
-            state
-        }
-        TuiEvent::Scroll(scroll) => {
-            debug!("received scroll event - {:?}", scroll);
-
-            state
-        }
-        TuiEvent::Input(key) => {
-            debug!("received input event - {:?}", key);
-            let (static_key, custom_key) = keybinds::match_key(&key, &state.tui.focused);
-
-            // First we process static keys as higher relevance
-
-            match static_key {
-                StaticKeyAction::Quit => {
-                    if let Err(err) = state.events.quit_tx.try_send(QuitEvent {}) {
-                        // We have failed to send out quit here, which to be frank
-                        // is pretty bad. So, what can we do? PANIC PANIC PANIC.
-                        panic!("failed to quit - {}", err);
-                    }
-                }
-                StaticKeyAction::None => {}
-            }
-
-            match custom_key {
-                keybinds::CustomizedKeyAction::ToggleHelp => todo!(),
-                keybinds::CustomizedKeyAction::ShowInfo => todo!(),
-                keybinds::CustomizedKeyAction::None => {}
-            }
-
-            state
         }
         TuiEvent::Error(err) => {
             error!("received error event - {}", err);
 
             todo!()
         }
+        TuiEvent::Input(key) => {
+            let (static_key, _) = keybinds::match_key(&key, &state.tui.focused);
+
+            match static_key {
+                StaticKeyAction::Quit => {
+                    if let Err(err) = state.event_bus.quit_tx.try_send(QuitEvent {}) {
+                        // We have failed to send out quit here, which to be frank
+                        // is pretty bad. So, what can we do? PANIC PANIC PANIC.
+                        panic!("failed to quit - {}", err);
+                    }
+                }
+                _ => {}
+            }
+
+            state
+        }
         _ => state,
     };
+
+    for widget in new_state.widgets.iter_mut() {
+        if new_state.tui.focused == widget.slot() {
+            // Propagate the event to the focused
+            // widget, not any further
+            widget.handle_event(event, &mut new_state.tui, &mut new_state.event_bus);
+            break;
+        }
+    }
 
     new_state
 }
@@ -168,7 +159,7 @@ fn render(mut state: AppState) -> AppState {
 
     if let Err(err) = result {
         if let Err(err) = state
-            .events
+            .event_bus
             .tui_event_tx
             .send(TuiEvent::Error(err.to_string()))
         {

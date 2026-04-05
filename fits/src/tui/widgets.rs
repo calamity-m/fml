@@ -3,7 +3,7 @@ use ratatui::{Frame, buffer::Buffer, layout::Rect};
 use crate::{
     config::tui::TuiConfig,
     event::TuiEvent,
-    state::{AppState, tui_state::TuiState},
+    state::{AppState, events_bus::EventBus, tui_state::TuiState},
     tui::layout::Slot,
 };
 
@@ -19,5 +19,5 @@ pub trait FmlWidget {
     fn render(&self, frame: &mut Frame, area: Rect, state: &mut TuiState);
 
     /// Handle tui event
-    fn handle_event(&self, event: TuiEvent, state: &mut TuiState);
+    fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus);
 }

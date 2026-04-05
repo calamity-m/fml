@@ -10,7 +10,7 @@ use tracing::{info, trace};
 use crate::{
     config::tui::{ThemeConfig, TuiConfig},
     event::TuiEvent,
-    state::{AppState, tui_state::TuiState},
+    state::{AppState, events_bus::EventBus, tui_state::TuiState},
     tui::{layout::Slot, widgets::FmlWidget},
 };
 
@@ -91,7 +91,7 @@ impl FmlWidget for QueryBox {
         frame.render_widget(&state.query_box_textarea, chunks[1]);
     }
 
-    fn handle_event(&self, event: TuiEvent, state: &mut TuiState) {
+    fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {
         todo!()
     }
 }

@@ -8,7 +8,7 @@ use tracing::trace;
 
 use crate::{
     event::TuiEvent,
-    state::tui_state::TuiState,
+    state::{events_bus::EventBus, tui_state::TuiState},
     tui::{layout::Slot, widgets::FmlWidget},
 };
 
@@ -87,7 +87,7 @@ impl FmlWidget for StatusBar {
         );
     }
 
-    fn handle_event(&self, event: TuiEvent, state: &mut TuiState) {
+    fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {
         todo!()
     }
 }
