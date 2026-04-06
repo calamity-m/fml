@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use ratatui_textarea::TextArea;
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
 
 use crate::{
     config::tui::{ThemeConfig, TuiConfig},
@@ -92,6 +92,13 @@ impl FmlWidget for QueryBox {
     }
 
     fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {
-        todo!()
+        debug!("handling event for query_box - {:?}", event);
+
+        match event {
+            TuiEvent::Input(key) => {
+                state.query_box_textarea.input(key);
+            }
+            _ => {}
+        }
     }
 }

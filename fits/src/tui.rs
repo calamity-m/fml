@@ -20,7 +20,7 @@ use crate::{
     error::FmlError,
     event::{QuitEvent, TuiEvent},
     state::AppState,
-    tui::keybinds::StaticKeyAction,
+    tui::{keybinds::StaticKeyAction, layout::Slot},
 };
 
 /// Start the TUI
@@ -120,6 +120,19 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                         // We have failed to send out quit here, which to be frank
                         // is pretty bad. So, what can we do? PANIC PANIC PANIC.
                         panic!("failed to quit - {}", err);
+                    }
+                }
+                StaticKeyAction::FocusCycle => {
+                    let focusable = Slot::focusable();
+
+                    // Find the index of our current focused slot by iteration
+                    if let Some(index) = focusable.iter().position(|s| *s == state.tui.focused) {
+                        // Create a new state with the focus incremented by 1
+                        let mut focused_state = state;
+                        focused_state.tui.focused = focusable[(index + 1) % focusable.len()];
+
+                        // Return our new state
+                        return focused_state;
                     }
                 }
                 _ => {}

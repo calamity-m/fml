@@ -1,5 +1,6 @@
 pub struct QuitEvent {}
 
+#[derive(Debug)]
 pub enum TuiEvent {
     /// A render tick has been requested
     Render,

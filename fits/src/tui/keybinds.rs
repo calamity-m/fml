@@ -18,17 +18,20 @@ pub enum CustomizedKeyAction {
 pub enum StaticKeyAction {
     /// Quit the app
     Quit,
-    /// A non-match
-    None,
+    /// Cycle the focus
+    FocusCycle,
     /// Scroll up
     ScrollUp,
     /// Scroll down
     ScrollDown,
+    /// A non-match
+    None,
 }
 
 pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedKeyAction) {
     let static_key = match (key.code, key.modifiers) {
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => StaticKeyAction::Quit,
+        (KeyCode::Tab, _) => StaticKeyAction::FocusCycle,
         (KeyCode::Up | KeyCode::Char('k'), _) => StaticKeyAction::ScrollUp,
         (KeyCode::Down | KeyCode::Char('j'), _) => StaticKeyAction::ScrollDown,
         // ... more arms as needed

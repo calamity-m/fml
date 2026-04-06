@@ -38,10 +38,9 @@ impl FmlWidget for InfoPane {
 
     fn handle_event(
         &self,
-        event: crate::event::TuiEvent,
-        state: &mut crate::state::tui_state::TuiState,
-        events_bus: &mut crate::state::events_bus::EventBus,
+        _event: crate::event::TuiEvent,
+        _state: &mut crate::state::tui_state::TuiState,
+        _events_bus: &mut crate::state::events_bus::EventBus,
     ) {
-        todo!()
     }
 }
