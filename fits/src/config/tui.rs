@@ -214,7 +214,7 @@ impl LogLevelThemeConfig {
 }
 
 fn default_border_unfocused_fg() -> Color {
-    Color::DarkGray
+    Color::Reset
 }
 
 fn default_secondary_accent_fg() -> Color {

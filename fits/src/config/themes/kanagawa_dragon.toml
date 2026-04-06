@@ -1,5 +1,6 @@
 background = "#181616"
-border_unfocused_fg = "#625E5A"
+border_unfocused_fg = "Reset"
+primary_accent_fg = "#C4B28A"
 query_prompt_fg = "#87A987"
 log_selected_bg = "#2D4F67"
 log_match_fg = "#8BA4B0"

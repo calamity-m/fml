@@ -24,10 +24,10 @@ pub trait FmlWidget {
     fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus);
 
     fn border_style(&self, focused: &Slot, theme: &ThemeConfig) -> Style {
-        // When this pane has focus, use the full surface style (brighter border).
-        // When unfocused, dim the border so the focused pane stands out.
+        // When this pane has focus, highlight the border with the primary accent color.
+        // When unfocused, use the terminal default so the focused pane stands out.
         if *focused == self.slot() {
-            return theme.surface_style();
+            return theme.surface_style().fg(theme.primary_accent_fg);
         }
 
         theme.surface_style().fg(theme.border_unfocused_fg)
