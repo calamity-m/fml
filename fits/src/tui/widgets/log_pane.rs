@@ -31,16 +31,6 @@ impl LogPane {
         LogPane {}
     }
 
-    pub fn border_style(&self, focused: &Slot, theme: &ThemeConfig) -> Style {
-        // When this pane has focus, use the full surface style (brighter border).
-        // When unfocused, dim the border so the focused pane stands out.
-        if focused == &Slot::Main {
-            return theme.surface_style();
-        }
-
-        theme.surface_style().fg(theme.border_unfocused_fg)
-    }
-
     fn title(&self, state: &LogPaneState) -> String {
         let base = match state.mode {
             ScrollMode::Tail => "TAIL",

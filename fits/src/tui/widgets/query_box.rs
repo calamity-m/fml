@@ -32,14 +32,6 @@ impl QueryBox {
     pub fn new() -> Self {
         QueryBox {}
     }
-
-    pub fn border_style(&self, focused: &Slot, theme: &ThemeConfig) -> Style {
-        if focused == &Slot::QueryBox {
-            return theme.surface_style();
-        }
-
-        theme.surface_style().fg(theme.border_unfocused_fg)
-    }
 }
 
 impl FmlWidget for QueryBox {

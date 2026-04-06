@@ -1,7 +1,7 @@
-use ratatui::{Frame, buffer::Buffer, layout::Rect};
+use ratatui::{Frame, buffer::Buffer, layout::Rect, style::Style};
 
 use crate::{
-    config::tui::TuiConfig,
+    config::tui::{ThemeConfig, TuiConfig},
     event::TuiEvent,
     state::{AppState, events_bus::EventBus, tui_state::TuiState},
     tui::layout::Slot,
@@ -22,4 +22,14 @@ pub trait FmlWidget {
 
     /// Handle tui event
     fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus);
+
+    fn border_style(&self, focused: &Slot, theme: &ThemeConfig) -> Style {
+        // When this pane has focus, use the full surface style (brighter border).
+        // When unfocused, dim the border so the focused pane stands out.
+        if *focused == self.slot() {
+            return theme.surface_style();
+        }
+
+        theme.surface_style().fg(theme.border_unfocused_fg)
+    }
 }
