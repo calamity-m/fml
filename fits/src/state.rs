@@ -6,7 +6,10 @@ use crate::{
     config::Config,
     error::FmlError,
     state::{events_bus::EventBus, tui_state::TuiState},
-    tui::widgets::{FmlWidget, log_pane::LogPane, query_box::QueryBox, status_bar::StatusBar},
+    tui::widgets::{
+        FmlWidget, info_pane::InfoPane, log_pane::LogPane, preview_pane::PreviewPane,
+        query_box::QueryBox, status_bar::StatusBar,
+    },
 };
 
 pub mod events_bus;
@@ -29,6 +32,8 @@ impl AppState {
                 Box::new(QueryBox::new()),
                 Box::new(StatusBar::new()),
                 Box::new(LogPane::new()),
+                Box::new(InfoPane::new()),
+                Box::new(PreviewPane::new()),
             ],
             event_bus: EventBus::new(),
             tui: TuiState::new(&config.tui)?,

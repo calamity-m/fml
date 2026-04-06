@@ -7,7 +7,9 @@ use crate::{
     tui::layout::Slot,
 };
 
+pub mod info_pane;
 pub mod log_pane;
+pub mod preview_pane;
 pub mod query_box;
 pub mod status_bar;
 

@@ -10,7 +10,13 @@ use tracing::{debug, error, trace};
 use crate::{
     config::tui::ThemeConfig,
     event::TuiEvent,
-    state::{events_bus::EventBus, tui_state::TuiState},
+    state::{
+        events_bus::EventBus,
+        tui_state::{
+            TuiState,
+            log_pane_state::{LogPaneState, ScrollMode},
+        },
+    },
     tui::{
         keybinds::{self, StaticKeyAction},
         layout::Slot,
@@ -34,6 +40,16 @@ impl LogPane {
 
         theme.surface_style().fg(theme.border_unfocused_fg)
     }
+
+    fn title(&self, state: &LogPaneState) -> String {
+        let base = match state.mode {
+            ScrollMode::Tail => "TAIL",
+            ScrollMode::History => "HISTORY",
+            ScrollMode::Search => "SEARCH",
+        };
+
+        format!(" FML [{base}] ")
+    }
 }
 
 impl FmlWidget for LogPane {
@@ -50,7 +66,7 @@ impl FmlWidget for LogPane {
         // Draw the outer border and title. `inner_area` is the rect inside the
         // border — this is where the list actually goes.
         let block = Block::bordered()
-            .title(" Logs ")
+            .title(self.title(&state.log_pane))
             .border_style(self.border_style(&state.focused, &state.selected_theme))
             .style(state.selected_theme.surface_style());
 
