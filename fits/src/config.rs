@@ -44,6 +44,7 @@ pub struct Config {
     pub tui: tui::TuiConfig,
 
     /// Store capacity and ingest speed settings
+    #[serde(default)]
     pub store: store::StoreConfig,
 }
 
