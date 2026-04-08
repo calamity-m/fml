@@ -1,5 +1,12 @@
+use serde::Serialize;
+
+pub type SourceId = String;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Source {}
+
 /// Log severity level, normalised across all feed types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum LogLevel {
     Trace,
     Debug,
@@ -34,4 +41,35 @@ impl LogLevel {
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LogEntry {
+    /// Monotonically increasing sequence number assigned by the store on insert.
+    /// Used for ordering and deduplication.
+    pub seq: u64,
+    /// Parsed display message of the log line
+    pub msg: String,
+    /// Ingest timestamp (UTC) or log entry's parsed timestamp
+    pub ts: chrono::DateTime<chrono::Utc>,
+    /// Log level if normaliser finds one
+    pub level: Option<LogLevel>,
+    /// Source that produced this log entry
+    pub source: Source,
+    /// Ordered map of values found from the raw log entry, besides level/msg/ts
+    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NewLogEntry {
+    /// Parsed display message of the log line
+    pub msg: String,
+    /// Ingest timestamp (UTC) or log entry's parsed timestamp
+    pub ts: chrono::DateTime<chrono::Utc>,
+    /// Log level if normaliser finds one
+    pub level: Option<LogLevel>,
+    /// Source that produced this log entry
+    pub source: Source,
+    /// Ordered map of values found from the raw log entry, besides level/msg/ts
+    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
 }

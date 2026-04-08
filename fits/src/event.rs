@@ -1,3 +1,5 @@
+use crate::{log::SourceId, search::Query};
+
 pub struct QuitEvent {}
 
 #[derive(Debug)]
@@ -23,5 +25,11 @@ pub enum TuiEvent {
     /// A user input key event was received.
     Input(crossterm::event::KeyEvent),
     /// An error occurred in the event stream.
+    Error(String),
+}
+
+pub enum SearchEvent {
+    Search { query: Query, filter: Vec<SourceId> },
+    Result { results: Vec<u64> },
     Error(String),
 }

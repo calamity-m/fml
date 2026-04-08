@@ -12,7 +12,9 @@ mod config;
 mod error;
 mod event;
 mod log;
+mod search;
 mod state;
+mod store;
 mod tui;
 
 #[derive(Parser, Debug)]

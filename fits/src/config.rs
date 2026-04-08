@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::FmlError;
 
+pub mod store;
 pub mod themes;
 pub mod tui;
 
@@ -41,6 +42,9 @@ pub struct Config {
     /// TUI rendering and interaction settings.
     #[serde(default)]
     pub tui: tui::TuiConfig,
+
+    /// Store capacity and ingest speed settings
+    pub store: store::StoreConfig,
 }
 
 impl Default for Config {
@@ -51,6 +55,7 @@ impl Default for Config {
             debug_log_dir: default_debug_log_dir(),
             default_log_level: default_log_level(),
             tui: tui::TuiConfig::default(),
+            store: store::StoreConfig::default(),
         }
     }
 }

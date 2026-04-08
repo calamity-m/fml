@@ -1,4 +1,7 @@
-use std::io::{Stdout, stdout};
+use std::{
+    io::{Stdout, stdout},
+    sync::Arc,
+};
 
 use ratatui::{Terminal, prelude::CrosstermBackend};
 
@@ -6,6 +9,7 @@ use crate::{
     config::Config,
     error::FmlError,
     state::{events_bus::EventBus, tui_state::TuiState},
+    store::{LogStore, RingBufferStore},
     tui::widgets::{
         FmlWidget, info_pane::InfoPane, log_pane::LogPane, preview_pane::PreviewPane,
         query_box::QueryBox, status_bar::StatusBar,
@@ -20,11 +24,16 @@ pub struct AppState {
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
     pub widgets: Vec<Box<dyn FmlWidget>>,
     pub event_bus: EventBus,
+    pub store: Arc<dyn LogStore>,
     pub tui: TuiState,
 }
 
 impl AppState {
     pub fn new(config: Config) -> Result<Self, FmlError> {
+        let (store, store_tx) = RingBufferStore::new(config.store.clone());
+        let mut event_bus = EventBus::new();
+        event_bus.register_store_tx(store_tx);
+
         Ok(AppState {
             config: config.clone(),
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
@@ -35,7 +44,8 @@ impl AppState {
                 Box::new(InfoPane::new()),
                 Box::new(PreviewPane::new()),
             ],
-            event_bus: EventBus::new(),
+            event_bus: event_bus,
+            store: store,
             tui: TuiState::new(&config.tui)?,
         })
     }
