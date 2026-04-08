@@ -16,6 +16,10 @@ pub enum TuiEvent {
     Paste(String),
     /// A scroll action was requested in the given direction.
     Scroll(ratatui::widgets::ScrollDirection),
+    /// A scroll action to set a cursor to head was done
+    ScrollHead,
+    /// A scroll action to set a cursor to tail was done
+    ScrollTail,
     /// A user input key event was received.
     Input(crossterm::event::KeyEvent),
     /// An error occurred in the event stream.

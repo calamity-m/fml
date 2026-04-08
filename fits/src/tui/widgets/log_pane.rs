@@ -174,36 +174,46 @@ impl FmlWidget for LogPane {
                     }
                 }
             }
+            TuiEvent::ScrollHead => {
+                debug!("received scroll head event");
+                state.log_pane.absolute_cursor = 0;
+            }
+            TuiEvent::ScrollTail => {
+                debug!("received scroll tail event");
+                state.log_pane.absolute_cursor = state.log_pane.height - 1;
+            }
             TuiEvent::Input(key) => {
                 debug!("received input event - {:?}", key);
                 let (static_key, custom_key) = keybinds::match_key(&key, &state.focused);
 
                 // First we process static keys as higher relevance
 
-                match static_key {
-                    StaticKeyAction::ScrollUp => {
-                        if let Err(err) = events_bus
-                            .tui_event_tx
-                            .send(TuiEvent::Scroll(ScrollDirection::Backward))
-                        {
-                            error!("failed to send scroll up tui event - {}", err);
-                        }
-                    }
-                    StaticKeyAction::ScrollDown => {
-                        if let Err(err) = events_bus
-                            .tui_event_tx
-                            .send(TuiEvent::Scroll(ScrollDirection::Forward))
-                        {
-                            error!("failed to send scroll down tui event - {}", err);
-                        }
-                    }
-                    _ => {}
+                let result = match static_key {
+                    StaticKeyAction::ScrollUp => events_bus
+                        .tui_event_tx
+                        .send(TuiEvent::Scroll(ScrollDirection::Backward)),
+                    StaticKeyAction::ScrollDown => events_bus
+                        .tui_event_tx
+                        .send(TuiEvent::Scroll(ScrollDirection::Forward)),
+                    _ => Ok(()),
+                };
+
+                if let Err(err) = result {
+                    error!("failed to send tui event for static key match - {}", err)
                 }
 
-                match custom_key {
-                    keybinds::CustomizedKeyAction::ToggleHelp => todo!(),
-                    keybinds::CustomizedKeyAction::ShowInfo => todo!(),
-                    keybinds::CustomizedKeyAction::None => {}
+                let result = match custom_key {
+                    keybinds::CustomizedKeyAction::ScrollHead => {
+                        events_bus.tui_event_tx.send(TuiEvent::ScrollHead)
+                    }
+                    keybinds::CustomizedKeyAction::ScrollTail => {
+                        events_bus.tui_event_tx.send(TuiEvent::ScrollTail)
+                    }
+                    _ => Ok(()),
+                };
+
+                if let Err(err) = result {
+                    error!("failed to send tui event for static key match - {}", err)
                 }
             }
             _ => {}

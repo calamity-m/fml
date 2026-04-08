@@ -10,6 +10,10 @@ pub enum CustomizedKeyAction {
     /// Show the detail popup for the selected log entry.
     /// Active in global scope but only fires when the log pane is focused.
     ShowInfo,
+    /// Scroll top the top (head)
+    ScrollHead,
+    /// Scroll to the bottom (tail)
+    ScrollTail,
     /// A non-match
     None,
 }
@@ -38,7 +42,11 @@ pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedK
         _ => StaticKeyAction::None,
     };
 
-    let custom_key = CustomizedKeyAction::None;
+    let custom_key = match (key.code, key.modifiers) {
+        (KeyCode::Char('g') | KeyCode::Home, _) => CustomizedKeyAction::ScrollHead,
+        (KeyCode::Char('G') | KeyCode::End, _) => CustomizedKeyAction::ScrollTail,
+        _ => CustomizedKeyAction::None,
+    };
 
     (static_key, custom_key)
 }
