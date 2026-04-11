@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 pub type SourceId = String;
@@ -57,7 +59,7 @@ pub struct LogEntry {
     /// Source that produced this log entry
     pub source: Source,
     /// Ordered map of values found from the raw log entry, besides level/msg/ts
-    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
+    pub fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -70,6 +72,6 @@ pub struct NewLogEntry {
     pub level: Option<LogLevel>,
     /// Source that produced this log entry
     pub source: Source,
-    /// Ordered map of values found from the raw log entry, besides level/msg/ts
-    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Map of values found from the raw log entry, besides level/msg/ts
+    pub fields: HashMap<String, serde_json::Value>,
 }

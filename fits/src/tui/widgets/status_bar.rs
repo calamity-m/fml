@@ -79,15 +79,24 @@ impl FmlWidget for StatusBar {
 
         frame.render_widget(Block::default().style(base_style), area);
         frame.render_widget(
-            Paragraph::new(Line::from(spans))
-                .block(Block::default().padding(Padding { left: 1, right: 0, top: 0, bottom: 0 })),
+            Paragraph::new(Line::from(spans)).block(Block::default().padding(Padding {
+                left: 1,
+                right: 0,
+                top: 0,
+                bottom: 0,
+            })),
             chunks[0],
         );
         frame.render_widget(
             Paragraph::new(format!("{version}"))
                 .alignment(Alignment::Right)
                 .style(base_style)
-                .block(Block::default().padding(Padding { left: 0, right: 1, top: 0, bottom: 0 })),
+                .block(Block::default().padding(Padding {
+                    left: 0,
+                    right: 1,
+                    top: 0,
+                    bottom: 0,
+                })),
             chunks[1],
         );
     }
