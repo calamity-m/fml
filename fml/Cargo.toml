@@ -1,5 +1,5 @@
 [package]
-name = "fits"
+name = "fml"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

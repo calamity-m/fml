@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "fits",
+    "fml",
 ]
-default-members = ["fits"]
+default-members = ["fml"]
 resolver = "3"
 
 [workspace.package]
