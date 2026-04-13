@@ -11,7 +11,6 @@ use crossterm::{
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
 use futures_util::{FutureExt as _, StreamExt as _};
-use ratatui::widgets::ScrollDirection;
 use tokio::{sync::mpsc, time::interval};
 use tracing::{debug, error, trace, warn};
 

@@ -40,6 +40,7 @@ pub enum TuiEvent {
 /// A single field match within a search result.
 ///
 /// Stores the field key plus the character offsets of the matched span.
+#[derive(Debug)]
 pub struct Match {
     /// Field name that contains the matched text.
     key: String,
@@ -53,6 +54,7 @@ pub struct Match {
 ///
 /// The hit is keyed by the entry sequence id and may contain multiple field
 /// matches for that entry.
+#[derive(Debug)]
 pub struct SearchHit {
     /// Sequence id of the matching log entry.
     seq_id: u64,
@@ -70,9 +72,15 @@ pub enum Query {
 /// Messages exchanged with the search subsystem.
 pub enum SearchEvent {
     /// Request execution of a search query, optionally restricted to sources.
-    Search { query: Query, filter: Vec<SourceId> },
+    Search {
+        query: Query,
+        sources: Vec<SourceId>,
+    },
     /// Completed search results for a query.
-    Result { results: Vec<SearchHit> },
+    Result {
+        results: Vec<SearchHit>,
+        request_id: u64,
+    },
     /// An error occurred while executing a search request.
     Error(String),
 }

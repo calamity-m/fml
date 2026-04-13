@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::FmlError;
 
+pub mod search;
 pub mod store;
 pub mod themes;
 pub mod tui;
@@ -46,6 +47,10 @@ pub struct Config {
     /// Store capacity and ingest speed settings
     #[serde(default)]
     pub store: store::StoreConfig,
+
+    /// Search config and settings
+    #[serde(default)]
+    pub search: search::SearchConfig,
 }
 
 impl Default for Config {
@@ -57,6 +62,7 @@ impl Default for Config {
             default_log_level: default_log_level(),
             tui: tui::TuiConfig::default(),
             store: store::StoreConfig::default(),
+            search: search::SearchConfig::default(),
         }
     }
 }
