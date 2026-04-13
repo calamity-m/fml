@@ -238,10 +238,9 @@ impl LogStore for RingBufferStore {
                     in_range
                 })
                 .filter_map(|&seq| {
-                    // Sequence ID can be derived into index via mod'ing the capacity.
-                    // Fetching them after that is easy.
-
-                    let index = (seq % self.config.capacity as u64) as usize;
+                    // VecDeque pop_front() shifts logical indices, so index 0 is
+                    // always the oldest entry. Offset from front, not mod capacity.
+                    let index = (seq - retained_lower) as usize;
                     let entry = state.entries.get(index);
                     if entry.is_none() {
                         warn!(
@@ -258,5 +257,271 @@ impl LogStore for RingBufferStore {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use chrono::Utc;
+
+    use super::*;
+    use crate::config::store::StoreConfig;
+    use crate::log::{LogLevel, NewLogEntry, Source};
+
+    fn test_config(capacity: usize) -> StoreConfig {
+        StoreConfig {
+            capacity,
+            writer_log_internal: 100,
+            channel_capacity: 64,
+        }
+    }
+
+    fn make_entry(msg: &str) -> NewLogEntry {
+        NewLogEntry {
+            msg: msg.to_string(),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: Source {},
+            fields: HashMap::new(),
+        }
+    }
+
+    /// Send entries through the channel and drop the sender so the writer
+    /// task flushes everything before we read.
+    async fn populate(
+        tx: &mpsc::Sender<NewLogEntry>,
+        msgs: &[&str],
+    ) {
+        for msg in msgs {
+            tx.send(make_entry(msg)).await.unwrap();
+        }
+    }
+
+    /// Convenience: wait for the writer task to drain by dropping the sender
+    /// and yielding until the store reflects the expected count.
+    async fn flush_and_wait(tx: mpsc::Sender<NewLogEntry>, store: &Arc<dyn LogStore>, expected_upper: u64) {
+        drop(tx);
+        // Give the writer task time to drain
+        for _ in 0..100 {
+            if store.bounds().1 >= expected_upper {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "store did not reach expected upper bound {} (got {:?})",
+            expected_upper,
+            store.bounds()
+        );
+    }
+
+    // --- bounds ---
+
+    #[tokio::test]
+    async fn empty_store_has_zero_bounds() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        drop(tx);
+        tokio::task::yield_now().await;
+        assert_eq!(store.bounds(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn bounds_reflect_inserted_entries() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b", "c"]).await;
+        flush_and_wait(tx, &store, 3).await;
+
+        assert_eq!(store.bounds(), (1, 3));
+    }
+
+    #[tokio::test]
+    async fn bounds_advance_after_eviction() {
+        let (store, tx) = RingBufferStore::new(test_config(3));
+        // Insert 5 entries into a capacity-3 buffer: entries 1,2 get evicted
+        populate(&tx, &["a", "b", "c", "d", "e"]).await;
+        flush_and_wait(tx, &store, 5).await;
+
+        let (lo, hi) = store.bounds();
+        assert_eq!(lo, 3);
+        assert_eq!(hi, 5);
+    }
+
+    // --- clear ---
+
+    #[tokio::test]
+    async fn clear_empties_the_store() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b"]).await;
+        flush_and_wait(tx, &store, 2).await;
+
+        store.clear().unwrap();
+        assert_eq!(store.bounds(), (0, 0));
+    }
+
+    // --- fetch_range ---
+
+    #[tokio::test]
+    async fn fetch_range_returns_all_entries() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b", "c"]).await;
+        flush_and_wait(tx, &store, 3).await;
+
+        let mut out = Vec::new();
+        store.fetch_range(1, 3, &mut out).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].msg, "a");
+        assert_eq!(out[1].msg, "b");
+        assert_eq!(out[2].msg, "c");
+    }
+
+    #[tokio::test]
+    async fn fetch_range_subset() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b", "c", "d"]).await;
+        flush_and_wait(tx, &store, 4).await;
+
+        let mut out = Vec::new();
+        store.fetch_range(2, 3, &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].msg, "b");
+        assert_eq!(out[1].msg, "c");
+    }
+
+    #[tokio::test]
+    async fn fetch_range_clamps_to_retained() {
+        let (store, tx) = RingBufferStore::new(test_config(3));
+        // Insert 5 entries, only seq 3,4,5 remain
+        populate(&tx, &["a", "b", "c", "d", "e"]).await;
+        flush_and_wait(tx, &store, 5).await;
+
+        // Request range 1..5 — should clamp to 3..5
+        let mut out = Vec::new();
+        store.fetch_range(1, 5, &mut out).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].msg, "c");
+        assert_eq!(out[1].msg, "d");
+        assert_eq!(out[2].msg, "e");
+    }
+
+    #[tokio::test]
+    async fn fetch_range_entirely_outside_returns_empty() {
+        let (store, tx) = RingBufferStore::new(test_config(3));
+        populate(&tx, &["a", "b", "c", "d", "e"]).await;
+        flush_and_wait(tx, &store, 5).await;
+
+        // Request range that was evicted
+        let mut out = Vec::new();
+        store.fetch_range(1, 2, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_range_inverted_bounds_returns_empty() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b"]).await;
+        flush_and_wait(tx, &store, 2).await;
+
+        let mut out = Vec::new();
+        store.fetch_range(5, 1, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_range_empty_store_returns_empty() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        drop(tx);
+        tokio::task::yield_now().await;
+
+        let mut out = Vec::new();
+        store.fetch_range(1, 10, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    // --- fetch_requested ---
+
+    #[tokio::test]
+    async fn fetch_requested_returns_entries_by_seq() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b", "c", "d"]).await;
+        flush_and_wait(tx, &store, 4).await;
+
+        let mut out = Vec::new();
+        store.fetch_requested(&[2, 4], &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+        // Verify we got the right entries by seq
+        let seqs: Vec<u64> = out.iter().map(|e| e.seq).collect();
+        assert!(seqs.contains(&2));
+        assert!(seqs.contains(&4));
+    }
+
+    #[tokio::test]
+    async fn fetch_requested_skips_evicted_seqs() {
+        let (store, tx) = RingBufferStore::new(test_config(3));
+        populate(&tx, &["a", "b", "c", "d", "e"]).await;
+        flush_and_wait(tx, &store, 5).await;
+
+        // Seq 1 and 2 were evicted — requesting them should filter them out
+        let mut out = Vec::new();
+        store.fetch_requested(&[1, 2, 4], &mut out).unwrap();
+        // Only seq 4 is in range (3..5)
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].seq, 4);
+    }
+
+    #[tokio::test]
+    async fn fetch_requested_empty_store() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        drop(tx);
+        tokio::task::yield_now().await;
+
+        let mut out = Vec::new();
+        store.fetch_requested(&[1, 2, 3], &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_requested_empty_request() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b"]).await;
+        flush_and_wait(tx, &store, 2).await;
+
+        let mut out = Vec::new();
+        store.fetch_requested(&[], &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    // --- sequence numbering ---
+
+    #[tokio::test]
+    async fn sequence_ids_are_monotonic() {
+        let (store, tx) = RingBufferStore::new(test_config(8));
+        populate(&tx, &["a", "b", "c", "d", "e"]).await;
+        flush_and_wait(tx, &store, 5).await;
+
+        let mut out = Vec::new();
+        store.fetch_range(1, 5, &mut out).unwrap();
+        for w in out.windows(2) {
+            assert_eq!(w[1].seq, w[0].seq + 1, "sequence ids must be consecutive");
+        }
+    }
+
+    // --- eviction ---
+
+    #[tokio::test]
+    async fn eviction_preserves_newest_entries() {
+        let (store, tx) = RingBufferStore::new(test_config(3));
+        populate(&tx, &["a", "b", "c", "d", "e"]).await;
+        flush_and_wait(tx, &store, 5).await;
+
+        let mut out = Vec::new();
+        let (lo, hi) = store.bounds();
+        store.fetch_range(lo, hi, &mut out).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].msg, "c");
+        assert_eq!(out[1].msg, "d");
+        assert_eq!(out[2].msg, "e");
     }
 }
