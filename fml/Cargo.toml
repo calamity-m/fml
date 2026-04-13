@@ -38,6 +38,8 @@ serde.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+serial_test = "3.4.0"
+tempfile = "3.27.0"
 
 [build-dependencies]
 anyhow.workspace = true
