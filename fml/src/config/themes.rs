@@ -133,7 +133,7 @@ mod tests {
             "hex-test",
             r##"
 background = "#102030"
-query_prompt_fg = "#40A0FF"
+secondary_accent_fg = "#40A0FF"
 "##,
         )
         .unwrap();

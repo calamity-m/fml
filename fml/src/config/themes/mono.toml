@@ -1,7 +1,7 @@
 background = "#141414"
 border_unfocused_fg = "Reset"
 primary_accent_fg = "White"
-query_prompt_fg = "Gray"
+secondary_accent_fg = "Gray"
 log_selected_bg = "DarkGray"
 log_match_fg = "White"
 log_match_bold = true
