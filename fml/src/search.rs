@@ -117,6 +117,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     middle_seq_id,
                     buffer,
                     sources,
+                    state.store.clone(),
                     request_id,
                     state.event_bus.search_event_tx.clone(),
                 ),
