@@ -10,16 +10,69 @@
 //! correlated with the active request so outdated responses do not overwrite
 //! newer state.
 
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::{
-    event::{Query, SearchEvent},
+    event::{Query, SearchEvent, SearchHit},
+    log::LogEntry,
     state::AppState,
 };
 
 pub mod fuzzy;
 pub mod history;
 pub mod tail;
+
+pub(crate) enum EmitOutcome {
+    Sent,
+    ReceiverGone,
+}
+
+/// Maps already-selected log entries into `SearchHit`s and sends them as a
+/// single `SearchEvent::Result`. Workers own their own selection logic
+/// (tail window, history buffer, fuzzy matches) and delegate emission here.
+pub(crate) async fn emit_results(
+    entries: Vec<Arc<LogEntry>>,
+    request_id: u64,
+    tx: &mpsc::Sender<SearchEvent>,
+) -> EmitOutcome {
+    let results: Vec<SearchHit> = entries
+        .into_iter()
+        .map(|entry| SearchHit {
+            seq_id: entry.seq,
+            matches: Vec::new(),
+        })
+        .collect();
+
+    match tx
+        .send(SearchEvent::Result {
+            results,
+            request_id,
+        })
+        .await
+    {
+        Ok(()) => EmitOutcome::Sent,
+        Err(e) => {
+            warn!("search worker failed to deliver result: {e}");
+            EmitOutcome::ReceiverGone
+        }
+    }
+}
+
+pub(crate) async fn emit_error(
+    message: String,
+    tx: &mpsc::Sender<SearchEvent>,
+) -> EmitOutcome {
+    match tx.send(SearchEvent::Error(message)).await {
+        Ok(()) => EmitOutcome::Sent,
+        Err(_) => {
+            warn!("search worker failed to deliver error: receiver gone");
+            EmitOutcome::ReceiverGone
+        }
+    }
+}
 
 /// Applies a single [`SearchEvent`] to the application state.
 ///

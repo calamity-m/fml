@@ -43,11 +43,11 @@ pub enum TuiEvent {
 #[derive(Debug)]
 pub struct Match {
     /// Field name that contains the matched text.
-    key: String,
+    pub key: String,
     /// Character offset where the match starts.
-    start_char: usize,
+    pub start_char: usize,
     /// Character offset where the match ends.
-    end_char: usize,
+    pub end_char: usize,
 }
 
 /// A search result for one stored log entry.
@@ -57,9 +57,9 @@ pub struct Match {
 #[derive(Debug)]
 pub struct SearchHit {
     /// Sequence id of the matching log entry.
-    seq_id: u64,
+    pub seq_id: u64,
     /// Individual field matches found within the entry.
-    matches: Vec<Match>,
+    pub matches: Vec<Match>,
 }
 
 #[derive(Debug)]
