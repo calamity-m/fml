@@ -61,10 +61,7 @@ pub(crate) async fn emit_results(
     }
 }
 
-pub(crate) async fn emit_error(
-    message: String,
-    tx: &mpsc::Sender<SearchEvent>,
-) -> EmitOutcome {
+pub(crate) async fn emit_error(message: String, tx: &mpsc::Sender<SearchEvent>) -> EmitOutcome {
     match tx.send(SearchEvent::Error(message)).await {
         Ok(()) => EmitOutcome::Sent,
         Err(_) => {
@@ -124,6 +121,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 Query::Fuzzy(term) => fuzzy::start_fuzzy_search(
                     term,
                     sources,
+                    state.store.clone(),
                     request_id,
                     state.event_bus.search_event_tx.clone(),
                 ),

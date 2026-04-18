@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::debug;
 
-use crate::{event::SearchEvent, log::SourceId};
+use crate::{event::SearchEvent, log::SourceId, store::LogStore};
 
 /// Starts the background worker for a fuzzy text search.
 ///
@@ -12,13 +14,14 @@ use crate::{event::SearchEvent, log::SourceId};
 pub fn start_fuzzy_search(
     term: String,
     sources: Vec<SourceId>,
+    store: Arc<dyn LogStore>,
     request_id: u64,
     tx: mpsc::Sender<SearchEvent>,
 ) -> JoinHandle<()> {
     let join_handle = tokio::spawn(async move {
         debug!(
-            "spawned tail search - term: {}, sources: {:?}",
-            term, sources
+            "spawned tail search - term: {}, sources: {:?}, request_id: {}",
+            term, sources, request_id
         );
     });
 
