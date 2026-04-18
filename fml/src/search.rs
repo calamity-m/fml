@@ -10,7 +10,7 @@
 //! correlated with the active request so outdated responses do not overwrite
 //! newer state.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -104,6 +104,9 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             let new_handle = match query {
                 Query::Tail => tail::start_tail_search(
                     sources,
+                    state.config.search.tail_size,
+                    Duration::from_millis(state.config.search.tail_poll_interval_ms),
+                    state.store.clone(),
                     request_id,
                     state.event_bus.search_event_tx.clone(),
                 ),

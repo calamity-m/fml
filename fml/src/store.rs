@@ -284,7 +284,7 @@ mod tests {
             msg: msg.to_string(),
             ts: Utc::now(),
             level: Some(LogLevel::Info),
-            source: Source {},
+            source: Source { id: "test".to_string() },
             fields: HashMap::new(),
         }
     }

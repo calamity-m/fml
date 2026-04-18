@@ -5,7 +5,9 @@ use serde::Serialize;
 pub type SourceId = String;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Source {}
+pub struct Source {
+    pub id: SourceId,
+}
 
 /// Log severity level, normalised across all feed types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
