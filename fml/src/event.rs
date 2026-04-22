@@ -44,10 +44,8 @@ pub enum TuiEvent {
 pub struct Match {
     /// Field name that contains the matched text.
     pub key: String,
-    /// Character offset where the match starts.
-    pub start_char: usize,
-    /// Character offset where the match ends.
-    pub end_char: usize,
+    /// Character indice highlights.
+    pub indices: Vec<u32>,
 }
 
 /// A search result for one stored log entry.
