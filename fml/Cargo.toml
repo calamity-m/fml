@@ -34,6 +34,7 @@ fake.workspace = true
 rand.workspace = true
 config.workspace = true
 serde.workspace = true
+frizbee.workspace = true
 
 
 [dev-dependencies]

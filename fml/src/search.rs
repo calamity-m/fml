@@ -36,6 +36,7 @@ pub(crate) enum EmitOutcome {
 pub(crate) async fn emit_results(
     entries: Vec<Arc<LogEntry>>,
     request_id: u64,
+    complete: bool,
     tx: &mpsc::Sender<SearchEvent>,
 ) -> EmitOutcome {
     let results: Vec<SearchHit> = entries
@@ -50,6 +51,32 @@ pub(crate) async fn emit_results(
         .send(SearchEvent::Result {
             results,
             request_id,
+            complete,
+        })
+        .await
+    {
+        Ok(()) => EmitOutcome::Sent,
+        Err(e) => {
+            warn!("search worker failed to deliver result: {e}");
+            EmitOutcome::ReceiverGone
+        }
+    }
+}
+
+/// Sends pre-built `SearchHit`s as a single `SearchEvent::Result`. Used by
+/// workers (fuzzy) that populate per-field `Match` data; the entry-only
+/// `emit_results` helper hard-codes an empty matches vec.
+pub(crate) async fn emit_hits(
+    hits: Vec<SearchHit>,
+    request_id: u64,
+    complete: bool,
+    tx: &mpsc::Sender<SearchEvent>,
+) -> EmitOutcome {
+    match tx
+        .send(SearchEvent::Result {
+            results: hits,
+            request_id,
+            complete,
         })
         .await
     {
@@ -121,6 +148,9 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 Query::Fuzzy(term) => fuzzy::start_fuzzy_search(
                     term,
                     sources,
+                    state.config.search.fuzzy_result_limit,
+                    Duration::from_millis(state.config.search.fuzzy_scan_budget_ms),
+                    state.config.search.fuzzy_max_typos,
                     state.store.clone(),
                     request_id,
                     state.event_bus.search_event_tx.clone(),
@@ -133,10 +163,11 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
         SearchEvent::Result {
             results,
             request_id,
+            complete,
         } => {
             debug!(
-                "received search result - request_id: {}, results: {:?}",
-                request_id, results
+                "received search result - request_id: {}, complete: {}, results: {:?}",
+                request_id, complete, results
             );
 
             // Ignore stale request_id responses

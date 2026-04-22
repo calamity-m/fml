@@ -56,7 +56,7 @@ pub fn start_tail_search(
                     .collect()
             };
 
-            match emit_results(entries, request_id, &tx).await {
+            match emit_results(entries, request_id, true, &tx).await {
                 EmitOutcome::Sent => {}
                 EmitOutcome::ReceiverGone => return,
             }
@@ -123,7 +123,7 @@ mod tests {
         );
     }
 
-    async fn recv_result(rx: &mut mpsc::Receiver<SearchEvent>) -> (Vec<SearchHit>, u64) {
+    async fn recv_result(rx: &mut mpsc::Receiver<SearchEvent>) -> (Vec<SearchHit>, u64, bool) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let evt = tokio::time::timeout_at(deadline, rx.recv())
             .await
@@ -133,7 +133,8 @@ mod tests {
             SearchEvent::Result {
                 results,
                 request_id,
-            } => (results, request_id),
+                complete,
+            } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
         }
@@ -159,8 +160,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(vec![], 3, Duration::from_millis(10), store.clone(), 1, tx);
 
-        let (results, rid) = recv_result(&mut rx).await;
+        let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 1);
+        assert!(complete);
         let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
         assert_eq!(seqs, vec![3, 4, 5]);
 
@@ -181,7 +183,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(vec![], 5, Duration::from_millis(10), store.clone(), 7, tx);
 
-        let (seed, _) = recv_result(&mut rx).await;
+        let (seed, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
         assert_eq!(
             seed.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
             vec![1, 2, 3]
@@ -189,8 +192,9 @@ mod tests {
 
         populate(&store_tx, &store, &[("d", "s1"), ("e", "s1")], 5).await;
 
-        let (update, rid) = recv_result(&mut rx).await;
+        let (update, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 7);
+        assert!(complete);
         assert_eq!(
             update.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
             vec![1, 2, 3, 4, 5]
@@ -206,13 +210,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(vec![], 4, Duration::from_millis(10), store.clone(), 42, tx);
 
-        let (seed, rid) = recv_result(&mut rx).await;
+        let (seed, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 42);
+        assert!(complete);
         assert!(seed.is_empty());
 
         populate(&store_tx, &store, &[("a", "s1"), ("b", "s1")], 2).await;
 
-        let (update, _) = recv_result(&mut rx).await;
+        let (update, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
         assert_eq!(
             update.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
             vec![1, 2]
@@ -247,7 +253,8 @@ mod tests {
             tx,
         );
 
-        let (results, _) = recv_result(&mut rx).await;
+        let (results, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
         let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
         assert_eq!(seqs, vec![1, 3]);
 

@@ -41,7 +41,7 @@ pub fn start_history_search(
             }
         };
 
-        match emit_results(entries, request_id, &tx).await {
+        match emit_results(entries, request_id, true, &tx).await {
             EmitOutcome::Sent | EmitOutcome::ReceiverGone => {}
         }
     })
@@ -166,7 +166,7 @@ mod tests {
         );
     }
 
-    async fn recv_result(rx: &mut mpsc::Receiver<SearchEvent>) -> (Vec<SearchHit>, u64) {
+    async fn recv_result(rx: &mut mpsc::Receiver<SearchEvent>) -> (Vec<SearchHit>, u64, bool) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let evt = tokio::time::timeout_at(deadline, rx.recv())
             .await
@@ -176,7 +176,8 @@ mod tests {
             SearchEvent::Result {
                 results,
                 request_id,
-            } => (results, request_id),
+                complete,
+            } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
         }
@@ -196,8 +197,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_history_search(5, 2, vec![], store.clone(), 1, tx);
 
-        let (results, rid) = recv_result(&mut rx).await;
+        let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 1);
+        assert!(complete);
         let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
         assert_eq!(seqs, vec![4, 5, 6, 7]);
 
@@ -223,8 +225,9 @@ mod tests {
         let handle =
             start_history_search(10, 2, vec!["s1".to_string()], store.clone(), 42, tx);
 
-        let (results, rid) = recv_result(&mut rx).await;
+        let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 42);
+        assert!(complete);
         let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
         assert_eq!(seqs, vec![7, 9, 11, 13]);
 
@@ -250,7 +253,8 @@ mod tests {
         let handle =
             start_history_search(1000, 2, vec!["s1".to_string()], store.clone(), 7, tx);
 
-        let (results, _) = recv_result(&mut rx).await;
+        let (results, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
         let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
         assert_eq!(seqs, vec![600, 900, 1200, 1500]);
 
@@ -271,7 +275,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_history_search(100, 3, vec![], store.clone(), 1, tx);
 
-        let (results, _) = recv_result(&mut rx).await;
+        let (results, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
         let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
         assert_eq!(seqs, vec![3, 4, 5]);
 
@@ -285,8 +290,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_history_search(10, 3, vec![], store.clone(), 99, tx);
 
-        let (results, rid) = recv_result(&mut rx).await;
+        let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 99);
+        assert!(complete);
         assert!(results.is_empty());
 
         handle.abort();
@@ -307,7 +313,8 @@ mod tests {
         let handle =
             start_history_search(3, 2, vec!["s2".to_string()], store.clone(), 1, tx);
 
-        let (results, _) = recv_result(&mut rx).await;
+        let (results, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
         assert!(results.is_empty());
 
         handle.abort();

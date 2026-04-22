@@ -78,6 +78,7 @@ pub enum SearchEvent {
     Result {
         results: Vec<SearchHit>,
         request_id: u64,
+        complete: bool,
     },
     /// An error occurred while executing a search request.
     Error(String),

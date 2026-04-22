@@ -7,6 +7,15 @@ pub struct SearchConfig {
 
     #[serde(default = "default_tail_poll_interval_ms")]
     pub tail_poll_interval_ms: u64,
+
+    #[serde(default = "default_fuzzy_scan_budget_ms")]
+    pub fuzzy_scan_budget_ms: u64,
+
+    #[serde(default = "default_fuzzy_result_limit")]
+    pub fuzzy_result_limit: usize,
+
+    #[serde(default = "default_fuzzy_max_typos")]
+    pub fuzzy_max_typos: Option<u16>,
 }
 
 fn default_tail_size() -> usize {
@@ -17,11 +26,26 @@ fn default_tail_poll_interval_ms() -> u64 {
     150
 }
 
+fn default_fuzzy_scan_budget_ms() -> u64 {
+    150
+}
+
+fn default_fuzzy_result_limit() -> usize {
+    20_000
+}
+
+fn default_fuzzy_max_typos() -> Option<u16> {
+    None
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             tail_size: default_tail_size(),
             tail_poll_interval_ms: default_tail_poll_interval_ms(),
+            fuzzy_scan_budget_ms: default_fuzzy_scan_budget_ms(),
+            fuzzy_result_limit: default_fuzzy_result_limit(),
+            fuzzy_max_typos: default_fuzzy_max_typos(),
         }
     }
 }
