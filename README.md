@@ -32,32 +32,32 @@ Rough order — each step assumes the previous ones are done.
 - [x] `ProducerEvent` enum: `SourceFound`, `SourceLost`, `StoreEvent` (`fml/src/event.rs`).
 - [x] Event bus channels + `App::run` arm dispatching to `producer::handle_producer_event`.
 - [x] `ProducerState { sources: Vec<Source> }` slot on `AppState`.
-- [ ] Flesh out `handle_producer_event` (`fml/src/producer.rs:12`): on `SourceFound` push to `state.producer.sources`, on `SourceLost` remove by `SourceId`, on `StoreEvent` forward the `NewLogEntry` into `event_bus.store_tx` (currently every arm just logs).
-- [ ] Decide on a registration surface: where producers get constructed and held. `App` should own a `Vec<Box<dyn LogProducer>>` (or similar) so it can call `start` after the TUI spawns and `stop` during shutdown.
-- [ ] Pin down the shutdown contract for `LogProducer::stop` — the trait takes `&self`, so producers need internal cancellation state (e.g. `AtomicBool` or a stored `CancellationToken`) to actually halt their task.
-- [ ] Make sure each producer carries a `SourceId` (or emits one via `SourceFound`) so multi-source filters in tail/history/fuzzy stay meaningful.
+- [x] Flesh out `handle_producer_event` (`fml/src/producer.rs`): on `SourceFound` push to `state.producer.sources` (idempotent), on `SourceLost` remove by `SourceId`, on `StoreEvent` `try_send` the `NewLogEntry` into `event_bus.store_tx`.
+- [x] Decide on a registration surface: `App` owns `Vec<Box<dyn LogProducer>>` and exposes `register_producer`. `run()` calls `start` on each after the TUI spawns and `stop` on each before TUI cleanup.
+- [x] Pin down the shutdown contract for `LogProducer::stop` — documented on the trait and module: implementations must keep cancellation state behind a shared handle (`Arc<AtomicBool>` / `CancellationToken`) cloned into the spawned task so `stop` can flip it through `&self`.
+- [x] Make sure each producer carries a `SourceId` — added `LogProducer::source_id(&self)` to the trait so registration and filtering can name a source without starting the producer.
 
 ### 2. Demo producer
 - [x] `FakeProducer` struct + trait impl skeleton (`fml/src/producer/fake.rs`).
-- [ ] Implement `start`: spawn a tokio task that emits `SourceFound` once, then ticks out synthetic `StoreEvent(NewLogEntry)` values (use the `fake` crate already in deps).
-- [ ] Implement `stop`: signal the spawned task to exit (see shutdown contract above).
-- [ ] Vary `level`, `source.id`, and `fields` across emitted entries so highlighting and source filters are visibly exercised.
-- [ ] Wire the `--demo` CLI flag (`fml/src/main.rs:37`) through `App::new` so it actually constructs and registers a `FakeProducer`.
+- [x] Implement `start`: spawn a tokio task that emits `SourceFound` once, then ticks out synthetic `StoreEvent(NewLogEntry)` values (use the `fake` crate already in deps).
+- [x] Implement `stop`: signal the spawned task to exit (see shutdown contract above).
+- [x] Vary `level`, `source.id`, and `fields` across emitted entries so highlighting and source filters are visibly exercised.
+- [x] Wire the `--demo` CLI flag (`fml/src/main.rs:37`) through `App::new` so it actually constructs and registers a `FakeProducer`.
 
 ### 3. App consumes producers and pushes to store
-- [ ] In `App::run`, after the TUI spawns, iterate registered producers and call `start(producer_event_tx.clone())` on each.
-- [ ] In `handle_producer_event`'s `StoreEvent` arm, forward the entry into `event_bus.store_tx` so the existing `RingBufferStore` writer task picks it up. (Today the producer event arrives, gets logged, and is dropped — nothing reaches the store.)
-- [ ] On shutdown, call `stop()` on each producer and drop `event_bus.store_tx` so the writer task exits cleanly (it already logs on channel closure).
-- [ ] Smoke-check that `--demo` produces entries that show up in `store.bounds()` advancing.
+- [x] In `App::run`, after the TUI spawns, iterate registered producers and call `start(producer_event_tx.clone())` on each.
+- [x] In `handle_producer_event`'s `StoreEvent` arm, insert the entry directly into `state.store`. The `LogStore` write path is synchronous now; there is no separate store writer channel anymore.
+- [x] On shutdown, call `stop()` on each producer before TUI cleanup so background producer tasks can observe cancellation and exit.
+- [x] Smoke-check producer ingestion with reducer tests that verify `StoreEvent` advances `store.bounds()` and persists the inserted entry.
 
 ### 4. Log pane: tail / history
-- [ ] Add `current_results: Vec<SearchHit>` (and a seq→matches lookup) to `SearchState`, plus a `current_mode: ScrollMode`.
-- [ ] In `search.rs` `SearchEvent::Result`, write results into `SearchState` instead of dropping them.
-- [ ] On startup, dispatch an initial `Query::Tail` so the log pane has data before any user input.
-- [ ] Replace the fake row generator in `tui/widgets/log_pane.rs:73-83` with a windowed read of `current_results` + `store.fetch_requested(...)`.
-- [ ] Format rows as `Line::from(spans)` (ts, level, source, msg) and color by `theme.log_row_fg(level)`.
-- [ ] Fix the cursor bound at `tui/widgets/log_pane.rs:165` — clamp to results length, not viewport height; guard against `height == 0`.
-- [ ] Add a key to toggle into `ScrollMode::History` anchored on the selected seq (re-issues a `Query::History`).
+- [] Add `current_results: Vec<SearchHit>` (and a seq→matches lookup) to `SearchState`, plus a `current_mode: ScrollMode`.
+- [] In `search.rs` `SearchEvent::Result`, write results into `SearchState` instead of dropping them.
+- [] On startup, dispatch an initial `Query::Tail` so the log pane has data before any user input.
+- [] Replace the fake row generator in `tui/widgets/log_pane.rs` with a windowed read of `current_results` + `store.fetch_requested(...)`.
+- [] Format rows as `Line::from(spans)` (ts, level, source, msg) and color by `theme.log_row_fg(level)`.
+- [] Fix the cursor bound in `tui/widgets/log_pane.rs` — clamp to results length, not viewport height; guard against `height == 0`.
+- [] Scrolling away from the latest row enters `ScrollMode::History` anchored on the selected seq; returning to latest resumes `Query::Tail`.
 
 ### 5. Log pane: fuzzy
 - [ ] On `QueryBox` input change (or Enter), emit `SearchEvent::Search { query: Fuzzy(text), … }`; emit `Tail` when the box clears.
@@ -86,4 +86,3 @@ Rough order — each step assumes the previous ones are done.
 - [ ] Status bar: show `current_mode`, active sources, and `results.len() / store.bounds()` to satisfy the `SEARCH  src-a,src-b,src-c  3/120 matches` line in the mockup.
 - [ ] Remove or populate the unused `items` / `search_results` fields on `LogPaneState` — pick one home for "currently displayed seq ids".
 - [ ] Add a smoke test that boots `--demo`, lets the tail worker tick, and asserts the log pane state reflects ingested entries.
-
