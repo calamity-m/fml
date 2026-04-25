@@ -80,3 +80,89 @@ pub fn handle_producer_event(event: ProducerEvent, mut state: AppState) -> AppSt
 
     state
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
+    use serial_test::serial;
+
+    use super::*;
+    use crate::{
+        config::Config,
+        event::ProducerEvent,
+        log::{LogLevel, NewLogEntry, Source},
+        state::AppState,
+    };
+
+    fn source(id: &str) -> Source {
+        Source {
+            id: id.to_string(),
+            display_name: format!("Source {id}"),
+            group: None,
+        }
+    }
+
+    fn entry(msg: &str, source_id: &str) -> NewLogEntry {
+        NewLogEntry {
+            msg: msg.to_string(),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: source(source_id),
+            fields: HashMap::new(),
+        }
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(Config::default()).expect("test app state should construct")
+    }
+
+    #[test]
+    #[serial]
+    fn source_found_is_idempotent() {
+        let state = test_state();
+
+        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
+        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
+
+        assert_eq!(state.producer.sources.len(), 1);
+        assert_eq!(state.producer.sources[0].id, "src-a");
+    }
+
+    #[test]
+    #[serial]
+    fn source_lost_removes_matching_source() {
+        let state = test_state();
+        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
+        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-b")), state);
+
+        let state = handle_producer_event(ProducerEvent::SourceLost("src-a".to_string()), state);
+
+        assert_eq!(state.producer.sources.len(), 1);
+        assert_eq!(state.producer.sources[0].id, "src-b");
+    }
+
+    #[test]
+    #[serial]
+    fn store_event_inserts_into_store_and_advances_bounds() {
+        let state = test_state();
+
+        let state = handle_producer_event(
+            ProducerEvent::StoreEvent(entry("hello from producer", "src-a")),
+            state,
+        );
+
+        assert_eq!(state.store.bounds(), (1, 1));
+
+        let mut entries = Vec::new();
+        state
+            .store
+            .fetch_requested(&[1], &mut entries)
+            .expect("fetch should succeed");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].msg, "hello from producer");
+        assert_eq!(entries[0].source.id, "src-a");
+    }
+}
