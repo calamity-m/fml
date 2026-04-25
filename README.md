@@ -23,6 +23,45 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
+## Log Pane Functionality
+
+### Terms:
+
+- Head -> Oldest entry of the log store
+- Tail -> Most recent entry of the log store
+- Rendered Window -> Visible log lines in the log pane
+- Rendered Head -> Top of the visible log lines
+- Rendered Tail -> Bottom of the vissible log lines
+- Retained Window -> Log lines the log pane has access to, which may extend past a Rendered Window, but not encompass a full ring buffer
+
+### Normal Scrolling functionality
+
+> Note: Assume VIM Mappings for scrolling in addition to arrow keys
+
+When first starting out, the user will be in the "tail" mode. Upon pressing the up-arrow the user will "pause" the log pane. 
+If the user scrolls to the top of the Rendered Window, and continues to scroll up, the Rendered Window will start to scroll through
+the Retained Window - e.g. like you would expect of a log viewing application.
+
+If the user scrolls back to the bottom of the Rendered Window, as is now at the latest seq - they will be put back into "tail" mode.
+If the seq is not the latest, they they will scroll down the Retained Window like you would expect of a log viewing application,
+
+#### Head and Tail
+
+The keys of Home/g will take a user to the head of the log store, e.g. the oldest sequence kept - and enter "LogPaneState" mode.
+The keys of End/G will take a user to the head of the log store, e.g. the latest seq kept - and enter "tail" mode.
+
+### Fuzzy Scrolling Functionality
+
+When the user issues a search, their cursor should be put to the Rendered Tail. Scrolling functionality should be the same, other than
+the fact that they are scrolling through the fuzzy scrolling search results, rather than the store itself.
+
+Pressing Home for instance would take them to the least matched result from the fuzzy search.
+
+## Fuzzy Searching Extension
+
+Right now we cut-off the fuzzy search if it doesn't make it within a specific time, but we should extend this so that the first result is emitted
+at that time - and the search continues, with emissions being at that time (or completed search reached).
+
 ## TODO — minimal functionality
 
 Rough order — each step assumes the previous ones are done.
