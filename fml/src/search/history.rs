@@ -143,6 +143,8 @@ mod tests {
             level: Some(LogLevel::Info),
             source: Source {
                 id: source_id.to_string(),
+                display_name: source_id.to_string(),
+                group: None,
             },
             fields: HashMap::new(),
         }

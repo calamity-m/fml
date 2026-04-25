@@ -438,6 +438,8 @@ mod tests {
             level,
             source: Source {
                 id: source_id.to_string(),
+                display_name: source_id.to_string(),
+                group: None,
             },
             fields: HashMap::new(),
         }
@@ -455,6 +457,8 @@ mod tests {
             level,
             source: Source {
                 id: source_id.to_string(),
+                display_name: source_id.to_string(),
+                group: None,
             },
             fields,
         }

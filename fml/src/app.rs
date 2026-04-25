@@ -9,7 +9,8 @@ use tracing::info;
 
 use crate::{
     error::FmlError,
-    producer::{self, LogProducer},
+    log::Source,
+    producer::{self, LogProducer, fake::FakeProducer},
     search,
     state::AppState,
     tui,
@@ -21,11 +22,19 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: crate::config::Config) -> Result<Self, FmlError> {
-        Ok(Self {
+    pub fn new(config: crate::config::Config, demo: bool) -> Result<Self, FmlError> {
+        let mut app = Self {
             state: AppState::new(config)?,
             producers: Vec::new(),
-        })
+        };
+
+        if demo {
+            for source in demo_sources() {
+                app.register_producer(Box::new(FakeProducer::new(source)));
+            }
+        }
+
+        Ok(app)
     }
 
     /// Register a producer to be started after the TUI spawns and stopped
@@ -33,6 +42,31 @@ impl App {
     pub fn register_producer(&mut self, producer: Box<dyn LogProducer>) {
         self.producers.push(producer);
     }
+}
+
+/// Synthetic sources used to back the `--demo` flag. Spread across two
+/// groups so the upcoming source-grouping UI has something to display.
+fn demo_sources() -> Vec<Source> {
+    vec![
+        Source {
+            id: "src-a".to_string(),
+            display_name: "Service A".to_string(),
+            group: Some("backend".to_string()),
+        },
+        Source {
+            id: "src-b".to_string(),
+            display_name: "Service B".to_string(),
+            group: Some("backend".to_string()),
+        },
+        Source {
+            id: "src-c".to_string(),
+            display_name: "Service C".to_string(),
+            group: Some("frontend".to_string()),
+        },
+    ]
+}
+
+impl App {
 
     pub async fn run(mut self) -> Result<(), FmlError> {
         // Setup the ratatui terminal tui

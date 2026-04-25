@@ -7,6 +7,10 @@ pub type SourceId = String;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Source {
     pub id: SourceId,
+    /// Human-readable name shown in UI surfaces (status bar, source filters).
+    pub display_name: String,
+    /// Optional grouping label so related sources can be displayed together.
+    pub group: Option<String>,
 }
 
 /// Log severity level, normalised across all feed types.
