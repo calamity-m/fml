@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod event;
 mod log;
+mod producer;
 mod search;
 mod state;
 mod store;

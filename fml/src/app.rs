@@ -7,7 +7,7 @@ use crossterm::{
 };
 use tracing::info;
 
-use crate::{error::FmlError, search, state::AppState, tui};
+use crate::{error::FmlError, producer, search, state::AppState, tui};
 
 pub struct App {
     pub state: AppState,
@@ -63,7 +63,11 @@ impl App {
                 Some(event) = self.state.event_bus.search_event_rx.recv() => {
                     let new_state = search::handle_search_event(event, self.state);
                     self.state = new_state
-                }
+                },
+                Some(event) = self.state.event_bus.producer_event_rx.recv() => {
+                    let new_state = producer::handle_producer_event(event, self.state);
+                    self.state = new_state
+                },
 
             }
         }

@@ -3,7 +3,7 @@
 //! These values are sent over channels to keep terminal input, rendering,
 //! shutdown, and background search processing loosely coupled.
 
-use crate::log::SourceId;
+use crate::log::{NewLogEntry, Source, SourceId};
 
 /// Marker event used to request application shutdown.
 ///
@@ -68,6 +68,7 @@ pub enum Query {
 }
 
 /// Messages exchanged with the search subsystem.
+#[derive(Debug)]
 pub enum SearchEvent {
     /// Request execution of a search query, optionally restricted to sources.
     Search {
@@ -82,4 +83,11 @@ pub enum SearchEvent {
     },
     /// An error occurred while executing a search request.
     Error(String),
+}
+
+#[derive(Debug)]
+pub enum ProducerEvent {
+    SourceFound(Source),
+    SourceLost(SourceId),
+    StoreEvent(NewLogEntry),
 }

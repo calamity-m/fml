@@ -8,7 +8,10 @@ use ratatui::{Terminal, prelude::CrosstermBackend};
 use crate::{
     config::Config,
     error::FmlError,
-    state::{events_bus::EventBus, search_state::SearchState, tui_state::TuiState},
+    state::{
+        events_bus::EventBus, producer_state::ProducerState, search_state::SearchState,
+        tui_state::TuiState,
+    },
     store::{LogStore, RingBufferStore},
     tui::widgets::{
         FmlWidget, info_pane::InfoPane, log_pane::LogPane, preview_pane::PreviewPane,
@@ -17,6 +20,7 @@ use crate::{
 };
 
 pub mod events_bus;
+pub mod producer_state;
 pub mod search_state;
 pub mod tui_state;
 
@@ -28,6 +32,7 @@ pub struct AppState {
     pub store: Arc<dyn LogStore>,
     pub tui: TuiState,
     pub search: SearchState,
+    pub producer: ProducerState,
 }
 
 impl AppState {
@@ -50,6 +55,7 @@ impl AppState {
             store: store,
             tui: TuiState::new(&config.tui)?,
             search: SearchState::new(&config.search)?,
+            producer: ProducerState::new(),
         })
     }
 }
