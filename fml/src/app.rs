@@ -7,17 +7,31 @@ use crossterm::{
 };
 use tracing::info;
 
-use crate::{error::FmlError, producer, search, state::AppState, tui};
+use crate::{
+    error::FmlError,
+    producer::{self, LogProducer},
+    search,
+    state::AppState,
+    tui,
+};
 
 pub struct App {
     pub state: AppState,
+    pub producers: Vec<Box<dyn LogProducer>>,
 }
 
 impl App {
     pub fn new(config: crate::config::Config) -> Result<Self, FmlError> {
         Ok(Self {
             state: AppState::new(config)?,
+            producers: Vec::new(),
         })
+    }
+
+    /// Register a producer to be started after the TUI spawns and stopped
+    /// during shutdown. Producers must be registered before [`Self::run`].
+    pub fn register_producer(&mut self, producer: Box<dyn LogProducer>) {
+        self.producers.push(producer);
     }
 
     pub async fn run(mut self) -> Result<(), FmlError> {
@@ -33,8 +47,21 @@ impl App {
             self.state.event_bus.tui_event_tx.clone(),
         );
 
+        // Kick off any registered producers now that the event loop below
+        // is the consumer of the producer event channel.
+        for producer in &self.producers {
+            producer.start(self.state.event_bus.producer_event_tx.clone());
+        }
+
         // Sit on our event loop until we want to quit
         self = self.event_loop().await;
+
+        // Signal producers to halt before tearing down the TUI. Each
+        // producer is responsible for observing the signal and exiting
+        // its background task (see `LogProducer` cancellation contract).
+        for producer in &self.producers {
+            producer.stop();
+        }
 
         // Cleanup the tui - we will expect and panic here
         // so if our exit doesn't happen cleanly, we can rely

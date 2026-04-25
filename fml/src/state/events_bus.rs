@@ -1,9 +1,6 @@
 use tokio::sync::mpsc;
 
-use crate::{
-    event::{ProducerEvent, QuitEvent, SearchEvent, TuiEvent},
-    log::NewLogEntry,
-};
+use crate::event::{ProducerEvent, QuitEvent, SearchEvent, TuiEvent};
 
 pub struct EventBus {
     pub tui_event_tx: mpsc::UnboundedSender<TuiEvent>,
@@ -18,8 +15,6 @@ pub struct EventBus {
     /// Our quit sender
     pub quit_tx: mpsc::Sender<QuitEvent>,
     pub quit_rx: mpsc::Receiver<QuitEvent>,
-    /// For our store
-    pub store_tx: Option<mpsc::Sender<NewLogEntry>>,
 }
 
 impl EventBus {
@@ -35,15 +30,10 @@ impl EventBus {
             tui_event_rx,
             quit_tx,
             quit_rx,
-            store_tx: None,
             search_event_tx,
             search_event_rx,
             producer_event_tx,
             producer_event_rx,
         }
-    }
-
-    pub fn register_store_tx(&mut self, store_tx: mpsc::Sender<NewLogEntry>) {
-        self.store_tx = Some(store_tx);
     }
 }

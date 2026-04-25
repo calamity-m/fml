@@ -427,12 +427,8 @@ mod tests {
         store::RingBufferStore,
     };
 
-    fn store_config(capacity: usize, channel_capacity: usize) -> StoreConfig {
-        StoreConfig {
-            capacity,
-            writer_log_internal: 10_000,
-            channel_capacity,
-        }
+    fn store_config(capacity: usize) -> StoreConfig {
+        StoreConfig { capacity }
     }
 
     fn make_entry(msg: &str, source_id: &str, level: Option<LogLevel>) -> NewLogEntry {
@@ -464,20 +460,6 @@ mod tests {
         }
     }
 
-    async fn wait_for_bounds(store: &Arc<dyn LogStore>, expected_high: u64) {
-        for _ in 0..50_000 {
-            if store.bounds().1 >= expected_high {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!(
-            "store did not reach expected upper bound {} (got {:?})",
-            expected_high,
-            store.bounds()
-        );
-    }
-
     async fn recv_result(rx: &mut mpsc::Receiver<SearchEvent>) -> (Vec<SearchHit>, u64, bool) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let evt = tokio::time::timeout_at(deadline, rx.recv())
@@ -497,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_term_emits_empty_result() {
-        let (store, _store_tx) = RingBufferStore::new(store_config(64, 64));
+        let store = RingBufferStore::new(store_config(64));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -521,34 +503,24 @@ mod tests {
 
     #[tokio::test]
     async fn msg_match_ranks_above_field_match() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
-        store_tx
-            .send(make_entry("unrelated line", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("unrelated line", "s1", Some(LogLevel::Info)));
         let mut fields = HashMap::new();
         fields.insert(
             "code".to_string(),
             serde_json::Value::String("error".to_string()),
         );
-        store_tx
-            .send(make_entry_with_fields(
-                "boring",
-                "s1",
-                Some(LogLevel::Info),
-                fields,
-            ))
-            .await
-            .unwrap();
-        store_tx
-            .send(make_entry(
-                "server error occurred",
-                "s1",
-                Some(LogLevel::Error),
-            ))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 3).await;
+        store.insert(make_entry_with_fields(
+            "boring",
+            "s1",
+            Some(LogLevel::Info),
+            fields,
+        ));
+        store.insert(make_entry(
+            "server error occurred",
+            "s1",
+            Some(LogLevel::Error),
+        ));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -580,20 +552,10 @@ mod tests {
 
     #[tokio::test]
     async fn filters_by_source_id() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
-        store_tx
-            .send(make_entry("server error", "s1", Some(LogLevel::Error)))
-            .await
-            .unwrap();
-        store_tx
-            .send(make_entry("server error", "s2", Some(LogLevel::Error)))
-            .await
-            .unwrap();
-        store_tx
-            .send(make_entry("server error", "s1", Some(LogLevel::Error)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 3).await;
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("server error", "s1", Some(LogLevel::Error)));
+        store.insert(make_entry("server error", "s2", Some(LogLevel::Error)));
+        store.insert(make_entry("server error", "s1", Some(LogLevel::Error)));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -618,12 +580,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_entries_appear_on_subsequent_emit() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
-        store_tx
-            .send(make_entry("alpha error", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 1).await;
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("alpha error", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -645,11 +603,7 @@ mod tests {
             vec![1]
         );
 
-        store_tx
-            .send(make_entry("beta error", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 2).await;
+        store.insert(make_entry("beta error", "s1", Some(LogLevel::Info)));
 
         let (update, _, complete) = recv_result(&mut rx).await;
         assert!(complete);
@@ -661,12 +615,8 @@ mod tests {
 
     #[tokio::test]
     async fn msg_match_indices_are_ascending() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
-        store_tx
-            .send(make_entry("server", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 1).await;
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("server", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -699,12 +649,8 @@ mod tests {
 
     #[tokio::test]
     async fn level_match_keyed_as_level() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
-        store_tx
-            .send(make_entry("nothing", "s1", Some(LogLevel::Warn)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 1).await;
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("nothing", "s1", Some(LogLevel::Warn)));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -732,18 +678,14 @@ mod tests {
 
     #[tokio::test]
     async fn result_limit_truncates() {
-        let (store, store_tx) = RingBufferStore::new(store_config(128, 128));
+        let store = RingBufferStore::new(store_config(128));
         for i in 1..=30 {
-            store_tx
-                .send(make_entry(
-                    &format!("server error {i}"),
-                    "s1",
-                    Some(LogLevel::Info),
-                ))
-                .await
-                .unwrap();
+            store.insert(make_entry(
+                &format!("server error {i}"),
+                "s1",
+                Some(LogLevel::Info),
+            ));
         }
-        wait_for_bounds(&store, 30).await;
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -766,16 +708,9 @@ mod tests {
 
     #[tokio::test]
     async fn equal_scores_prefer_newer_seq() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
-        store_tx
-            .send(make_entry("error", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        store_tx
-            .send(make_entry("error", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 2).await;
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("error", "s1", Some(LogLevel::Info)));
+        store.insert(make_entry("error", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -802,34 +737,24 @@ mod tests {
 
     #[tokio::test]
     async fn full_rescan_recovers_truncated_retained_hit_after_eviction() {
-        let (store, store_tx) = RingBufferStore::new(store_config(3, 64));
-        store_tx
-            .send(make_entry("error", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        store_tx
-            .send(make_entry(
-                "server error occurred",
-                "s1",
-                Some(LogLevel::Error),
-            ))
-            .await
-            .unwrap();
+        let store = RingBufferStore::new(store_config(3));
+        store.insert(make_entry("error", "s1", Some(LogLevel::Info)));
+        store.insert(make_entry(
+            "server error occurred",
+            "s1",
+            Some(LogLevel::Error),
+        ));
         let mut fields = HashMap::new();
         fields.insert(
             "code".to_string(),
             serde_json::Value::String("error".to_string()),
         );
-        store_tx
-            .send(make_entry_with_fields(
-                "boring",
-                "s1",
-                Some(LogLevel::Info),
-                fields,
-            ))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 3).await;
+        store.insert(make_entry_with_fields(
+            "boring",
+            "s1",
+            Some(LogLevel::Info),
+            fields,
+        ));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(
@@ -851,11 +776,7 @@ mod tests {
             vec![1, 2]
         );
 
-        store_tx
-            .send(make_entry("noise", "s1", Some(LogLevel::Info)))
-            .await
-            .unwrap();
-        wait_for_bounds(&store, 4).await;
+        store.insert(make_entry("noise", "s1", Some(LogLevel::Info)));
 
         let (update, _, complete) = recv_result(&mut rx).await;
         assert!(complete);
@@ -869,18 +790,14 @@ mod tests {
 
     #[tokio::test]
     async fn partial_result_is_marked_incomplete_when_tick_wins() {
-        let (store, store_tx) = RingBufferStore::new(store_config(20_000, 20_000));
+        let store = RingBufferStore::new(store_config(20_000));
         for i in 1..=10_000 {
-            store_tx
-                .send(make_entry(
-                    &format!("server error {i}"),
-                    "s1",
-                    Some(LogLevel::Info),
-                ))
-                .await
-                .unwrap();
+            store.insert(make_entry(
+                &format!("server error {i}"),
+                "s1",
+                Some(LogLevel::Info),
+            ));
         }
-        wait_for_bounds(&store, 10_000).await;
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_fuzzy_search(

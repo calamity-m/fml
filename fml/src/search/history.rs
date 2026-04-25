@@ -132,12 +132,8 @@ mod tests {
         store::RingBufferStore,
     };
 
-    fn store_config(capacity: usize, channel_capacity: usize) -> StoreConfig {
-        StoreConfig {
-            capacity,
-            writer_log_internal: 10_000,
-            channel_capacity,
-        }
+    fn store_config(capacity: usize) -> StoreConfig {
+        StoreConfig { capacity }
     }
 
     fn make_entry(msg: &str, source_id: &str) -> NewLogEntry {
@@ -150,20 +146,6 @@ mod tests {
             },
             fields: HashMap::new(),
         }
-    }
-
-    async fn wait_for_bounds(store: &Arc<dyn LogStore>, expected_high: u64) {
-        for _ in 0..50_000 {
-            if store.bounds().1 >= expected_high {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!(
-            "store did not reach expected upper bound {} (got {:?})",
-            expected_high,
-            store.bounds()
-        );
     }
 
     async fn recv_result(rx: &mut mpsc::Receiver<SearchEvent>) -> (Vec<SearchHit>, u64, bool) {
@@ -185,14 +167,10 @@ mod tests {
 
     #[tokio::test]
     async fn collects_buffer_per_side_single_chunk() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
+        let store = RingBufferStore::new(store_config(64));
         for i in 1..=10 {
-            store_tx
-                .send(make_entry(&format!("e{i}"), "s1"))
-                .await
-                .unwrap();
+            store.insert(make_entry(&format!("e{i}"), "s1"));
         }
-        wait_for_bounds(&store, 10).await;
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_history_search(5, 2, vec![], store.clone(), 1, tx);
@@ -208,16 +186,12 @@ mod tests {
 
     #[tokio::test]
     async fn filter_aware_buffer_with_mixed_sources() {
-        let (store, store_tx) = RingBufferStore::new(store_config(128, 128));
+        let store = RingBufferStore::new(store_config(128));
         // Alternate s1 / s2 for seqs 1..=20.
         for i in 1..=20 {
             let src = if i % 2 == 1 { "s1" } else { "s2" };
-            store_tx
-                .send(make_entry(&format!("e{i}"), src))
-                .await
-                .unwrap();
+            store.insert(make_entry(&format!("e{i}"), src));
         }
-        wait_for_bounds(&store, 20).await;
 
         // middle=10 (s2). s1 entries: 1,3,5,7,9,11,13,15,17,19. Left ≤ 10 matches:
         // 9, 7. Right > 10 matches: 11, 13.
@@ -239,15 +213,11 @@ mod tests {
         // s1 every 300 entries; chunk_size = buffer * 4 = 8. At this density
         // each chunk is far too small to hold a match, forcing the worker to
         // walk many chunks per side before hitting its target.
-        let (store, store_tx) = RingBufferStore::new(store_config(2048, 2048));
+        let store = RingBufferStore::new(store_config(2048));
         for i in 1..=1800u64 {
             let src = if i % 300 == 0 { "s1" } else { "s2" };
-            store_tx
-                .send(make_entry(&format!("e{i}"), src))
-                .await
-                .unwrap();
+            store.insert(make_entry(&format!("e{i}"), src));
         }
-        wait_for_bounds(&store, 1800).await;
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle =
@@ -263,14 +233,10 @@ mod tests {
 
     #[tokio::test]
     async fn middle_beyond_retained_collects_from_top() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
+        let store = RingBufferStore::new(store_config(64));
         for i in 1..=5 {
-            store_tx
-                .send(make_entry(&format!("e{i}"), "s1"))
-                .await
-                .unwrap();
+            store.insert(make_entry(&format!("e{i}"), "s1"));
         }
-        wait_for_bounds(&store, 5).await;
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_history_search(100, 3, vec![], store.clone(), 1, tx);
@@ -285,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_store_yields_empty_result() {
-        let (store, _store_tx) = RingBufferStore::new(store_config(64, 64));
+        let store = RingBufferStore::new(store_config(64));
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_history_search(10, 3, vec![], store.clone(), 99, tx);
@@ -300,14 +266,10 @@ mod tests {
 
     #[tokio::test]
     async fn no_matching_sources_yields_empty_result() {
-        let (store, store_tx) = RingBufferStore::new(store_config(64, 64));
+        let store = RingBufferStore::new(store_config(64));
         for i in 1..=5 {
-            store_tx
-                .send(make_entry(&format!("e{i}"), "s1"))
-                .await
-                .unwrap();
+            store.insert(make_entry(&format!("e{i}"), "s1"));
         }
-        wait_for_bounds(&store, 5).await;
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle =

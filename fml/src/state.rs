@@ -37,9 +37,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config) -> Result<Self, FmlError> {
-        let (store, store_tx) = RingBufferStore::new(config.store.clone());
-        let mut event_bus = EventBus::new();
-        event_bus.register_store_tx(store_tx);
+        let store = RingBufferStore::new(config.store.clone());
+        let event_bus = EventBus::new();
 
         Ok(AppState {
             config: config.clone(),
@@ -51,8 +50,8 @@ impl AppState {
                 Box::new(InfoPane::new()),
                 Box::new(PreviewPane::new()),
             ],
-            event_bus: event_bus,
-            store: store,
+            event_bus,
+            store,
             tui: TuiState::new(&config.tui)?,
             search: SearchState::new(&config.search)?,
             producer: ProducerState::new(),

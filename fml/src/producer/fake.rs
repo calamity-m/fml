@@ -1,9 +1,23 @@
-use crate::producer::LogProducer;
+use tokio::sync::mpsc;
 
-pub struct FakeProducer {}
+use crate::{event::ProducerEvent, log::SourceId, producer::LogProducer};
+
+pub struct FakeProducer {
+    source_id: SourceId,
+}
+
+impl FakeProducer {
+    pub fn new(source_id: SourceId) -> Self {
+        Self { source_id }
+    }
+}
 
 impl LogProducer for FakeProducer {
-    fn start(&self, tx: tokio::sync::mpsc::Sender<crate::event::ProducerEvent>) {
+    fn source_id(&self) -> SourceId {
+        self.source_id.clone()
+    }
+
+    fn start(&self, _tx: mpsc::Sender<ProducerEvent>) {
         todo!()
     }
 
