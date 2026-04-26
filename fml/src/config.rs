@@ -261,11 +261,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("fml");
         fs::create_dir_all(&config_path).unwrap();
-        fs::write(
-            config_path.join("config.toml"),
-            r#"enable_logging = true"#,
-        )
-        .unwrap();
+        fs::write(config_path.join("config.toml"), r#"enable_logging = true"#).unwrap();
 
         let orig_xdg = env::var("XDG_CONFIG_HOME").ok();
         let orig_fml = env::var("FML_ENABLE_LOGGING").ok();
@@ -295,10 +291,15 @@ mod tests {
 
         let orig_xdg = env::var("XDG_CONFIG_HOME").ok();
         let orig_home = env::var("HOME").ok();
-        let orig_vars: Vec<_> = ["FML_ENABLE_LOGGING", "FML_DEFAULT_LOG_LEVEL", "FML_DEBUG_LOG_DIR", "FML_CONFIG_DIR"]
-            .iter()
-            .map(|k| (*k, env::var(k).ok()))
-            .collect();
+        let orig_vars: Vec<_> = [
+            "FML_ENABLE_LOGGING",
+            "FML_DEFAULT_LOG_LEVEL",
+            "FML_DEBUG_LOG_DIR",
+            "FML_CONFIG_DIR",
+        ]
+        .iter()
+        .map(|k| (*k, env::var(k).ok()))
+        .collect();
 
         unsafe {
             env::set_var("XDG_CONFIG_HOME", dir.path().to_str().unwrap());

@@ -269,11 +269,7 @@ fn clone_matches(matches: &[Match]) -> Vec<Match> {
 ///
 /// Returns only entries that scored on at least one field. Zero-score
 /// entries would waste cache capacity with no useful ranking signal.
-fn score_batch(
-    needle: &str,
-    entries: &[Arc<LogEntry>],
-    config: &FrizbeeConfig,
-) -> Vec<ScoredHit> {
+fn score_batch(needle: &str, entries: &[Arc<LogEntry>], config: &FrizbeeConfig) -> Vec<ScoredHit> {
     if entries.is_empty() {
         return Vec::new();
     }
@@ -330,10 +326,24 @@ fn score_batch(
         .collect();
 
     for m in msg_hits {
-        apply_match(&mut scored, m.index as usize, "msg", m.score, m.indices, WEIGHT_MSG);
+        apply_match(
+            &mut scored,
+            m.index as usize,
+            "msg",
+            m.score,
+            m.indices,
+            WEIGHT_MSG,
+        );
     }
     for m in level_hits {
-        apply_match(&mut scored, m.index as usize, "level", m.score, m.indices, WEIGHT_LEVEL);
+        apply_match(
+            &mut scored,
+            m.index as usize,
+            "level",
+            m.score,
+            m.indices,
+            WEIGHT_LEVEL,
+        );
     }
     for m in field_hits {
         let owner_idx = m.index as usize;
@@ -341,7 +351,14 @@ fn score_batch(
             continue;
         }
         let (entry_idx, key) = &field_owners[owner_idx];
-        apply_match(&mut scored, *entry_idx, key, m.score, m.indices, WEIGHT_FIELDS);
+        apply_match(
+            &mut scored,
+            *entry_idx,
+            key,
+            m.score,
+            m.indices,
+            WEIGHT_FIELDS,
+        );
     }
 
     // Frizbee can return a match for a haystack whose score computes to
@@ -603,10 +620,7 @@ mod tests {
         let (seed, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 3);
         assert!(complete);
-        assert_eq!(
-            seed.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
-            vec![1]
-        );
+        assert_eq!(seed.iter().map(|r| r.seq_id).collect::<Vec<_>>(), vec![1]);
 
         store.insert(make_entry("beta error", "s1", Some(LogLevel::Info)));
 

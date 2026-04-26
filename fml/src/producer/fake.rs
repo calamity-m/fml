@@ -80,10 +80,7 @@ impl LogProducer for FakeProducer {
 
                 let entry = synthetic_entry(&source);
                 if tx.send(ProducerEvent::StoreEvent(entry)).await.is_err() {
-                    debug!(
-                        "fake producer {} aborting: event channel closed",
-                        source.id
-                    );
+                    debug!("fake producer {} aborting: event channel closed", source.id);
                     break;
                 }
             }
