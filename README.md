@@ -49,11 +49,11 @@ in the buffer to fully saturate the rendered window.
 
 -> Fuzzy: The fuzzy time bound shouldn't be a cut-off, but an emission point. If we are not complete, the fuzzy search should emit whatever was found at that point in time - essentially making it a tick rate again.
 
-[] History Search Tick Rate Added
-[] History Search Continuously Emits (If Changes have occured in the low/high bound)
-[] Fuzzy Tick rate added
-[] Fuzzy tick-rate related chunking state added to SearchState (Note: this is different from processing/scoring chunk rate)
-[] Fuzzy tick-rate related chunking chunk searching implemented
+[x] History Search Tick Rate Added
+[x] History Search Continuously Emits (If Changes have occured in the low/high bound)
+[x] Fuzzy Tick rate added
+[x] Fuzzy tick-rate related chunking state added to SearchState (Note: this is different from processing/scoring chunk rate)
+[x] Fuzzy tick-rate related chunking chunk searching implemented
 
 ### 2. Setup Integration Testing
 

@@ -9,13 +9,17 @@
 //! ([`WEIGHT_FIELDS`]) so an entry that hits on multiple weak fields can
 //! still be outranked by a single strong `msg` hit.
 //!
-//! Lifecycle mirrors [`crate::search::tail`]: a `tokio::time::interval`
-//! ticks at `scan_budget`, and on each tick the worker snapshots the
-//! store's retained `(low, high)` bounds and scans that window in
-//! newest-first chunks. If the next tick arrives before the scan finishes,
-//! the worker emits the best hits found so far with `complete = false`
-//! and abandons that snapshot. If the scan finishes first, it emits a
-//! complete result for the whole retained window.
+//! Lifecycle: a `tokio::time::interval` ticks at `tick_rate`. The worker
+//! holds an in-flight [`ScanState`] across ticks, racing chunk processing
+//! against the ticker in a `tokio::select!`: between ticks it scores
+//! `SCAN_CHUNK_SIZE` entries at a time, and when a tick fires it emits
+//! whatever has been scored so far with `complete = false`. The snapshot
+//! is only retired when the scan finishes (final emission with
+//! `complete = true`, bounds recorded so we don't re-scan an unchanged
+//! window) or when the store's retained bounds drift before a fresh
+//! scan starts. So `tick_rate` doubles as both the emission cadence and
+//! the per-tick processing budget — there is no separate scan-budget
+//! knob.
 //! Cancellation of superseded queries is handled by the caller via
 //! [`tokio::task::JoinHandle::abort`] — every loop iteration awaits at the
 //! ticker or inside the emission helper, so abort is prompt.
@@ -57,21 +61,23 @@ const WEIGHT_FIELDS: f32 = 0.3;
 
 /// Starts the background worker for a fuzzy text search.
 ///
-/// The worker matches `term` against each retained `LogEntry`'s `msg`, `level`
-/// display name, and `fields` values using frizbee, weights those matches
-/// (msg > level > fields), and on each poll tick snapshots the currently
-/// retained `(low, high)` window. Entries are traversed newest-first in
-/// bounded chunks. If the scan reaches the next tick boundary before it
-/// finishes, the worker emits a partial top-`result_limit` result set with
-/// `complete = false`; if it finishes first, it emits a full result with
-/// `complete = true`. Final ranking is by aggregate score, then `seq desc`.
-/// The returned [`JoinHandle`] is used to cancel superseded work.
-#[allow(clippy::too_many_arguments)]
+/// The worker matches `term` against each retained `LogEntry`'s `msg`,
+/// `level` display name, and `fields` values using frizbee, weights
+/// those matches (msg > level > fields), and emits ranked hits at
+/// `tick_rate` cadence. A snapshot of the retained `(low, high)` window
+/// and its [`ScanState`] are held across ticks: between ticks the
+/// `tokio::select!` advances the scan one `SCAN_CHUNK_SIZE` batch at a
+/// time, and when the ticker wins it emits the best `result_limit`
+/// hits scored so far with `complete = false`. The final emission for a
+/// snapshot carries `complete = true`. A snapshot is retired when the
+/// scan completes or when bounds drift before the next scan begins.
+/// Final ranking is by aggregate score, then `seq desc`. The returned
+/// [`JoinHandle`] is used to cancel superseded work.
 pub fn start_fuzzy_search(
     term: String,
     sources: Vec<SourceId>,
     result_limit: usize,
-    scan_budget: Duration,
+    tick_rate: Duration,
     max_typos: Option<u16>,
     store: Arc<dyn LogStore>,
     request_id: u64,
@@ -79,8 +85,8 @@ pub fn start_fuzzy_search(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         debug!(
-            "spawned fuzzy search - term: {}, sources: {:?}, result_limit: {}, scan_budget: {:?}",
-            term, sources, result_limit, scan_budget
+            "spawned fuzzy search - term: {}, sources: {:?}, result_limit: {}, tick_rate: {:?}",
+            term, sources, result_limit, tick_rate
         );
 
         // An empty needle would match every entry with score 0 and produce
@@ -102,73 +108,68 @@ pub fn start_fuzzy_search(
             scoring: frizbee::Scoring::default(),
         };
 
-        let mut ticker = tokio::time::interval(scan_budget);
+        let mut ticker = tokio::time::interval(tick_rate);
         let mut last_complete_bounds: Option<(u64, u64)> = None;
+        // Active snapshot kept alive across ticks so partial emissions
+        // resume instead of throwing away work. (low, high, scan).
+        let mut scan: Option<(u64, u64, ScanState)> = None;
 
         loop {
-            // `interval.tick()` completes immediately on the first call, so
-            // the initial fuzzy scan starts right away rather than waiting
-            // one full scan budget.
-            ticker.tick().await;
+            // No live scan: park on the ticker until something might
+            // have changed, then decide whether to start one.
+            if scan.is_none() {
+                ticker.tick().await;
 
-            let (low, high) = store.bounds();
+                let (low, high) = store.bounds();
 
-            // Store is completely empty (no entries ever ingested). Still
-            // emit once so the receiver sees a response for this
-            // request_id, record that we emitted for `high == 0`, and skip
-            // straight to the next tick; the guard above will then
-            // suppress re-emission until real entries arrive.
-            if high == 0 {
-                if last_complete_bounds == Some((low, high)) {
-                    continue;
-                }
-                match emit_hits(Vec::new(), request_id, true, &tx).await {
-                    EmitOutcome::Sent => {}
-                    EmitOutcome::ReceiverGone => return,
-                }
-
-                last_complete_bounds = Some((low, high));
-                continue;
-            }
-
-            if last_complete_bounds == Some((low, high)) {
-                continue;
-            }
-
-            // Snapshot the retained window for this tick. We fetch once,
-            // then reverse to traverse newest-to-oldest within the
-            // snapshot; later ingestion is handled on the next tick.
-            let mut pool: Vec<Arc<LogEntry>> = Vec::new();
-            if let Err(e) = store.fetch_range(low, high, &mut pool) {
-                let _ = emit_error(e.to_string(), &tx).await;
-                return;
-            }
-            let mut entries: Vec<Arc<LogEntry>> = pool
-                .into_iter()
-                .filter(|entry| sources.is_empty() || sources.contains(&entry.source.id))
-                .collect();
-            entries.reverse();
-
-            let mut scan = ScanState::new(entries);
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {
-                        match emit_hits(build_hits(&scan.scored, result_limit), request_id, false, &tx).await {
+                if high == 0 {
+                    if last_complete_bounds != Some((low, high)) {
+                        match emit_hits(Vec::new(), request_id, true, &tx).await {
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
                         }
-                        break;
+                        last_complete_bounds = Some((low, high));
                     }
-                    _ = tokio::task::yield_now(), if !scan.is_complete() => {
-                        scan.process_next_chunk(&term, &frizbee_config);
-                        if scan.is_complete() {
-                            match emit_hits(build_hits(&scan.scored, result_limit), request_id, true, &tx).await {
-                                EmitOutcome::Sent => {}
-                                EmitOutcome::ReceiverGone => return,
-                            }
-                            last_complete_bounds = Some((low, high));
-                            break;
+                    continue;
+                }
+
+                if last_complete_bounds == Some((low, high)) {
+                    continue;
+                }
+
+                let mut pool: Vec<Arc<LogEntry>> = Vec::new();
+                if let Err(e) = store.fetch_range(low, high, &mut pool) {
+                    let _ = emit_error(e.to_string(), &tx).await;
+                    return;
+                }
+                let mut entries: Vec<Arc<LogEntry>> = pool
+                    .into_iter()
+                    .filter(|entry| sources.is_empty() || sources.contains(&entry.source.id))
+                    .collect();
+                entries.reverse();
+                scan = Some((low, high, ScanState::new(entries)));
+            }
+
+            let (snap_low, snap_high, state) = scan.as_mut().expect("scan just ensured");
+
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let hits = build_hits(&state.scored, result_limit);
+                    match emit_hits(hits, request_id, false, &tx).await {
+                        EmitOutcome::Sent => {}
+                        EmitOutcome::ReceiverGone => return,
+                    }
+                }
+                _ = tokio::task::yield_now(), if !state.is_complete() => {
+                    state.process_next_chunk(&term, &frizbee_config);
+                    if state.is_complete() {
+                        let hits = build_hits(&state.scored, result_limit);
+                        match emit_hits(hits, request_id, true, &tx).await {
+                            EmitOutcome::Sent => {}
+                            EmitOutcome::ReceiverGone => return,
                         }
+                        last_complete_bounds = Some((*snap_low, *snap_high));
+                        scan = None;
                     }
                 }
             }
@@ -818,6 +819,61 @@ mod tests {
         let (_, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 13);
         assert!(!complete, "expected an incomplete partial result");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn partial_emits_progress_across_ticks() {
+        let store = RingBufferStore::new(store_config(20_000));
+        for i in 1..=5_000 {
+            store.insert(make_entry(
+                &format!("server error {i}"),
+                "s1",
+                Some(LogLevel::Info),
+            ));
+        }
+
+        let (tx, mut rx) = mpsc::channel(64);
+        // 1ms tick is short enough that several emissions race the scan
+        // before it finishes, but long enough that a few chunks score
+        // between ticks — so partials grow rather than always being empty.
+        let handle = start_fuzzy_search(
+            "error".to_string(),
+            vec![],
+            20_000,
+            Duration::from_millis(1),
+            None,
+            store.clone(),
+            21,
+            tx,
+        );
+
+        // Walk emissions, asserting hit count is non-decreasing (proves
+        // work is resumed across ticks, not restarted), until we see a
+        // final complete=true.
+        let mut saw_partial = false;
+        let mut prev_len = 0usize;
+        let mut saw_complete = false;
+        for _ in 0..2_000 {
+            let (next, rid, complete) = recv_result(&mut rx).await;
+            assert_eq!(rid, 21);
+            assert!(
+                next.len() >= prev_len,
+                "scan progress regressed: {} -> {}",
+                prev_len,
+                next.len()
+            );
+            prev_len = next.len();
+            if !complete {
+                saw_partial = true;
+            } else {
+                saw_complete = true;
+                break;
+            }
+        }
+        assert!(saw_partial, "expected at least one partial emission");
+        assert!(saw_complete, "expected a final complete=true emission");
 
         handle.abort();
     }
