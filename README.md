@@ -74,7 +74,12 @@ For example, we might want to test the ring buffer at capacity, and what differe
 Note: Ignore scroll bar for now
 
 The log pane should default to Tail mode, and display the latest results from the Tail search continuously.
+This will need to touch the handle_search_event function, adding real logic to the handling of SearchResults,
+rather than just dealing with setting latest request id. Future TODOs will build upon what we create here.
+It's recommended to use the LogPaneState where possible. It is perfectly okay to refactor the LogPaneState if it does not currently meet the requirements needed to implement it's needed functionality.
 
+
+[] absolute_cursor migrated to TuiState
 [] Log pane displays results from the log store
 [] Log pane cursor at the bottom of the screen puts the TUI title into "Tail"
 [] Log pane continuously renders new incoming log lines, pushing older lines out of the Rendered Window
