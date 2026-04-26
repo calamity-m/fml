@@ -1,5 +1,7 @@
 # fml
 
+hello
+
 ```
 ┌─────────────────────────────────────┬──────────────────────┐
 │ Log Pane                            │ Info                 │
@@ -34,94 +36,78 @@
 - Rendered Tail -> Bottom of the vissible log lines
 - Retained Window -> Log lines the log pane has access to, which may extend past a Rendered Window, but not encompass a full ring buffer
 
-### Normal Scrolling functionality
 
-> Note: Assume VIM Mappings for scrolling in addition to arrow keys
+## TODO
 
-When first starting out, the user will be in the "tail" mode. Upon pressing the up-arrow the user will "pause" the log pane. 
-If the user scrolls to the top of the Rendered Window, and continues to scroll up, the Rendered Window will start to scroll through
-the Retained Window - e.g. like you would expect of a log viewing application.
+### 1. Refactor Search
 
-If the user scrolls back to the bottom of the Rendered Window, as is now at the latest seq - they will be put back into "tail" mode.
-If the seq is not the latest, they they will scroll down the Retained Window like you would expect of a log viewing application,
+We need to refactor the following portions of search:
 
-#### Head and Tail
+-> History: The history search needs to emit more than once. Once we have a history  page, our sequence doesn't stop incrementing.
+This can cause issues with the log_pane not displaying new results, e.g. if we enter into "history" mode before we have enough logs
+in the buffer to fully saturate the rendered window.
 
-The keys of Home/g will take a user to the head of the log store, e.g. the oldest sequence kept - and enter "LogPaneState" mode.
-The keys of End/G will take a user to the head of the log store, e.g. the latest seq kept - and enter "tail" mode.
+-> Fuzzy: The fuzzy time bound shouldn't be a cut-off, but an emission point. If we are not complete, the fuzzy search should emit whatever was found at that point in time - essentially making it a tick rate again.
 
-### Fuzzy Scrolling Functionality
+[] History Search Tick Rate Added
+[] History Search Continuously Emits (If Changes have occured in the low/high bound)
+[] Fuzzy Tick rate added
+[] Fuzzy tick-rate related chunking state added to SearchState (Note: this is different from processing/scoring chunk rate)
+[] Fuzzy tick-rate related chunking chunk searching implemented
 
-When the user issues a search, their cursor should be put to the Rendered Tail. Scrolling functionality should be the same, other than
-the fact that they are scrolling through the fuzzy scrolling search results, rather than the store itself.
+### 2. Setup Integration Testing
 
-Pressing Home for instance would take them to the least matched result from the fuzzy search.
+In order to avoid cyclic bug fixes causing tertiary issues, and causing a reliance on a human-in-the-loop tester, 
+we should adopt snapshot testing at the app level, forming a series of integration tests. This will allow us to "replay"
+a certain series of events, such as key inputs, ProducerEvents, SearchEvents, etc.
 
-## Fuzzy Searching Extension
+This integration test should rely on the app.rs setup, and use the app state and event bus to cause test cases we want to validate.
+For example, we might want to test the ring buffer at capacity, and what different user actions would cause in the UI in that scenario. Custom helpers should be avoided where possible, and as much of the existing and real app code should be utilised. Test-specific helpers must be backed by a real need.
 
-Right now we cut-off the fuzzy search if it doesn't make it within a specific time, but we should extend this so that the first result is emitted
-at that time - and the search continues, with emissions being at that time (or completed search reached).
+[] Insta snapshot testing enabled
+[] Integration test for app.rs rendering created with Ratatui TestBackend, showing the whole tui
+[] Integration test added for ring buffer with maximum size + some amount (1 million/default), ensure app does not panic
+[] Integration test marked specifically, allowing them to be skipped for fast testing
 
-## TODO — minimal functionality
+### 3. Log Pane Tail Functionality
 
-Rough order — each step assumes the previous ones are done.
+Note: Ignore scroll bar for now
 
-### 1. Producer abstraction
-- [x] `LogProducer` trait with `start`/`stop` (`fml/src/producer.rs`).
-- [x] `ProducerEvent` enum: `SourceFound`, `SourceLost`, `StoreEvent` (`fml/src/event.rs`).
-- [x] Event bus channels + `App::run` arm dispatching to `producer::handle_producer_event`.
-- [x] `ProducerState { sources: Vec<Source> }` slot on `AppState`.
-- [x] Flesh out `handle_producer_event` (`fml/src/producer.rs`): on `SourceFound` push to `state.producer.sources` (idempotent), on `SourceLost` remove by `SourceId`, on `StoreEvent` `try_send` the `NewLogEntry` into `event_bus.store_tx`.
-- [x] Decide on a registration surface: `App` owns `Vec<Box<dyn LogProducer>>` and exposes `register_producer`. `run()` calls `start` on each after the TUI spawns and `stop` on each before TUI cleanup.
-- [x] Pin down the shutdown contract for `LogProducer::stop` — documented on the trait and module: implementations must keep cancellation state behind a shared handle (`Arc<AtomicBool>` / `CancellationToken`) cloned into the spawned task so `stop` can flip it through `&self`.
-- [x] Make sure each producer carries a `SourceId` — added `LogProducer::source_id(&self)` to the trait so registration and filtering can name a source without starting the producer.
+The log pane should default to Tail mode, and display the latest results from the Tail search continuously.
 
-### 2. Demo producer
-- [x] `FakeProducer` struct + trait impl skeleton (`fml/src/producer/fake.rs`).
-- [x] Implement `start`: spawn a tokio task that emits `SourceFound` once, then ticks out synthetic `StoreEvent(NewLogEntry)` values (use the `fake` crate already in deps).
-- [x] Implement `stop`: signal the spawned task to exit (see shutdown contract above).
-- [x] Vary `level`, `source.id`, and `fields` across emitted entries so highlighting and source filters are visibly exercised.
-- [x] Wire the `--demo` CLI flag (`fml/src/main.rs:37`) through `App::new` so it actually constructs and registers a `FakeProducer`.
+[] Log pane displays results from the log store
+[] Log pane cursor at the bottom of the screen puts the TUI title into "Tail"
+[] Log pane continuously renders new incoming log lines, pushing older lines out of the Rendered Window
+[] Integration test added that validates live-log tailing works
 
-### 3. App consumes producers and pushes to store
-- [x] In `App::run`, after the TUI spawns, iterate registered producers and call `start(producer_event_tx.clone())` on each.
-- [x] In `handle_producer_event`'s `StoreEvent` arm, insert the entry directly into `state.store`. The `LogStore` write path is synchronous now; there is no separate store writer channel anymore.
-- [x] On shutdown, call `stop()` on each producer before TUI cleanup so background producer tasks can observe cancellation and exit.
-- [x] Smoke-check producer ingestion with reducer tests that verify `StoreEvent` advances `store.bounds()` and persists the inserted entry.
+### 4. Log Pane History Functionality
 
-### 4. Log pane: tail / history
-- [] Add `current_results: Vec<SearchHit>` (and a seq→matches lookup) to `SearchState`, plus a `current_mode: ScrollMode`.
-- [] In `search.rs` `SearchEvent::Result`, write results into `SearchState` instead of dropping them.
-- [] On startup, dispatch an initial `Query::Tail` so the log pane has data before any user input.
-- [] Replace the fake row generator in `tui/widgets/log_pane.rs` with a windowed read of `current_results` + `store.fetch_requested(...)`.
-- [] Format rows as `Line::from(spans)` (ts, level, source, msg) and color by `theme.log_row_fg(level)`.
-- [] Fix the cursor bound in `tui/widgets/log_pane.rs` — clamp to results length, not viewport height; guard against `height == 0`.
-- [] Scrolling away from the latest row enters `ScrollMode::History` anchored on the selected seq; returning to latest resumes `Query::Tail`.
+Note: Ignore scroll bar for now
 
-### 5. Log pane: fuzzy
-- [ ] On `QueryBox` input change (or Enter), emit `SearchEvent::Search { query: Fuzzy(text), … }`; emit `Tail` when the box clears.
-- [ ] Switch `LogPaneState.mode` to `ScrollMode::Search` while a fuzzy query is active.
-- [ ] Reset cursor / scroll position when results swap so the user lands on the top hit.
+FML is primarily a log-viewing application, and so scrolling through the log pane should work as you'd normally expect. 
+When scrolling the cursor should travel upwards, but logs should remain static. When the cursor is at the top of the TUI's log pane, and the user continues to scroll, the log the user has highlighted will move down one, and the next line will be rendered at the top. This will require smart issuing of history buffers, ensuring we have enough of a Retained Window so that our request for a new retained window with a search query will not cause lag/delay.
 
-### 6. Info pane shows selection
-- [ ] Add `selected_seq: Option<u64>` to `LogPaneState`; update on every cursor move by translating through the current results vec.
-- [ ] In `tui/widgets/info_pane.rs`, fetch the selected entry from the store and render: timestamp, level, source.id, msg, then each (key, value) field on its own line.
-- [ ] Handle the empty-selection case (no logs yet, or cursor out of range) without panicking.
+e.g. if our retained window is [Seq_ID_LOW: 500, ..., Seq_ID_HIGH: 1000], once we reach half-way to Seq_ID, we may ask to fetch the window [Seq_ID_LOW:250, ..., Seq_ID_HIGH: 750].
 
-### 7. Preview pane
-- [ ] Split `SearchState` handles into `main_handle`/`main_results` and `preview_handle`/`preview_results` so the preview's history query doesn't clobber the main query.
-- [ ] Tag outgoing search requests with which slot they belong to so the `Result` arm routes correctly.
-- [ ] When `selected_seq` changes, dispatch a `Query::History { middle_seq_id, buffer: <small> }` against the preview slot.
-- [ ] Render the preview slice in `tui/widgets/preview_pane.rs` like the log pane, but visually mark the row where `seq == selected_seq` (the `>` in the mockup).
-- [ ] Replace `todo!()` in `preview_pane.rs:46` and `status_bar.rs:104` with `_ => {}` so unfocused-pane events can't panic.
+[] Log pane pauses when entering into history
+[] User can scroll to the bottom of the retained log store's low seq (scroll up) manually with repeated up-arrow keys
+[] User can scroll to the top of the log store's high seq (scroll down), re-entering into tail mode
+[] User can press Home to jump to the low bounds of the log store
+[] User can press End to jump to the high bounds of the log store and enter back into tail mode
+[] Integration test added for: 10k entries are populated into the log store, user inputs Home and should see sequence 1.
+[] Integration test added for: 100 entries are populated into the log store, user inputs 100 up-arrow inputs and sees sequence 1.
+[] Integration test added for: ... (others as needed/required)
 
-### 8. Highlighting
-- [ ] Build a `HashMap<u64, Vec<Match>>` lookup from the active fuzzy result so the renderer doesn't scan linearly each frame.
-- [ ] In the log pane, split the `msg` of matched rows into spans and apply `theme.log_match_fg` (+ `log_match_bold`) at the indices in `Match::indices`.
-- [ ] In the info pane, apply the same span-styling to matched fields (key matches the `Match.key` from the active hit for that seq).
-- [ ] Verify highlight + selection styles compose (selected row keeps `log_selected_bg`, matched chars still show `log_match_fg`).
+### 5. Log Pane Scroll Bar Functionality
 
-### 9. Polish / status
-- [ ] Status bar: show `current_mode`, active sources, and `results.len() / store.bounds()` to satisfy the `SEARCH  src-a,src-b,src-c  3/120 matches` line in the mockup.
-- [ ] Remove or populate the unused `items` / `search_results` fields on `LogPaneState` — pick one home for "currently displayed seq ids".
-- [ ] Add a smoke test that boots `--demo`, lets the tail worker tick, and asserts the log pane state reflects ingested entries.
+The scroll bar should be calculated based on the log store, not any retained window. We have a low, max and a cursor's sequence. We can then calculate the size of the scroll bar, and it's positioning.
+
+[] scroll bar reduces in size based on the amount of sequence ids retained, clamping to some minimum and maximum
+[] scroll bar scrolls based on the cursor in the log_pane
+[] integration test added to verify scrolling behaviour and size (top, mid, end) 
+
+### 6. Log Pane Fuzzy Functionality
+
+Note: Ignore scroll bar for now
+
+TBD!
