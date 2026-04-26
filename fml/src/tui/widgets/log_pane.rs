@@ -67,14 +67,21 @@ impl FmlWidget for LogPane {
         // also the number of visible log entries at any time.
         state.log_pane.height = inner_area.height as usize;
 
-        // Build a window of items slightly larger than the visible area so that
-        // fast scrolling doesn't hit a visible edge before the next frame renders.
-        // Eventually this slices the real backing buffer; for now it's fake data.
-        let window_size = state.log_pane.height + 20;
-        let items: Vec<ListItem> = (0..window_size)
-            .map(|i| {
+        // Take the trailing `height` entries from the resolved tail window so
+        // the most recent log lines sit at the bottom of the pane.
+        let height = state.log_pane.height;
+        let total = state.log_pane.items.len();
+        let start = total.saturating_sub(height);
+        let items: Vec<ListItem> = state.log_pane.items[start..]
+            .iter()
+            .map(|entry| {
+                let level = entry
+                    .level
+                    .map(|l| l.to_string())
+                    .unwrap_or_else(|| "----".to_string());
                 ListItem::new(format!(
-                    "[INFO] log line {i:>3} — lorem ipsum dolor sit amet"
+                    "{} {} {} {}",
+                    entry.seq, level, entry.source.id, entry.msg
                 ))
             })
             .collect();
@@ -101,8 +108,7 @@ impl FmlWidget for LogPane {
         // index to the index within the Vec<ListItem> slice we just built.
         // These must use the same window_start or the highlight lands on the
         // wrong row.
-        let mut list_state =
-            ListState::default().with_selected(Some(state.log_pane.absolute_cursor));
+        let mut list_state = ListState::default().with_selected(Some(state.absolute_cursor));
 
         frame.render_stateful_widget(list, inner_area, &mut list_state);
 
@@ -124,7 +130,7 @@ impl FmlWidget for LogPane {
         // content_length is a placeholder until the backing buffer exists.
         let mut scrollbar_state = ScrollbarState::new(item_count)
             .viewport_content_length(state.log_pane.height)
-            .position(state.log_pane.absolute_cursor);
+            .position(state.absolute_cursor);
 
         // Inset by 1 row top and bottom so the track sits between the border
         // corners rather than overwriting them.
@@ -136,7 +142,7 @@ impl FmlWidget for LogPane {
 
         debug!(
             "absolute_cursor - {}, log_pane.height: {}",
-            state.log_pane.absolute_cursor, state.log_pane.height
+            state.absolute_cursor, state.log_pane.height
         );
 
         frame.render_stateful_widget(
@@ -157,30 +163,35 @@ impl FmlWidget for LogPane {
 
                 match scroll {
                     ScrollDirection::Forward => {
-                        state.log_pane.absolute_cursor = state
-                            .log_pane
+                        state.absolute_cursor = state
                             .absolute_cursor
                             .saturating_add(1)
-                            // TODO this needs to be items.len or something in the future
-                            .min(state.log_pane.height - 1);
+                            .min(state.log_pane.height.saturating_sub(1));
 
-                        // TODO this actually needs to be real
-                        // if state.tui.log_pane.absolute_cursor - window-start >= items.len
-                        //   window-start += 1
+                        // Cursor reached the bottom row → following new entries.
+                        if state.absolute_cursor + 1 == state.log_pane.height {
+                            state.log_pane.mode = ScrollMode::Tail;
+                        }
                     }
                     ScrollDirection::Backward => {
-                        state.log_pane.absolute_cursor =
-                            state.log_pane.absolute_cursor.saturating_sub(1);
+                        let prev = state.absolute_cursor;
+                        state.absolute_cursor = state.absolute_cursor.saturating_sub(1);
+                        // Any upward movement leaves tail-follow mode.
+                        if prev != state.absolute_cursor {
+                            state.log_pane.mode = ScrollMode::History;
+                        }
                     }
                 }
             }
             TuiEvent::ScrollHead => {
                 debug!("received scroll head event");
-                state.log_pane.absolute_cursor = 0;
+                state.absolute_cursor = 0;
+                state.log_pane.mode = ScrollMode::History;
             }
             TuiEvent::ScrollTail => {
                 debug!("received scroll tail event");
-                state.log_pane.absolute_cursor = state.log_pane.height - 1;
+                state.absolute_cursor = state.log_pane.height.saturating_sub(1);
+                state.log_pane.mode = ScrollMode::Tail;
             }
             TuiEvent::Input(key) => {
                 debug!("received input event - {:?}", key);

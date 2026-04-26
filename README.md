@@ -79,11 +79,11 @@ rather than just dealing with setting latest request id. Future TODOs will build
 It's recommended to use the LogPaneState where possible. It is perfectly okay to refactor the LogPaneState if it does not currently meet the requirements needed to implement it's needed functionality.
 
 
-[] absolute_cursor migrated to TuiState
-[] Log pane displays results from the log store
-[] Log pane cursor at the bottom of the screen puts the TUI title into "Tail"
-[] Log pane continuously renders new incoming log lines, pushing older lines out of the Rendered Window
-[] Integration test added that validates live-log tailing works
+[x] absolute_cursor migrated to TuiState
+[x] Log pane displays results from the log store
+[x] Log pane cursor at the bottom of the screen puts the TUI title into "Tail"
+[x] Log pane continuously renders new incoming log lines, pushing older lines out of the Rendered Window
+[x] Integration test added that validates live-log tailing works
 
 ### 4. Log Pane History Functionality
 

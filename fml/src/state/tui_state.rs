@@ -18,6 +18,8 @@ pub struct TuiState {
     pub areas: HashMap<Slot, Rect>,
     pub selected_theme: ThemeConfig,
     pub query_box_textarea: TextArea<'static>,
+    /// Absolute index into the current display list (all entries or search results).
+    pub absolute_cursor: usize,
     pub log_pane: LogPaneState,
 }
 
@@ -29,6 +31,7 @@ impl TuiState {
             areas: HashMap::new(),
             selected_theme,
             query_box_textarea: query_box::query_box_textarea(),
+            absolute_cursor: 0,
             log_pane: LogPaneState::default(),
         })
     }

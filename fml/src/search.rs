@@ -18,7 +18,7 @@ use tracing::{debug, warn};
 use crate::{
     event::{Query, SearchEvent, SearchHit},
     log::LogEntry,
-    state::AppState,
+    state::{AppState, tui_state::log_pane_state::ScrollMode},
 };
 
 pub mod fuzzy;
@@ -159,6 +159,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             };
 
             state.search.running_handle = Some(new_handle);
+            state.search.latest_request_id = request_id;
             state
         }
         SearchEvent::Result {
@@ -178,6 +179,24 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     state.search.latest_request_id, request_id
                 );
                 return state;
+            }
+
+            let seq_ids: Vec<u64> = results.into_iter().map(|hit| hit.seq_id).collect();
+            let mut entries: Vec<Arc<LogEntry>> = Vec::with_capacity(seq_ids.len());
+            if let Err(err) = state.store.fetch_requested(&seq_ids, &mut entries) {
+                warn!("failed to fetch search result entries from store: {err}");
+            }
+            state.tui.log_pane.items = entries;
+
+            // In Tail mode the cursor follows the bottom of the visible window.
+            if state.tui.log_pane.mode == ScrollMode::Tail {
+                let visible = state
+                    .tui
+                    .log_pane
+                    .items
+                    .len()
+                    .min(state.tui.log_pane.height);
+                state.tui.absolute_cursor = visible.saturating_sub(1);
             }
 
             state

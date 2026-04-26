@@ -12,12 +12,12 @@ use fml::{
 
 use common::{buffer_to_string, make_entry};
 
-/// Drives the real event loop end-to-end: routes producer events into the
-/// store, lets the tail search emit a result back into TUI state, then issues
-/// a render against `TestBackend` and snapshots the resulting buffer. The
-/// snapshot exercises the wired-up tail path (README TODO #3).
+/// Verifies that the log pane continuously tails new entries: a first batch
+/// is written, then a second batch arrives and pushes the older entries out
+/// of the rendered window. The final snapshot should show only the latest
+/// entries with the title in `TAIL` mode.
 #[tokio::test]
-async fn renders_full_tui() {
+async fn tail_pushes_old_entries_out_of_window() {
     let config = Config::default();
     let app = App::with_test_backend(config, 80, 24).expect("app construction");
 
@@ -25,22 +25,31 @@ async fn renders_full_tui() {
     let tui_tx = app.state.event_bus.tui_event_tx.clone();
     let quit_tx = app.state.event_bus.quit_tx.clone();
 
-    // The driver task only owns Send-able senders, so the AppState (which
-    // holds non-Send `dyn FmlWidget` boxes) can stay on the main task.
     tokio::spawn(async move {
-        for i in 1..=5u64 {
+        // First batch — these should later be pushed out of view.
+        for i in 1..=20u64 {
             producer_tx
                 .send(ProducerEvent::StoreEvent(make_entry(
-                    &format!("entry {i}"),
+                    &format!("first {i}"),
                     "src-a",
                 )))
                 .await
                 .expect("send producer event");
         }
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
-        // Give the tail worker time to tick (default 150ms poll interval) and
-        // the resulting `SearchEvent::Result` time to flow back into TUI state.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Second batch — newest entries that should occupy the bottom of the
+        // visible window when we render.
+        for i in 1..=20u64 {
+            producer_tx
+                .send(ProducerEvent::StoreEvent(make_entry(
+                    &format!("second {i}"),
+                    "src-b",
+                )))
+                .await
+                .expect("send producer event");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         tui_tx.send(TuiEvent::Render).expect("send render event");
         tokio::time::sleep(Duration::from_millis(50)).await;

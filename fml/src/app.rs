@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::{
     error::FmlError,
-    event::TuiEvent,
+    event::{Query, SearchEvent, TuiEvent},
     log::Source,
     producer::{self, LogProducer, fake::FakeProducer},
     search,
@@ -85,6 +85,21 @@ impl<B: Backend> App<B> {
     /// This keeps shutdown predictable for tests that queue events ahead of
     /// the loop and avoids dropping a queued render on quit in production.
     pub(crate) async fn event_loop(mut self) -> Self {
+        // Kick off a continuous tail search so the log pane starts rendering
+        // live entries as soon as producers begin emitting.
+        if let Err(err) = self
+            .state
+            .event_bus
+            .search_event_tx
+            .send(SearchEvent::Search {
+                query: Query::Tail,
+                sources: Vec::new(),
+            })
+            .await
+        {
+            tracing::warn!("failed to dispatch initial tail search: {err}");
+        }
+
         loop {
             tokio::select! {
                 biased;
