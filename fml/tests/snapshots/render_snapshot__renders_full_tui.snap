@@ -1,0 +1,29 @@
+---
+source: fml/tests/render_snapshot.rs
+assertion_line: 35
+expression: buffer_to_string(app.terminal.backend().buffer())
+---
+┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
+│[INFO] log line   0 — lorem ipsum dolor sit amet      ▲│                      │
+│[INFO] log line   1 — lorem ipsum dolor sit amet      █│                      │
+│[INFO] log line   2 — lorem ipsum dolor sit amet      █│                      │
+│[INFO] log line   3 — lorem ipsum dolor sit amet      █│                      │
+│[INFO] log line   4 — lorem ipsum dolor sit amet      █│                      │
+│[INFO] log line   5 — lorem ipsum dolor sit amet      █└──────────────────────┘
+│[INFO] log line   6 — lorem ipsum dolor sit amet      │┌ Preview [ MODE ] ────┐
+│[INFO] log line   7 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line   8 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line   9 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  10 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  11 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  12 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  13 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  14 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  15 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  16 — lorem ipsum dolor sit amet      ││                      │
+│[INFO] log line  17 — lorem ipsum dolor sit amet      ▼│                      │
+└──────────────────────────────────────────────────────┘│                      │
+┌ Query ───────────────────────────────────────────────┐│                      │
+│>  Enter a query...                                   ││                      │
+└──────────────────────────────────────────────────────┘└──────────────────────┘
+ Quit <ctrl+c> | Help <?>                                                v0.0.1

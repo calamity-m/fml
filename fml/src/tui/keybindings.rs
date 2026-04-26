@@ -175,7 +175,7 @@ impl ResolvedBindings {
 /// # Examples
 ///
 /// ```
-/// # use fml_core::keybindings::parse_key_spec;
+/// # use fml::tui::keybindings::parse_key_spec;
 /// assert!(parse_key_spec("?").is_ok());
 /// assert!(parse_key_spec("ctrl+c").is_ok());
 /// assert!(parse_key_spec("pgdn").is_ok());

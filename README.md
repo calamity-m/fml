@@ -64,10 +64,10 @@ a certain series of events, such as key inputs, ProducerEvents, SearchEvents, et
 This integration test should rely on the app.rs setup, and use the app state and event bus to cause test cases we want to validate.
 For example, we might want to test the ring buffer at capacity, and what different user actions would cause in the UI in that scenario. Custom helpers should be avoided where possible, and as much of the existing and real app code should be utilised. Test-specific helpers must be backed by a real need.
 
-[] Insta snapshot testing enabled
-[] Integration test for app.rs rendering created with Ratatui TestBackend, showing the whole tui
-[] Integration test added for ring buffer with maximum size + some amount (1 million/default), ensure app does not panic
-[] Integration test marked specifically, allowing them to be skipped for fast testing
+[x] Insta snapshot testing enabled
+[x] Integration test for app.rs rendering created with Ratatui TestBackend, showing the whole tui
+[x] Integration test added for ring buffer with maximum size + some amount (1 million/default), ensure app does not panic
+[x] Integration test marked specifically, allowing them to be skipped for fast testing
 
 ### 3. Log Pane Tail Functionality
 

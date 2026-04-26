@@ -1,9 +1,4 @@
-use std::{
-    io::{Stdout, stdout},
-    sync::Arc,
-};
-
-use ratatui::{Terminal, prelude::CrosstermBackend};
+use std::sync::Arc;
 
 use crate::{
     config::Config,
@@ -26,7 +21,6 @@ pub mod tui_state;
 
 pub struct AppState {
     pub config: Config,
-    pub terminal: Terminal<CrosstermBackend<Stdout>>,
     pub widgets: Vec<Box<dyn FmlWidget>>,
     pub event_bus: EventBus,
     pub store: Arc<dyn LogStore>,
@@ -42,7 +36,6 @@ impl AppState {
 
         Ok(AppState {
             config: config.clone(),
-            terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
             widgets: vec![
                 Box::new(QueryBox::new()),
                 Box::new(StatusBar::new()),

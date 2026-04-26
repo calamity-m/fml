@@ -37,6 +37,9 @@ serde.workspace = true
 frizbee.workspace = true
 
 
+[features]
+integration = []
+
 [dev-dependencies]
 insta.workspace = true
 serial_test = "3.4.0"

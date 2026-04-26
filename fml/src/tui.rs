@@ -11,6 +11,7 @@ use crossterm::{
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
 use futures_util::{FutureExt as _, StreamExt as _};
+use ratatui::{Terminal, backend::Backend};
 use tokio::{sync::mpsc, time::interval};
 use tracing::{debug, error, trace, warn};
 
@@ -98,12 +99,17 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 }
 
 /// Process a TUI event
+///
+/// Render events are intentionally a no-op here — rendering is an output
+/// side-effect that the app loop performs directly via [`render`] so it can
+/// thread the active terminal through. This keeps `AppState` backend-agnostic
+/// and lets tests drive the same handlers against a `TestBackend`.
 pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
     let mut new_state = match event {
         TuiEvent::Render => {
             trace!("received render event");
 
-            render(state)
+            state
         }
         TuiEvent::Error(err) => {
             error!("received error event - {}", err);
@@ -154,10 +160,11 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
     new_state
 }
 
-// Take ownership of the app state and mutate it, rendering to the terminal, then return
-// ownership of the updated state
-fn render(mut state: AppState) -> AppState {
-    let result = state.terminal.draw(|frame| {
+// Render the current state into `terminal`. Generic over the backend so
+// production runs against a `CrosstermBackend` and tests render into a
+// `TestBackend` without further plumbing.
+pub fn render<B: Backend>(state: &mut AppState, terminal: &mut Terminal<B>) {
+    let result = terminal.draw(|frame| {
         let areas = layout::build_layout(frame.area(), state.config.tui.sidebar_width_percent);
 
         for widget in state.widgets.iter_mut() {
@@ -184,6 +191,4 @@ fn render(mut state: AppState) -> AppState {
             );
         }
     }
-
-    state
 }

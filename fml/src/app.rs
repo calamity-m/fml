@@ -1,14 +1,16 @@
-use std::io::stdout;
+use std::io::{Stdout, stdout};
 
 use crossterm::{
     ExecutableCommand as _,
     event::EnableMouseCapture,
     terminal::{EnterAlternateScreen, enable_raw_mode},
 };
+use ratatui::{Terminal, backend::Backend, prelude::CrosstermBackend};
 use tracing::info;
 
 use crate::{
     error::FmlError,
+    event::TuiEvent,
     log::Source,
     producer::{self, LogProducer, fake::FakeProducer},
     search,
@@ -16,15 +18,17 @@ use crate::{
     tui,
 };
 
-pub struct App {
+pub struct App<B: Backend = CrosstermBackend<Stdout>> {
     pub state: AppState,
+    pub terminal: Terminal<B>,
     pub producers: Vec<Box<dyn LogProducer>>,
 }
 
-impl App {
+impl App<CrosstermBackend<Stdout>> {
     pub fn new(config: crate::config::Config, demo: bool) -> Result<Self, FmlError> {
         let mut app = Self {
             state: AppState::new(config)?,
+            terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
             producers: Vec::new(),
         };
 
@@ -36,38 +40,81 @@ impl App {
 
         Ok(app)
     }
+}
 
+#[cfg(any(test, feature = "integration"))]
+impl App<ratatui::backend::TestBackend> {
+    /// Build an `App` backed by a `TestBackend` for integration tests.
+    /// No raw mode, no alt screen, no demo producers.
+    pub fn with_test_backend(
+        config: crate::config::Config,
+        width: u16,
+        height: u16,
+    ) -> Result<Self, FmlError> {
+        // `Terminal::new(TestBackend)` returns `Result<_, Infallible>`, so
+        // `unwrap` here is genuinely unreachable rather than a panic risk.
+        let terminal = Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        Ok(Self {
+            state: AppState::new(config)?,
+            terminal,
+            producers: Vec::new(),
+        })
+    }
+
+    /// Run the same `event_loop` used in production until a `QuitEvent`
+    /// arrives, then return `self` so tests can inspect state and snapshot
+    /// the terminal buffer. Skips raw-mode setup, `tui::spawn`, and producer
+    /// auto-start — tests own those concerns.
+    pub async fn run_until_quit(self) -> Self {
+        self.event_loop().await
+    }
+}
+
+impl<B: Backend> App<B> {
     /// Register a producer to be started after the TUI spawns and stopped
     /// during shutdown. Producers must be registered before [`Self::run`].
     pub fn register_producer(&mut self, producer: Box<dyn LogProducer>) {
         self.producers.push(producer);
     }
+
+    /// Handle events as part of the main program.
+    ///
+    /// `biased` ordering means a `QuitEvent` does not preempt already-queued
+    /// TUI/search/producer events: the loop drains those first (their `recv`
+    /// branches return Pending once empty) and only then observes the quit.
+    /// This keeps shutdown predictable for tests that queue events ahead of
+    /// the loop and avoids dropping a queued render on quit in production.
+    pub(crate) async fn event_loop(mut self) -> Self {
+        loop {
+            tokio::select! {
+                biased;
+                Some(event) = self.state.event_bus.tui_event_rx.recv() => {
+                    if matches!(event, TuiEvent::Render) {
+                        tui::render(&mut self.state, &mut self.terminal);
+                    }
+                    let new_state = tui::handle_tui_event(event, self.state);
+                    self.state = new_state;
+                },
+                Some(event) = self.state.event_bus.search_event_rx.recv() => {
+                    let new_state = search::handle_search_event(event, self.state);
+                    self.state = new_state;
+                },
+                Some(event) = self.state.event_bus.producer_event_rx.recv() => {
+                    let new_state = producer::handle_producer_event(event, self.state);
+                    self.state = new_state;
+                },
+                _ = self.state.event_bus.quit_rx.recv() => {
+                    info!("quitting tui");
+                    break;
+                },
+            }
+        }
+
+        self
+    }
 }
 
-/// Synthetic sources used to back the `--demo` flag. Spread across two
-/// groups so the upcoming source-grouping UI has something to display.
-fn demo_sources() -> Vec<Source> {
-    vec![
-        Source {
-            id: "src-a".to_string(),
-            display_name: "Service A".to_string(),
-            group: Some("backend".to_string()),
-        },
-        Source {
-            id: "src-b".to_string(),
-            display_name: "Service B".to_string(),
-            group: Some("backend".to_string()),
-        },
-        Source {
-            id: "src-c".to_string(),
-            display_name: "Service C".to_string(),
-            group: Some("frontend".to_string()),
-        },
-    ]
-}
-
-impl App {
-
+impl App<CrosstermBackend<Stdout>> {
     pub async fn run(mut self) -> Result<(), FmlError> {
         // Setup the ratatui terminal tui
         enable_raw_mode()?;
@@ -105,34 +152,26 @@ impl App {
 
         Ok(())
     }
+}
 
-    /// Handle events as part of the main program
-    async fn event_loop(mut self) -> Self {
-        // Handle events as our main loop
-
-        loop {
-            tokio::select! {
-                _ = self.state.event_bus.quit_rx.recv() =>  {
-                    info!("quitting tui");
-                    break;
-
-                },
-                Some(event) = self.state.event_bus.tui_event_rx.recv() => {
-                    let new_state = tui::handle_tui_event(event, self.state);
-                    self.state = new_state;
-                },
-                Some(event) = self.state.event_bus.search_event_rx.recv() => {
-                    let new_state = search::handle_search_event(event, self.state);
-                    self.state = new_state
-                },
-                Some(event) = self.state.event_bus.producer_event_rx.recv() => {
-                    let new_state = producer::handle_producer_event(event, self.state);
-                    self.state = new_state
-                },
-
-            }
-        }
-
-        self
-    }
+/// Synthetic sources used to back the `--demo` flag. Spread across two
+/// groups so the upcoming source-grouping UI has something to display.
+fn demo_sources() -> Vec<Source> {
+    vec![
+        Source {
+            id: "src-a".to_string(),
+            display_name: "Service A".to_string(),
+            group: Some("backend".to_string()),
+        },
+        Source {
+            id: "src-b".to_string(),
+            display_name: "Service B".to_string(),
+            group: Some("backend".to_string()),
+        },
+        Source {
+            id: "src-c".to_string(),
+            display_name: "Service C".to_string(),
+            group: Some("frontend".to_string()),
+        },
+    ]
 }

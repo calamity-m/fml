@@ -5,18 +5,7 @@ use tracing::info;
 
 use tracing_subscriber::EnvFilter;
 
-use crate::{app::App, config::Config};
-
-mod app;
-mod config;
-mod error;
-mod event;
-mod log;
-mod producer;
-mod search;
-mod state;
-mod store;
-mod tui;
+use fml::{app::App, config::Config};
 
 #[derive(Parser, Debug)]
 #[command(author, version = version(), about)]
@@ -52,7 +41,7 @@ Config Dir: {}
 ",
         env!("CARGO_PKG_VERSION"),
         env!("VERGEN_BUILD_DATE"),
-        config::default_config_dir()
+        fml::config::default_config_dir()
     )
 }
 
@@ -78,7 +67,7 @@ impl Cli {
     }
 }
 pub fn init(
-    config: &crate::config::Config,
+    config: &Config,
 ) -> color_eyre::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     if !config.enable_logging {
         return Ok(None);
