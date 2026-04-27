@@ -114,6 +114,7 @@ impl FmlWidget for LogPane {
         // scroll position — that comes from ListState below.
         let list = List::new(items)
             .style(state.selected_theme.surface_style())
+            .highlight_symbol("> ")
             // The selected row gets this style applied on top, giving it a
             // highlighted background to show where the cursor is.
             .highlight_style(
