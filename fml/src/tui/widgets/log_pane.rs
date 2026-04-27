@@ -1,15 +1,11 @@
-use ratatui::{
-    style::Style,
-    widgets::{
-        Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
-    },
+use ratatui::widgets::{
+    Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
 };
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 
 use crate::{
-    config::tui::ThemeConfig,
-    event::TuiEvent,
+    event::{Query, SearchEvent, TuiEvent},
     state::{
         events_bus::EventBus,
         tui_state::{
@@ -40,6 +36,19 @@ impl LogPane {
 
         format!(" FML [{base}] ")
     }
+
+    fn dispatch_search(query: Option<Query>, events_bus: &mut EventBus) {
+        let Some(query) = query else {
+            return;
+        };
+
+        if let Err(err) = events_bus.search_event_tx.try_send(SearchEvent::Search {
+            query,
+            sources: Vec::new(),
+        }) {
+            error!("failed to send search event from log pane - {}", err);
+        }
+    }
 }
 
 impl FmlWidget for LogPane {
@@ -65,14 +74,15 @@ impl FmlWidget for LogPane {
 
         // How many rows fit in the pane. Each ListItem is one line, so this is
         // also the number of visible log entries at any time.
-        state.log_pane.height = inner_area.height as usize;
+        state
+            .log_pane
+            .set_height(inner_area.height as usize, &mut state.absolute_cursor);
 
         // Take the trailing `height` entries from the resolved tail window so
         // the most recent log lines sit at the bottom of the pane.
-        let height = state.log_pane.height;
-        let total = state.log_pane.items.len();
-        let start = total.saturating_sub(height);
-        let items: Vec<ListItem> = state.log_pane.items[start..]
+        let items: Vec<ListItem> = state
+            .log_pane
+            .visible_items()
             .iter()
             .map(|entry| {
                 let level = entry
@@ -108,7 +118,8 @@ impl FmlWidget for LogPane {
         // index to the index within the Vec<ListItem> slice we just built.
         // These must use the same window_start or the highlight lands on the
         // wrong row.
-        let mut list_state = ListState::default().with_selected(Some(state.absolute_cursor));
+        let mut list_state =
+            ListState::default().with_selected(state.log_pane.selected_visible_index());
 
         frame.render_stateful_widget(list, inner_area, &mut list_state);
 
@@ -161,37 +172,25 @@ impl FmlWidget for LogPane {
             TuiEvent::Scroll(scroll) => {
                 debug!("received scroll event - {:?}", scroll);
 
-                match scroll {
+                let query = match scroll {
                     ScrollDirection::Forward => {
-                        state.absolute_cursor = state
-                            .absolute_cursor
-                            .saturating_add(1)
-                            .min(state.log_pane.height.saturating_sub(1));
-
-                        // Cursor reached the bottom row → following new entries.
-                        if state.absolute_cursor + 1 == state.log_pane.height {
-                            state.log_pane.mode = ScrollMode::Tail;
-                        }
+                        state.log_pane.scroll_forward(&mut state.absolute_cursor)
                     }
                     ScrollDirection::Backward => {
-                        let prev = state.absolute_cursor;
-                        state.absolute_cursor = state.absolute_cursor.saturating_sub(1);
-                        // Any upward movement leaves tail-follow mode.
-                        if prev != state.absolute_cursor {
-                            state.log_pane.mode = ScrollMode::History;
-                        }
+                        state.log_pane.scroll_backward(&mut state.absolute_cursor)
                     }
-                }
+                };
+                Self::dispatch_search(query, events_bus);
             }
             TuiEvent::ScrollHead => {
                 debug!("received scroll head event");
-                state.absolute_cursor = 0;
-                state.log_pane.mode = ScrollMode::History;
+                let query = state.log_pane.jump_head(&mut state.absolute_cursor);
+                Self::dispatch_search(query, events_bus);
             }
             TuiEvent::ScrollTail => {
                 debug!("received scroll tail event");
-                state.absolute_cursor = state.log_pane.height.saturating_sub(1);
-                state.log_pane.mode = ScrollMode::Tail;
+                let query = state.log_pane.jump_tail(&mut state.absolute_cursor);
+                Self::dispatch_search(query, events_bus);
             }
             TuiEvent::Input(key) => {
                 debug!("received input event - {:?}", key);

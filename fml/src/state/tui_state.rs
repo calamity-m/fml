@@ -8,7 +8,10 @@ pub mod log_pane_state;
 use log_pane_state::LogPaneState;
 
 use crate::{
-    config::tui::{ThemeConfig, TuiConfig},
+    config::{
+        search::SearchConfig,
+        tui::{ThemeConfig, TuiConfig},
+    },
     error::FmlError,
     tui::{layout::Slot, widgets::query_box},
 };
@@ -24,15 +27,15 @@ pub struct TuiState {
 }
 
 impl TuiState {
-    pub fn new(config: &TuiConfig) -> Result<Self, FmlError> {
-        let selected_theme = config.resolved_theme()?;
+    pub fn new(tui_config: &TuiConfig, search_config: &SearchConfig) -> Result<Self, FmlError> {
+        let selected_theme = tui_config.resolved_theme()?;
         Ok(TuiState {
             focused: Slot::Main,
             areas: HashMap::new(),
             selected_theme,
             query_box_textarea: query_box::query_box_textarea(),
             absolute_cursor: 0,
-            log_pane: LogPaneState::default(),
+            log_pane: LogPaneState::new(search_config.tail_size),
         })
     }
 }

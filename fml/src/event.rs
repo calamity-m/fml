@@ -60,7 +60,7 @@ pub struct SearchHit {
     pub matches: Vec<Match>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Query {
     Tail,
     History { middle_seq_id: u64, buffer: u64 },

@@ -4,22 +4,22 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ---
 ┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
 │23 INFO src-b second 3                                ▲│                      │
-│24 INFO src-b second 4                                █│                      │
-│25 INFO src-b second 5                                █│                      │
-│26 INFO src-b second 6                                █│                      │
-│27 INFO src-b second 7                                █│                      │
-│28 INFO src-b second 8                                █└──────────────────────┘
-│29 INFO src-b second 9                                █┌ Preview [ MODE ] ────┐
-│30 INFO src-b second 10                               █│                      │
-│31 INFO src-b second 11                               █│                      │
-│32 INFO src-b second 12                               ││                      │
-│33 INFO src-b second 13                               ││                      │
-│34 INFO src-b second 14                               ││                      │
-│35 INFO src-b second 15                               ││                      │
-│36 INFO src-b second 16                               ││                      │
-│37 INFO src-b second 17                               ││                      │
-│38 INFO src-b second 18                               ││                      │
-│39 INFO src-b second 19                               ││                      │
+│24 INFO src-b second 4                                ││                      │
+│25 INFO src-b second 5                                ││                      │
+│26 INFO src-b second 6                                ││                      │
+│27 INFO src-b second 7                                ││                      │
+│28 INFO src-b second 8                                │└──────────────────────┘
+│29 INFO src-b second 9                                │┌ Preview [ MODE ] ────┐
+│30 INFO src-b second 10                               ││                      │
+│31 INFO src-b second 11                               ││                      │
+│32 INFO src-b second 12                               █│                      │
+│33 INFO src-b second 13                               █│                      │
+│34 INFO src-b second 14                               █│                      │
+│35 INFO src-b second 15                               █│                      │
+│36 INFO src-b second 16                               █│                      │
+│37 INFO src-b second 17                               █│                      │
+│38 INFO src-b second 18                               █│                      │
+│39 INFO src-b second 19                               █│                      │
 │40 INFO src-b second 20                               ▼│                      │
 └──────────────────────────────────────────────────────┘│                      │
 ┌ Query ───────────────────────────────────────────────┐│                      │
