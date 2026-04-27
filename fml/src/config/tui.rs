@@ -1,4 +1,4 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
 use super::themes::DEFAULT_THEME_NAME;
@@ -109,6 +109,10 @@ pub struct ThemeConfig {
     #[serde(default = "default_log_match_fg")]
     pub log_match_fg: Color,
 
+    /// Rendering mode for highlighted text that matches the active search.
+    #[serde(default)]
+    pub log_match_style: LogMatchStyle,
+
     /// Foreground colors for log rows keyed by parsed severity.
     #[serde(default)]
     pub log_level: LogLevelThemeConfig,
@@ -131,6 +135,7 @@ impl Default for ThemeConfig {
             secondary_accent_fg: default_secondary_accent_fg(),
             log_selected_bg: default_log_selected_bg(),
             log_match_fg: default_log_match_fg(),
+            log_match_style: LogMatchStyle::default(),
             log_level: LogLevelThemeConfig::default(),
             log_match_bold: true,
             status_dim: true,
@@ -151,6 +156,37 @@ impl ThemeConfig {
     pub fn log_row_fg(&self, level: Option<LogLevel>) -> Color {
         self.log_level.color_for(level)
     }
+
+    /// Style overlay for text matching the active fuzzy search.
+    pub fn match_style(&self) -> Style {
+        match self.log_match_style {
+            LogMatchStyle::Color => {
+                let mut style = Style::default().fg(self.log_match_fg);
+                if self.log_match_bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                style
+            }
+            LogMatchStyle::Bold => Style::default().add_modifier(Modifier::BOLD),
+            LogMatchStyle::Underline => Style::default().add_modifier(Modifier::UNDERLINED),
+            LogMatchStyle::Reversed => Style::default().add_modifier(Modifier::REVERSED),
+        }
+    }
+}
+
+/// Rendering mode for text matching the active fuzzy search.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogMatchStyle {
+    /// Apply the configured match foreground, plus bold when enabled.
+    #[default]
+    Color,
+    /// Apply bold without changing foreground color.
+    Bold,
+    /// Apply underline without changing foreground color.
+    Underline,
+    /// Reverse foreground/background for a visible terminal block.
+    Reversed,
 }
 
 /// Foreground colors applied to log rows for each parsed severity.

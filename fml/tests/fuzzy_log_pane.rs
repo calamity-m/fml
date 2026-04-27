@@ -7,13 +7,21 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fml::{
     app::App,
-    config::Config,
+    config::{
+        Config,
+        tui::{LogLevelThemeConfig, LogMatchStyle},
+    },
     event::{ProducerEvent, QuitEvent, TuiEvent},
+    log::LogLevel,
     state::tui_state::log_pane_state::ScrollMode,
 };
-use ratatui::widgets::ScrollDirection;
+use ratatui::{
+    buffer::Buffer,
+    style::{Color, Modifier},
+    widgets::ScrollDirection,
+};
 
-use common::{buffer_to_string, make_entry};
+use common::{buffer_to_string, make_entry, make_entry_with_source_display};
 
 async fn populate(producer_tx: &tokio::sync::mpsc::Sender<ProducerEvent>) {
     for msg in [
@@ -43,6 +51,36 @@ fn fuzzy_config() -> Config {
     config.search.tail_poll_interval_ms = 10;
     config.search.history_poll_interval_ms = 10;
     config
+}
+
+fn buffer_to_underlined_snapshot(buf: &Buffer) -> String {
+    let area = buf.area();
+    let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+
+    for y in 0..area.height {
+        let mut in_underlined_run = false;
+        for x in 0..area.width {
+            let cell = &buf[(x, y)];
+            let underlined = cell.modifier.contains(Modifier::UNDERLINED);
+
+            if underlined && !in_underlined_run {
+                out.push('[');
+                in_underlined_run = true;
+            } else if !underlined && in_underlined_run {
+                out.push(']');
+                in_underlined_run = false;
+            }
+
+            out.push_str(cell.symbol());
+        }
+
+        if in_underlined_run {
+            out.push(']');
+        }
+        out.push('\n');
+    }
+
+    out
 }
 
 async fn type_query(tui_tx: &tokio::sync::mpsc::UnboundedSender<TuiEvent>, text: &str) {
@@ -179,4 +217,76 @@ async fn clearing_fuzzy_query_returns_to_tail_mode() {
     assert!(rendered.contains(" FML [TAIL] "));
     assert_eq!(app.state.tui.log_pane.selected_seq, Some(6));
     assert!(app.state.tui.log_pane.fuzzy_matches.is_empty());
+}
+
+#[tokio::test]
+async fn fuzzy_highlighting_snapshot_uses_display_name_and_marks_matches() {
+    let mut config = fuzzy_config();
+    config.tui.default_theme.log_match_style = LogMatchStyle::Underline;
+    config.tui.default_theme.log_level = LogLevelThemeConfig {
+        info_fg: Color::Blue,
+        ..LogLevelThemeConfig::default()
+    };
+
+    let app = App::with_test_backend(config, 80, 24).expect("app construction");
+
+    let producer_tx = app.state.event_bus.producer_event_tx.clone();
+    let tui_tx = app.state.event_bus.tui_event_tx.clone();
+    let quit_tx = app.state.event_bus.quit_tx.clone();
+
+    tokio::spawn(async move {
+        producer_tx
+            .send(ProducerEvent::StoreEvent(make_entry_with_source_display(
+                "needle",
+                "src-a",
+                "Service A",
+            )))
+            .await
+            .expect("send producer event");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        type_query(&tui_tx, "Service").await;
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        tui_tx.send(TuiEvent::Render).expect("send render event");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        quit_tx.send(QuitEvent {}).await.expect("send quit");
+    });
+
+    let app = app.run_until_quit().await;
+    let buffer = app.terminal.backend().buffer();
+    let rendered = buffer_to_string(buffer);
+    let row = rendered
+        .lines()
+        .position(|line| line.contains("1 INFO Service A needle"))
+        .expect("expected rendered fuzzy result");
+    let col = rendered
+        .lines()
+        .nth(row)
+        .expect("expected row")
+        .find("Service")
+        .expect("expected service column");
+    let unhighlighted_col = rendered
+        .lines()
+        .nth(row)
+        .expect("expected row")
+        .find("needle")
+        .expect("expected needle column");
+
+    assert!(rendered.contains("Service A"));
+    assert!(!rendered.contains("src-a needle"));
+    assert_ne!(buffer[(col as u16, row as u16)].fg, Color::Blue);
+    assert!(
+        buffer[(col as u16, row as u16)]
+            .modifier
+            .contains(Modifier::UNDERLINED),
+        "matched character should carry fuzzy highlight style"
+    );
+    assert!(
+        !buffer[(unhighlighted_col as u16, row as u16)]
+            .modifier
+            .contains(Modifier::UNDERLINED),
+        "unmatched rendered field should keep only the level style"
+    );
+    assert_eq!(app.state.tui.log_pane.selected_seq, Some(1));
+    assert_eq!(app.state.tui.log_pane.items[0].level, Some(LogLevel::Info));
+    insta::assert_snapshot!(buffer_to_underlined_snapshot(buffer));
 }

@@ -1,11 +1,19 @@
-use ratatui::widgets::{
-    Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
-    ScrollbarState,
+use std::{collections::HashSet, sync::Arc};
+
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+    widgets::{
+        Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
 };
 use tracing::{debug, error};
 
 use crate::{
-    event::{Query, SearchEvent, TuiEvent},
+    config::tui::ThemeConfig,
+    event::{Match, Query, SearchEvent, TuiEvent},
+    log::LogEntry,
     state::{
         events_bus::EventBus,
         tui_state::{
@@ -49,6 +57,103 @@ impl LogPane {
             error!("failed to send search event from log pane - {}", err);
         }
     }
+
+    fn render_line(
+        entry: &Arc<LogEntry>,
+        leading_id: String,
+        matches: Option<&[Match]>,
+        theme: &ThemeConfig,
+    ) -> Line<'static> {
+        let base_style = theme.surface_style().fg(theme.log_row_fg(entry.level));
+        let match_style = theme.surface_style().patch(theme.match_style());
+        let level = entry
+            .level
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "----".to_string());
+
+        let mut spans = Vec::new();
+        spans.push(Span::styled(leading_id, base_style));
+        spans.push(Span::styled(" ", base_style));
+        spans.extend(Self::styled_field(
+            &level,
+            matches,
+            "level",
+            base_style,
+            match_style,
+        ));
+        spans.push(Span::styled(" ", base_style));
+        spans.extend(Self::styled_field(
+            &entry.source.display_name,
+            matches,
+            "source",
+            base_style,
+            match_style,
+        ));
+        spans.push(Span::styled(" ", base_style));
+        spans.extend(Self::styled_field(
+            &entry.msg,
+            matches,
+            "msg",
+            base_style,
+            match_style,
+        ));
+
+        Line::from(spans)
+    }
+
+    fn styled_field(
+        text: &str,
+        matches: Option<&[Match]>,
+        key: &str,
+        base_style: Style,
+        match_style: Style,
+    ) -> Vec<Span<'static>> {
+        let matched = Self::matched_indices(matches, key);
+        if matched.is_empty() {
+            return vec![Span::styled(text.to_string(), base_style)];
+        }
+
+        let mut spans = Vec::new();
+        let mut chunk = String::new();
+        let mut chunk_is_match = false;
+        let mut has_chunk = false;
+
+        for (idx, ch) in text.chars().enumerate() {
+            let is_match = matched.contains(&idx);
+            if has_chunk && is_match != chunk_is_match {
+                let style = if chunk_is_match {
+                    match_style
+                } else {
+                    base_style
+                };
+                spans.push(Span::styled(std::mem::take(&mut chunk), style));
+            }
+            chunk.push(ch);
+            chunk_is_match = is_match;
+            has_chunk = true;
+        }
+
+        if has_chunk {
+            let style = if chunk_is_match {
+                match_style
+            } else {
+                base_style
+            };
+            spans.push(Span::styled(chunk, style));
+        }
+
+        spans
+    }
+
+    fn matched_indices(matches: Option<&[Match]>, key: &str) -> HashSet<usize> {
+        matches
+            .into_iter()
+            .flat_map(|matches| matches.iter())
+            .filter(|m| m.key == key)
+            .flat_map(|m| m.indices.iter())
+            .map(|idx| *idx as usize)
+            .collect()
+    }
 }
 
 impl FmlWidget for LogPane {
@@ -87,10 +192,6 @@ impl FmlWidget for LogPane {
             .enumerate()
             .map(|entry| {
                 let (idx, entry) = entry;
-                let level = entry
-                    .level
-                    .map(|l| l.to_string())
-                    .unwrap_or_else(|| "----".to_string());
                 let leading_id = if state.log_pane.mode == ScrollMode::Search {
                     // In search mode the useful coordinate is rank position,
                     // not the underlying log seq, because navigation is over
@@ -104,9 +205,15 @@ impl FmlWidget for LogPane {
                 } else {
                     entry.seq.to_string()
                 };
-                ListItem::new(format!(
-                    "{} {} {} {}",
-                    leading_id, level, entry.source.id, entry.msg
+                let matches = (state.log_pane.mode == ScrollMode::Search)
+                    .then(|| state.log_pane.fuzzy_matches.get(&entry.seq))
+                    .flatten()
+                    .map(Vec::as_slice);
+                ListItem::new(Self::render_line(
+                    entry,
+                    leading_id,
+                    matches,
+                    &state.selected_theme,
                 ))
             })
             .collect();
@@ -236,5 +343,101 @@ impl FmlWidget for LogPane {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use chrono::Utc;
+    use ratatui::style::{Color, Modifier, Style};
+
+    use super::*;
+    use crate::{
+        config::tui::{LogMatchStyle, ThemeConfig},
+        event::Match,
+        log::{LogLevel, Source},
+    };
+
+    fn entry(level: LogLevel) -> Arc<LogEntry> {
+        Arc::new(LogEntry {
+            seq: 42,
+            msg: "error".to_string(),
+            ts: Utc::now(),
+            level: Some(level),
+            source: Source {
+                id: "src-a".to_string(),
+                display_name: "payments".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn styled_field_splits_non_adjacent_match_indices() {
+        let base = Style::default().fg(Color::Red);
+        let matched = Style::default().fg(Color::Yellow);
+        let matches = [Match {
+            key: "msg".to_string(),
+            indices: vec![0, 2],
+        }];
+
+        let spans = LogPane::styled_field("error", Some(&matches), "msg", base, matched);
+
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans[0].content, "e");
+        assert_eq!(spans[0].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[1].content, "r");
+        assert_eq!(spans[1].style.fg, Some(Color::Red));
+        assert_eq!(spans[2].content, "r");
+        assert_eq!(spans[2].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[3].content, "or");
+        assert_eq!(spans[3].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn render_line_applies_level_color_and_match_override() {
+        let theme = ThemeConfig {
+            log_match_style: LogMatchStyle::Underline,
+            ..ThemeConfig::default()
+        };
+        let matches = [Match {
+            key: "msg".to_string(),
+            indices: vec![0],
+        }];
+
+        let line = LogPane::render_line(
+            &entry(LogLevel::Error),
+            "1".to_string(),
+            Some(&matches),
+            &theme,
+        );
+        let highlighted = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "e")
+            .expect("expected highlighted message span");
+        let unhighlighted = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "rror")
+            .expect("expected unhighlighted message span");
+
+        assert_eq!(highlighted.style.fg, None);
+        assert!(
+            highlighted
+                .style
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        assert_eq!(unhighlighted.style.fg, Some(Color::Red));
+        assert!(
+            !unhighlighted
+                .style
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
     }
 }

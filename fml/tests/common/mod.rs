@@ -8,13 +8,21 @@ use ratatui::buffer::Buffer;
 use fml::log::{LogLevel, NewLogEntry, Source};
 
 pub fn make_entry(msg: &str, source_id: &str) -> NewLogEntry {
+    make_entry_with_source_display(msg, source_id, source_id)
+}
+
+pub fn make_entry_with_source_display(
+    msg: &str,
+    source_id: &str,
+    display_name: &str,
+) -> NewLogEntry {
     NewLogEntry {
         msg: msg.to_string(),
         ts: Utc::now(),
         level: Some(LogLevel::Info),
         source: Source {
             id: source_id.to_string(),
-            display_name: source_id.to_string(),
+            display_name: display_name.to_string(),
             group: None,
         },
         fields: HashMap::new(),

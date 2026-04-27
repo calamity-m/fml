@@ -1,9 +1,9 @@
 //! Fuzzy search worker.
 //!
 //! Runs a frizbee-backed fuzzy match of the user's needle against every
-//! retained [`LogEntry`]. For each entry the worker scores three field
+//! retained [`LogEntry`]. For each entry the worker scores four field
 //! classes independently — `msg`, the `level` display name (`"INFO"`,
-//! `"WARN"`, …), and each entry's `fields` values — and folds the per-class
+//! `"WARN"`, …), the source display name, and each entry's `fields` values — and folds the per-class
 //! scores into a single weighted aggregate. `msg` dominates ([`WEIGHT_MSG`]),
 //! `level` is next ([`WEIGHT_LEVEL`]), and `fields` are lightest
 //! ([`WEIGHT_FIELDS`]) so an entry that hits on multiple weak fields can
@@ -56,13 +56,15 @@ const SCAN_CHUNK_SIZE: usize = 256;
 const WEIGHT_MSG: f32 = 3.0;
 /// Weight applied to a frizbee score on the `level` display name.
 const WEIGHT_LEVEL: f32 = 0.5;
+/// Weight applied to a frizbee score on the source display name.
+const WEIGHT_SOURCE: f32 = 0.8;
 /// Weight applied to a frizbee score on each `fields` value.
 const WEIGHT_FIELDS: f32 = 0.3;
 
 /// Starts the background worker for a fuzzy text search.
 ///
 /// The worker matches `term` against each retained `LogEntry`'s `msg`,
-/// `level` display name, and `fields` values using frizbee, weights
+/// `level` display name, source display name, and `fields` values using frizbee, weights
 /// those matches (msg > level > fields), and emits ranked hits at
 /// `tick_rate` cadence. A snapshot of the retained `(low, high)` window
 /// and its [`ScanState`] are held across ticks: between ticks the
@@ -279,11 +281,15 @@ fn score_batch(needle: &str, entries: &[Arc<LogEntry>], config: &FrizbeeConfig) 
     }
 
     // Per-entry haystacks: the frizbee result's `index` maps 1:1 back
-    // into `entries` for these two classes.
+    // into `entries` for these classes.
     let msg_haystack: Vec<&str> = entries.iter().map(|e| e.msg.as_str()).collect();
     let level_haystack: Vec<String> = entries
         .iter()
         .map(|e| e.level.map(|l| l.to_string()).unwrap_or_default())
+        .collect();
+    let source_haystack: Vec<&str> = entries
+        .iter()
+        .map(|e| e.source.display_name.as_str())
         .collect();
 
     // Fields are a variable number per entry, so the haystack is
@@ -308,6 +314,7 @@ fn score_batch(needle: &str, entries: &[Arc<LogEntry>], config: &FrizbeeConfig) 
     } else {
         Vec::new()
     };
+    let source_hits = match_list_indices(needle, &source_haystack, config);
     let field_hits = if !field_haystack.is_empty() {
         match_list_indices(needle, &field_haystack, config)
     } else {
@@ -347,6 +354,16 @@ fn score_batch(needle: &str, entries: &[Arc<LogEntry>], config: &FrizbeeConfig) 
             m.score,
             m.indices,
             WEIGHT_LEVEL,
+        );
+    }
+    for m in source_hits {
+        apply_match(
+            &mut scored,
+            m.index as usize,
+            "source",
+            m.score,
+            m.indices,
+            WEIGHT_SOURCE,
         );
     }
     for m in field_hits {
@@ -693,6 +710,45 @@ mod tests {
         assert!(
             results[0].matches.iter().any(|m| m.key == "level"),
             "expected a Match with key=level, got {:?}",
+            results[0].matches
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn source_display_name_match_keyed_as_source() {
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(NewLogEntry {
+            msg: "nothing".to_string(),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: Source {
+                id: "s1".to_string(),
+                display_name: "payments-api".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        });
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_fuzzy_search(
+            "payments".to_string(),
+            vec![],
+            100,
+            Duration::from_millis(10),
+            Some(0),
+            store.clone(),
+            1,
+            tx,
+        );
+
+        let (results, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
+        assert!(!results.is_empty(), "expected a source display name match");
+        assert!(
+            results[0].matches.iter().any(|m| m.key == "source"),
+            "expected a Match with key=source, got {:?}",
             results[0].matches
         );
 

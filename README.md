@@ -145,11 +145,11 @@ so that they can better refine their search, and have visual feedback to their m
 ratatui TestBackend's insta snapshots **does not support color**, we can get around this by having a configurable "highlight_match_style" which may 
 be en enum of (Color, Underline, Bold, Block) or something - this will allow integration testing to confirm highlight functionality.
 
-[ ] Configuration for highlight_match_style added to the TUI, ensuring it will be usable later by the InfoPane
-[ ] Fuzzy search ranking is extended to cover source display name
-[ ] Log line rendering replaces source-id with source display name
-[ ] Highlighting of matched portions of entries in the LogPane added (message/level/display name)
-[ ] Integration test added for highlighting, using a highlight_match_style that renders in the TestBackend
+[x] Configuration for highlight_match_style added to the TUI, ensuring it will be usable later by the InfoPane
+[x] Fuzzy search ranking is extended to cover source display name
+[x] Log line rendering replaces source-id with source display name
+[x] Highlighting of matched portions of entries in the LogPane added (message/level/display name)
+[x] Integration test added for highlighting, using a highlight_match_style that renders in the TestBackend
 
 ### 8. Log Pane Fuzzy Sticky Cursor Functionality
 
