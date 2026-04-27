@@ -17,6 +17,12 @@ pub struct EventBus {
     pub quit_rx: mpsc::Receiver<QuitEvent>,
 }
 
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventBus {
     pub fn new() -> Self {
         let (tui_event_tx, tui_event_rx) = mpsc::unbounded_channel();

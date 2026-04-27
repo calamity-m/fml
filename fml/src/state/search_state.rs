@@ -12,6 +12,12 @@ pub struct SearchState {
     clients: HashMap<SearchTarget, SearchClientState>,
 }
 
+impl Default for SearchState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchState {
     pub fn new() -> Self {
         Self {
@@ -31,10 +37,10 @@ impl SearchState {
     }
 
     pub fn cancel(&mut self, target: SearchTarget) {
-        if let Some(client) = self.clients.get_mut(&target) {
-            if let Some(handle) = client.running_handle.take() {
-                handle.abort();
-            }
+        if let Some(client) = self.clients.get_mut(&target)
+            && let Some(handle) = client.running_handle.take()
+        {
+            handle.abort();
         }
     }
 }

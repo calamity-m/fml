@@ -27,6 +27,12 @@ pub fn query_box_textarea<'a>() -> TextArea<'a> {
 /// returns pure user input with no stripping required.
 pub struct QueryBox {}
 
+impl Default for QueryBox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryBox {
     pub fn new() -> Self {
         QueryBox {}
@@ -146,25 +152,22 @@ impl FmlWidget for QueryBox {
     fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {
         debug!("handling event for query_box - {:?}", event);
 
-        match event {
-            TuiEvent::Input(key) => {
-                let before = Self::query_text(state);
-                let changed = state.query_box_textarea.input(key);
-                let after = Self::query_text(state);
+        if let TuiEvent::Input(key) = event {
+            let before = Self::query_text(state);
+            let changed = state.query_box_textarea.input(key);
+            let after = Self::query_text(state);
 
-                // TextArea handles navigation keys too; only content changes
-                // should affect search mode.
-                if !changed || before == after {
-                    return;
-                }
-
-                if after.is_empty() {
-                    Self::dispatch_tail(state, events_bus);
-                } else {
-                    Self::dispatch_debounced_fuzzy(after, state, events_bus);
-                }
+            // TextArea handles navigation keys too; only content changes
+            // should affect search mode.
+            if !changed || before == after {
+                return;
             }
-            _ => {}
+
+            if after.is_empty() {
+                Self::dispatch_tail(state, events_bus);
+            } else {
+                Self::dispatch_debounced_fuzzy(after, state, events_bus);
+            }
         }
     }
 }
@@ -194,8 +197,10 @@ mod tests {
 
     #[tokio::test]
     async fn debounce_dispatches_only_latest_fuzzy_query() {
-        let mut search_config = SearchConfig::default();
-        search_config.fuzzy_debounce_ms = 10;
+        let search_config = SearchConfig {
+            fuzzy_debounce_ms: 10,
+            ..SearchConfig::default()
+        };
         let mut state = TuiState::new(&TuiConfig::default(), &search_config).unwrap();
         let mut events_bus = EventBus::new();
         let widget = QueryBox::new();
@@ -227,8 +232,10 @@ mod tests {
 
     #[tokio::test]
     async fn empty_query_cancels_fuzzy_and_dispatches_tail() {
-        let mut search_config = SearchConfig::default();
-        search_config.fuzzy_debounce_ms = 100;
+        let search_config = SearchConfig {
+            fuzzy_debounce_ms: 100,
+            ..SearchConfig::default()
+        };
         let mut state = TuiState::new(&TuiConfig::default(), &search_config).unwrap();
         let mut events_bus = EventBus::new();
         let widget = QueryBox::new();

@@ -545,17 +545,16 @@ impl LogPaneState {
             return;
         }
 
-        if let Some(selected_seq) = previous_selected_seq {
-            if self
+        if let Some(selected_seq) = previous_selected_seq
+            && self
                 .content
                 .items
                 .iter()
                 .any(|entry| entry.seq == selected_seq)
-            {
-                self.viewport.selected_seq = Some(selected_seq);
-                self.preserve_cursor_row(cursor);
-                return;
-            }
+        {
+            self.viewport.selected_seq = Some(selected_seq);
+            self.preserve_cursor_row(cursor);
+            return;
         }
 
         let fallback_index = previous_selected_index

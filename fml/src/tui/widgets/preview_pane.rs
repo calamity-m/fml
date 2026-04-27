@@ -16,6 +16,12 @@ use crate::{
 
 pub struct PreviewPane {}
 
+impl Default for PreviewPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PreviewPane {
     pub fn new() -> Self {
         PreviewPane {}

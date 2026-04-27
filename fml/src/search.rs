@@ -16,11 +16,12 @@ use tracing::{debug, warn};
 
 use crate::{
     event::{Query, SearchEvent, SearchHit, SearchTarget, TuiEvent},
-    log::LogEntry,
+    log::{LogEntry, SourceId},
     state::{
         AppState,
         tui_state::log_pane_state::{LogPaneState, LogPaneUpdate, SearchKind},
     },
+    store::LogStore,
 };
 
 pub mod fuzzy;
@@ -30,6 +31,27 @@ pub mod tail;
 pub(crate) enum EmitOutcome {
     Sent,
     ReceiverGone,
+}
+
+/// Shared plumbing every search worker needs.
+///
+/// Bundles the routing/identity bits (`target`, `request_id`, `query`) that
+/// tag every emission, the per-call filter/cadence (`sources`, `tick_rate`),
+/// and the I/O handles (`store`, `tx`). Each `start_*_search` worker takes
+/// this as its first argument so strategy-specific parameters stay short and
+/// every worker shares the same uniform call shape.
+///
+/// `tick_rate` is the worker's wake-up cadence: in tail/history it gates how
+/// often retained-bounds are re-checked; in fuzzy it doubles as the partial-
+/// emission cadence during an in-flight scan.
+pub struct SearchContext {
+    pub target: SearchTarget,
+    pub query: Query,
+    pub sources: Vec<SourceId>,
+    pub request_id: u64,
+    pub tick_rate: Duration,
+    pub store: Arc<dyn LogStore>,
+    pub tx: mpsc::Sender<SearchEvent>,
 }
 
 /// Maps already-selected log entries into `SearchHit`s and sends them as a
@@ -145,57 +167,44 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 state.tui.log_pane.on_search_started(&query);
             }
 
-            let new_handle = match query.clone() {
-                Query::Tail => tail::start_tail_search(
-                    target,
-                    sources,
-                    state.config.search.tail_size,
-                    Duration::from_millis(state.config.search.tail_poll_interval_ms),
-                    state.store.clone(),
-                    request_id,
-                    state.event_bus.search_event_tx.clone(),
-                ),
+            let tick_rate = match &query {
+                Query::Tail => {
+                    Duration::from_millis(state.config.search.tail_poll_interval_ms)
+                }
+                Query::History { .. } | Query::Surrounding { .. } => {
+                    Duration::from_millis(state.config.search.history_poll_interval_ms)
+                }
+                Query::Fuzzy(_) => {
+                    Duration::from_millis(state.config.search.fuzzy_tick_rate_ms)
+                }
+            };
+            let ctx = SearchContext {
+                target,
+                query: query.clone(),
+                sources,
+                request_id,
+                tick_rate,
+                store: state.store.clone(),
+                tx: state.event_bus.search_event_tx.clone(),
+            };
+
+            let new_handle = match &query {
+                Query::Tail => tail::start_tail_search(ctx, state.config.search.tail_size),
                 Query::History {
                     middle_seq_id,
                     buffer,
-                } => history::start_history_search(
-                    target,
-                    query,
+                }
+                | Query::Surrounding {
                     middle_seq_id,
                     buffer,
-                    sources,
-                    Duration::from_millis(state.config.search.history_poll_interval_ms),
-                    state.store.clone(),
-                    request_id,
-                    state.event_bus.search_event_tx.clone(),
-                ),
-                Query::Surrounding {
-                    middle_seq_id,
-                    buffer,
-                } => history::start_history_search(
-                    target,
-                    query,
-                    middle_seq_id,
-                    buffer,
-                    sources,
-                    Duration::from_millis(state.config.search.history_poll_interval_ms),
-                    state.store.clone(),
-                    request_id,
-                    state.event_bus.search_event_tx.clone(),
-                ),
-                Query::Fuzzy(term) => fuzzy::start_fuzzy_search(
-                    target,
-                    term,
-                    sources,
+                } => history::start_history_search(ctx, *middle_seq_id, *buffer),
+                Query::Fuzzy(_) => fuzzy::start_fuzzy_search(
+                    ctx,
                     fuzzy::FuzzySearchOptions {
                         result_limit: state.config.search.fuzzy_result_limit,
-                        tick_rate: Duration::from_millis(state.config.search.fuzzy_tick_rate_ms),
                         matcher_kind: state.config.search.fuzzy_matcher,
                         max_typos: state.config.search.fuzzy_max_typos,
                     },
-                    state.store.clone(),
-                    request_id,
-                    state.event_bus.search_event_tx.clone(),
                 ),
             };
 

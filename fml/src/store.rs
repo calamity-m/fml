@@ -55,6 +55,7 @@ pub struct RingBufferStore {
 }
 
 impl RingBufferStore {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(config: StoreConfig) -> Arc<dyn LogStore> {
         Arc::new(Self {
             rb: RwLock::new(RingBuffer {

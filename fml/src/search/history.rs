@@ -1,13 +1,12 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::{
     error::FmlError,
-    event::{Query, SearchEvent, SearchTarget},
     log::{LogEntry, SourceId},
-    search::{EmitOutcome, emit_error, emit_results},
+    search::{EmitOutcome, SearchContext, emit_error, emit_results},
     store::LogStore,
 };
 
@@ -20,30 +19,34 @@ use crate::{
 /// The anchor (`middle_seq_id`) lands at the tail of the left side when
 /// retained and matching, so the total result is at most `2 * buffer` entries.
 ///
-/// The worker re-evaluates the window every `poll_interval` and re-emits when
+/// The worker re-evaluates the window every `ctx.tick_rate` and re-emits when
 /// the store's retained `(low, high)` bounds advance — newly ingested entries
 /// or eviction will both trigger a fresh emission. Entering history mode
 /// before the buffer is saturated is therefore safe: subsequent inserts will
 /// flow through to the receiver instead of being lost when the worker exits.
 pub fn start_history_search(
-    target: SearchTarget,
-    query: Query,
+    ctx: SearchContext,
     middle_seq_id: u64,
     buffer: u64,
-    sources: Vec<SourceId>,
-    poll_interval: Duration,
-    store: Arc<dyn LogStore>,
-    request_id: u64,
-    tx: mpsc::Sender<SearchEvent>,
 ) -> JoinHandle<()> {
+    let SearchContext {
+        target,
+        query,
+        sources,
+        request_id,
+        tick_rate,
+        store,
+        tx,
+    } = ctx;
+
     tokio::spawn(async move {
         debug!(
-            "spawned history search - middle_seq_id: {}, buffer: {}, sources: {:?}, poll_interval: {:?}",
-            middle_seq_id, buffer, sources, poll_interval
+            "spawned history search - middle_seq_id: {}, buffer: {}, sources: {:?}, tick_rate: {:?}",
+            middle_seq_id, buffer, sources, tick_rate
         );
 
         let mut last_emitted_bounds: Option<(u64, u64)> = None;
-        let mut ticker = tokio::time::interval(poll_interval);
+        let mut ticker = tokio::time::interval(tick_rate);
 
         loop {
             ticker.tick().await;
@@ -151,8 +154,9 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::{SearchHit, SearchTarget},
+        event::{Query, SearchEvent, SearchHit, SearchTarget},
         log::{LogLevel, NewLogEntry, Source},
+        search::SearchContext,
         store::RingBufferStore,
     };
 
@@ -208,18 +212,20 @@ mod tests {
         tx: mpsc::Sender<SearchEvent>,
     ) -> JoinHandle<()> {
         start_history_search(
-            SearchTarget::LogPane,
-            Query::History {
-                middle_seq_id,
-                buffer,
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::History {
+                    middle_seq_id,
+                    buffer,
+                },
+                sources,
+                request_id,
+                tick_rate: fast_poll(),
+                store,
+                tx,
             },
             middle_seq_id,
             buffer,
-            sources,
-            fast_poll(),
-            store,
-            request_id,
-            tx,
         )
     }
 

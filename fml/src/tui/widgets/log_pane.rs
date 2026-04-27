@@ -29,6 +29,12 @@ use crate::{
 
 pub struct LogPane {}
 
+impl Default for LogPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogPane {
     pub fn new() -> Self {
         LogPane {}

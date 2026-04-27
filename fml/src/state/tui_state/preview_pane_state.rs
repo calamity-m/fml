@@ -22,6 +22,12 @@ pub struct PreviewPaneState {
     items: Vec<Arc<LogEntry>>,
 }
 
+impl Default for PreviewPaneState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PreviewPaneState {
     pub fn new() -> Self {
         Self {

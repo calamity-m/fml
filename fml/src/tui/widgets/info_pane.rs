@@ -10,6 +10,12 @@ use crate::tui::{
 
 pub struct InfoPane {}
 
+impl Default for InfoPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InfoPane {
     pub fn new() -> Self {
         InfoPane {}

@@ -1,39 +1,39 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::{
-    event::{Query, SearchEvent, SearchTarget},
-    log::{LogEntry, SourceId},
-    search::{EmitOutcome, emit_error, emit_results},
-    store::LogStore,
+    log::LogEntry,
+    search::{EmitOutcome, SearchContext, emit_error, emit_results},
 };
 
 /// Starts the background worker for a tail-oriented search request.
 ///
 /// The worker re-emits the full tail window (up to `tail_size` entries) each
-/// time `LogStore::bounds().1` advances. Emissions share `target` and
-/// `request_id` so that `handle_search_event` discards results from superseded
-/// queries. Cancellation is prompt because every iteration yields at
-/// `ticker.tick().await` or inside `emit_results`.
-pub fn start_tail_search(
-    target: SearchTarget,
-    sources: Vec<SourceId>,
-    tail_size: usize,
-    poll_interval: Duration,
-    store: Arc<dyn LogStore>,
-    request_id: u64,
-    tx: mpsc::Sender<SearchEvent>,
-) -> JoinHandle<()> {
+/// time `LogStore::bounds().1` advances. Emissions share `ctx.target` and
+/// `ctx.request_id` so that `handle_search_event` discards results from
+/// superseded queries. Cancellation is prompt because every iteration yields
+/// at `ticker.tick().await` or inside `emit_results`.
+pub fn start_tail_search(ctx: SearchContext, tail_size: usize) -> JoinHandle<()> {
+    let SearchContext {
+        target,
+        query,
+        sources,
+        request_id,
+        tick_rate,
+        store,
+        tx,
+    } = ctx;
+
     tokio::spawn(async move {
         debug!(
-            "spawned tail search - sources: {:?}, tail_size: {}, poll_interval: {:?}",
-            sources, tail_size, poll_interval
+            "spawned tail search - sources: {:?}, tail_size: {}, tick_rate: {:?}",
+            sources, tail_size, tick_rate
         );
 
         let mut last_sent_high: Option<u64> = None;
-        let mut ticker = tokio::time::interval(poll_interval);
+        let mut ticker = tokio::time::interval(tick_rate);
 
         loop {
             ticker.tick().await;
@@ -57,7 +57,7 @@ pub fn start_tail_search(
                     .collect()
             };
 
-            match emit_results(target, Query::Tail, entries, request_id, true, &tx).await {
+            match emit_results(target, query.clone(), entries, request_id, true, &tx).await {
                 EmitOutcome::Sent => {}
                 EmitOutcome::ReceiverGone => return,
             }
@@ -72,14 +72,17 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
+    use std::time::Duration;
+
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::{SearchHit, SearchTarget},
+        event::{Query, SearchEvent, SearchHit, SearchTarget},
         log::{LogLevel, NewLogEntry, Source},
-        store::RingBufferStore,
+        search::SearchContext,
+        store::{LogStore, RingBufferStore},
     };
 
     fn test_store_config() -> StoreConfig {
@@ -143,13 +146,16 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
-            SearchTarget::LogPane,
-            vec![],
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                sources: vec![],
+                request_id: 1,
+                tick_rate: Duration::from_millis(10),
+                store: store.clone(),
+                tx,
+            },
             3,
-            Duration::from_millis(10),
-            store.clone(),
-            1,
-            tx,
         );
 
         let (results, rid, complete) = recv_result(&mut rx).await;
@@ -168,13 +174,16 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
-            SearchTarget::LogPane,
-            vec![],
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                sources: vec![],
+                request_id: 7,
+                tick_rate: Duration::from_millis(10),
+                store: store.clone(),
+                tx,
+            },
             5,
-            Duration::from_millis(10),
-            store.clone(),
-            7,
-            tx,
         );
 
         let (seed, _, complete) = recv_result(&mut rx).await;
@@ -203,13 +212,16 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
-            SearchTarget::LogPane,
-            vec![],
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                sources: vec![],
+                request_id: 42,
+                tick_rate: Duration::from_millis(10),
+                store: store.clone(),
+                tx,
+            },
             4,
-            Duration::from_millis(10),
-            store.clone(),
-            42,
-            tx,
         );
 
         let (seed, rid, complete) = recv_result(&mut rx).await;
@@ -239,13 +251,16 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
-            SearchTarget::LogPane,
-            vec!["s1".to_string()],
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                sources: vec!["s1".to_string()],
+                request_id: 1,
+                tick_rate: Duration::from_millis(10),
+                store: store.clone(),
+                tx,
+            },
             10,
-            Duration::from_millis(10),
-            store.clone(),
-            1,
-            tx,
         );
 
         let (results, _, complete) = recv_result(&mut rx).await;

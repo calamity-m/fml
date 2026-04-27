@@ -19,27 +19,28 @@ struct StatusBarHint {
     pub label: String,
 }
 
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StatusBar {
     pub fn new() -> Self {
         StatusBar {}
     }
 
     fn visible_hints(&self) -> Vec<StatusBarHint> {
-        let mut visible = Vec::new();
-
-        // Quit
-        visible.push(StatusBarHint {
-            title: "Quit",
-            label: "ctrl+c".to_string(),
-        });
-
-        // Help
-        visible.push(StatusBarHint {
-            title: "Help",
-            label: "?".to_string(),
-        });
-
-        visible
+        vec![
+            StatusBarHint {
+                title: "Quit",
+                label: "ctrl+c".to_string(),
+            },
+            StatusBarHint {
+                title: "Help",
+                label: "?".to_string(),
+            },
+        ]
     }
 }
 
@@ -88,7 +89,7 @@ impl FmlWidget for StatusBar {
             chunks[0],
         );
         frame.render_widget(
-            Paragraph::new(format!("{version}"))
+            Paragraph::new(version.to_string())
                 .alignment(Alignment::Right)
                 .style(base_style)
                 .block(Block::default().padding(Padding {

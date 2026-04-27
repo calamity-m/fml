@@ -32,22 +32,21 @@
 //! Per-hit highlight data is carried in [`Match::indices`] as ascending
 //! character offsets into the matched field's value.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use frizbee::{Config as FrizbeeConfig, match_list_indices};
 use nucleo_matcher::{
     Config as NucleoConfig, Matcher as NucleoEngine, Utf32Str,
     pattern::{CaseMatching, Normalization, Pattern},
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::{
     config::search::FuzzyMatcherKind,
-    event::{Match, Query, SearchEvent, SearchHit, SearchTarget},
-    log::{LogEntry, SourceId},
-    search::{EmitOutcome, emit_error, emit_hits},
-    store::LogStore,
+    event::{Match, Query, SearchHit},
+    log::LogEntry,
+    search::{EmitOutcome, SearchContext, emit_error, emit_hits},
 };
 
 const SCAN_CHUNK_SIZE: usize = 256;
@@ -68,46 +67,51 @@ const WEIGHT_FIELDS: f32 = 0.3;
 #[derive(Clone, Copy, Debug)]
 pub struct FuzzySearchOptions {
     pub result_limit: usize,
-    pub tick_rate: Duration,
     pub matcher_kind: FuzzyMatcherKind,
     pub max_typos: Option<u16>,
 }
 
 /// Starts the background worker for a fuzzy text search.
 ///
-/// The worker matches `term` against each retained `LogEntry`'s `msg`,
-/// `level` display name, source display name, and `fields` values using the configured matcher,
-/// weights those matches (msg > level > fields), and emits ranked hits at
-/// `tick_rate` cadence. A snapshot of the retained `(low, high)` window
-/// and its [`ScanState`] are held across ticks: between ticks the
-/// `tokio::select!` advances the scan one `SCAN_CHUNK_SIZE` batch at a
-/// time, and when the ticker wins it emits the best `result_limit`
+/// The worker matches the needle (carried inside `ctx.query` as
+/// `Query::Fuzzy(term)`) against each retained `LogEntry`'s `msg`, `level`
+/// display name, source display name, and `fields` values using the
+/// configured matcher, weights those matches (msg > level > fields), and
+/// emits ranked hits at `ctx.tick_rate` cadence. A snapshot of the retained
+/// `(low, high)` window and its [`ScanState`] are held across ticks: between
+/// ticks the `tokio::select!` advances the scan one `SCAN_CHUNK_SIZE` batch
+/// at a time, and when the ticker wins it emits the best `result_limit`
 /// hits scored so far with `complete = false`. The final emission for a
 /// snapshot carries `complete = true`. A snapshot is retired when the
 /// scan completes or when bounds drift before the next scan begins.
 /// Final ranking is by aggregate score, then `seq desc`. The returned
 /// [`JoinHandle`] is used to cancel superseded work.
-pub fn start_fuzzy_search(
-    target: SearchTarget,
-    term: String,
-    sources: Vec<SourceId>,
-    options: FuzzySearchOptions,
-    store: Arc<dyn LogStore>,
-    request_id: u64,
-    tx: mpsc::Sender<SearchEvent>,
-) -> JoinHandle<()> {
+pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> JoinHandle<()> {
+    let SearchContext {
+        target,
+        query,
+        sources,
+        request_id,
+        tick_rate,
+        store,
+        tx,
+    } = ctx;
+
     tokio::spawn(async move {
+        let term = match &query {
+            Query::Fuzzy(term) => term.clone(),
+            other => panic!("start_fuzzy_search invoked with non-fuzzy query: {other:?}"),
+        };
+
         debug!(
             "spawned fuzzy search - term: {}, sources: {:?}, result_limit: {}, tick_rate: {:?}",
-            term, sources, options.result_limit, options.tick_rate
+            term, sources, options.result_limit, tick_rate
         );
 
         // An empty needle would match every entry with score 0 and produce
         // no useful ranking. Emit one empty result so the dispatcher sees
         // this request_id respond at least once, then exit — no point
         // holding a ticker open for something that can never produce hits.
-        let query = Query::Fuzzy(term.clone());
-
         if term.is_empty() {
             let _ = emit_hits(target, query, Vec::new(), request_id, true, &tx).await;
             return;
@@ -115,7 +119,7 @@ pub fn start_fuzzy_search(
 
         let mut matcher = FuzzyMatcher::new(options.matcher_kind, &term, options.max_typos);
 
-        let mut ticker = tokio::time::interval(options.tick_rate);
+        let mut ticker = tokio::time::interval(tick_rate);
         // The tick is an emission cadence, not a backlog of mandatory sends.
         // Skipping missed ticks lets scanning make progress after a slow chunk
         // instead of repeatedly servicing stale interval wakeups.
@@ -583,7 +587,7 @@ fn stringify_value(value: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use chrono::Utc;
     use tokio::sync::mpsc;
@@ -591,8 +595,9 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        log::{LogLevel, NewLogEntry, Source},
-        store::RingBufferStore,
+        event::{SearchEvent, SearchTarget},
+        log::{LogLevel, NewLogEntry, Source, SourceId},
+        store::{LogStore, RingBufferStore},
     };
 
     fn store_config(capacity: usize) -> StoreConfig {
@@ -656,13 +661,11 @@ mod tests {
 
     fn fuzzy_options(
         result_limit: usize,
-        tick_rate: Duration,
         matcher_kind: FuzzyMatcherKind,
         max_typos: Option<u16>,
     ) -> FuzzySearchOptions {
         FuzzySearchOptions {
             result_limit,
-            tick_rate,
             matcher_kind,
             max_typos,
         }
@@ -671,19 +674,23 @@ mod tests {
     fn start_test_fuzzy_search(
         term: String,
         sources: Vec<SourceId>,
+        tick_rate: Duration,
         options: FuzzySearchOptions,
         store: Arc<dyn LogStore>,
         request_id: u64,
         tx: mpsc::Sender<SearchEvent>,
     ) -> JoinHandle<()> {
         start_fuzzy_search(
-            SearchTarget::LogPane,
-            term,
-            sources,
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Fuzzy(term),
+                sources,
+                request_id,
+                tick_rate,
+                store,
+                tx,
+            },
             options,
-            store,
-            request_id,
-            tx,
         )
     }
 
@@ -695,9 +702,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             String::new(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -739,9 +746,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -777,9 +784,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec!["s1".to_string()],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -806,9 +813,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -841,9 +848,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "er".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -878,9 +885,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "WARN".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -921,9 +928,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "payments".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 Some(0),
             ),
@@ -959,9 +966,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 5,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -987,9 +994,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 10,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -1034,9 +1041,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 2,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -1080,9 +1087,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(1),
             fuzzy_options(
                 20,
-                Duration::from_millis(1),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -1116,9 +1123,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
+            Duration::from_millis(1),
             fuzzy_options(
                 20_000,
-                Duration::from_millis(1),
                 FuzzyMatcherKind::Frizbee,
                 None,
             ),
@@ -1170,9 +1177,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "'needle".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Nucleo,
                 None,
             ),
@@ -1202,9 +1209,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "error !beta".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Nucleo,
                 None,
             ),
@@ -1235,9 +1242,9 @@ mod tests {
         let handle = start_test_fuzzy_search(
             "!beta".to_string(),
             vec![],
+            Duration::from_millis(10),
             fuzzy_options(
                 100,
-                Duration::from_millis(10),
                 FuzzyMatcherKind::Nucleo,
                 None,
             ),

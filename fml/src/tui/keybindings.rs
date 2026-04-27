@@ -270,7 +270,7 @@ pub fn validate_conflicts(actions: &[(&str, &[KeyBinding])]) -> Result<(), FmlEr
 
     for (action_name, bindings) in actions {
         for binding in *bindings {
-            let key = (binding.code.clone(), binding.modifiers);
+            let key = (binding.code, binding.modifiers);
             match seen.get(&key) {
                 Some(first) if *first != *action_name => {
                     return Err(FmlError::Keybinding(format!(

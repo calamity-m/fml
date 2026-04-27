@@ -232,20 +232,19 @@ pub fn render<B: Backend>(state: &mut AppState, terminal: &mut Terminal<B>) {
         state.tui.areas = areas;
     });
 
-    if let Err(err) = result {
-        if let Err(err) = state
+    if let Err(err) = result
+        && let Err(err) = state
             .event_bus
             .tui_event_tx
             .send(TuiEvent::Error(err.to_string()))
-        {
-            // If we failed to send even the error that we errored, we
-            // can't really do anything but either panic or log and try
-            // again in the render event.
-            error!(
-                "failed to send tui_event error after failed render - {}",
-                err
-            );
-        }
+    {
+        // If we failed to send even the error that we errored, we
+        // can't really do anything but either panic or log and try
+        // again in the render event.
+        error!(
+            "failed to send tui_event error after failed render - {}",
+            err
+        );
     }
 }
 
