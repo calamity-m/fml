@@ -155,14 +155,19 @@ be en enum of (Color, Underline, Bold, Block) or something - this will allow int
 
 In order to keep the user focused and to not confuse them, we should modify the Log Pane fuzzy functionality to be sticky when possible. 
 This will be a best effort. If the sequence remains in the re-ranked results, we should move the cursor to that sequence's new position. If the sequence vanishes, we should stay at the same rank index if possible. If not possible, clamp to the highest rank result.
+There is one caveat here, where if our cursor is on the highest rank, whenever we get new results, our cursor should move to the highest rank, emulating "tailing" (not to be confused with tail mode/search)
 
 
 [ ] Fuzzy selection is tracked by selected sequence id, not only by visible row/index
 [ ] When a fuzzy emission arrives and the selected seq still exists, the cursor remains on that entry even if its rank changed
 [ ] When the selected seq disappears, selection falls back to the previous rank index, clamped to the new result list
 [ ] When there are no fuzzy results, SEARCH mode renders an empty result state with no selected seq
+[ ] When the cursor is on the highest rank, and new results are added, the cursor stays at the new highest rank
 [ ] Integration test added for live fuzzy re-rank preserving the selected entry
 [ ] Integration test added for live fuzzy re-rank falling back when the selected entry disappears
+[ ] Integration test added for fuzzy search, where our cursor is on the highest rank, and after a re-emission the
+existing entry still exists, but drops from the highest rank. Our cursor moves to the next highest-rank, keeping it visually
+pinned to the bottom of the rendered window.
 
 ### 9. Log Pane Fuzzy Scroll Bar Functionality
 
