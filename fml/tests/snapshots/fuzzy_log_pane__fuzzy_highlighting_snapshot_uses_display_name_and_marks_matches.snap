@@ -9,13 +9,13 @@ expression: buffer_to_underlined_snapshot(buffer)
 │                                                      ││level: INFO           │
 │                                                      ││producer: fake        │
 │                                                      ││source: [Service] A     │
-│                                                      ││group:                │
-│                                                      ││message:              │
-│                                                      ││needle                │
-│                                                      ││                      │
-│                                                      ││                      │
 │                                                      │└──────────────────────┘
 │                                                      │┌ Preview [ MODE ] ────┐
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │

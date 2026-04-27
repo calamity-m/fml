@@ -34,10 +34,10 @@ impl Slot {
 /// +-------------+-------------+
 /// |             |             |
 /// |    Main     |  InfoPane   |
-/// |  (Fill 1)   |   (50%)     |
+/// |  (Fill 1)   |   (30%)     |
 /// |             +-------------+
 /// | QueryBox    | PreviewPane |
-/// | (Length 3)  |   (50%)     |
+/// | (Length 3)  |   (70%)     |
 /// +-------------+-------------+
 /// | StatusBar (Length 1)      |
 /// +---------------------------+
@@ -62,7 +62,7 @@ pub fn build_layout(area: Rect, sidebar_width_percent: u16) -> HashMap<Slot, Rec
     .split(content[0]);
 
     let sidebar = Layout::vertical([
-        Constraint::Percentage(50), // InfoPane
+        Constraint::Percentage(30), // InfoPane
         Constraint::Fill(1),        // PreviewPane
     ])
     .split(content[1]);
