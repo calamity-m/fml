@@ -173,8 +173,8 @@ pinned to the bottom of the rendered window.
 
 The scroll bar should operate in the fuzzy search too, with the bounds instead being the size of the fuzzy search result emission.
 
-[ ] SEARCH mode scrollbar hides when fuzzy results fit into the rendered window
-[ ] SEARCH mode scrollbar appears and uses fuzzy result count as content length when the results grow beyond the rendered window
-[ ] SEARCH mode scrollbar position follows the sticky cursor
-[ ] Integration test added for fuzzy scrollbar at first, middle and last result
-[ ] Integration test added for fuzzy scrollbar with sticky cursor
+[x] SEARCH mode scrollbar hides when fuzzy results fit into the rendered window
+[x] SEARCH mode scrollbar appears and uses fuzzy result count as content length when the results grow beyond the rendered window
+[x] SEARCH mode scrollbar position follows the sticky cursor
+[x] Integration test added for fuzzy scrollbar at first, middle and last result
+[x] Integration test added for fuzzy scrollbar with sticky cursor

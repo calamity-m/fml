@@ -83,16 +83,19 @@ impl LogPaneState {
         }
     }
 
-    /// Scrollbar metrics for the retained log stream.
+    /// Scrollbar metrics for the active scroll domain.
     ///
-    /// This is intentionally store-relative rather than window-relative so the
-    /// thumb stays stable as the retained window shifts. Search/fuzzy may need
-    /// a mode-specific domain later, but that decision is deferred for TODO #6.
+    /// Tail/history use the retained log stream so the thumb stays stable as
+    /// windows shift. Search uses the current fuzzy emission because rank
+    /// position, not log sequence, is the user's active coordinate.
     pub fn scrollbar_metrics(&self) -> Option<ScrollbarMetrics> {
-        if self.mode == ScrollMode::Search {
-            return None;
+        match self.mode {
+            ScrollMode::Search => self.search_scrollbar_metrics(),
+            ScrollMode::Tail | ScrollMode::History => self.retained_scrollbar_metrics(),
         }
+    }
 
+    fn retained_scrollbar_metrics(&self) -> Option<ScrollbarMetrics> {
         let (low, high) = self.retained_bounds;
         let selected_seq = self.selected_seq?;
 
@@ -115,6 +118,21 @@ impl LogPaneState {
         Some(ScrollbarMetrics {
             content_length,
             viewport_content_length,
+            position,
+        })
+    }
+
+    fn search_scrollbar_metrics(&self) -> Option<ScrollbarMetrics> {
+        let content_length = self.items.len();
+        if self.height == 0 || content_length <= self.height {
+            return None;
+        }
+
+        let position = self.selected_index()?;
+
+        Some(ScrollbarMetrics {
+            content_length,
+            viewport_content_length: self.height.min(content_length),
             position,
         })
     }
@@ -607,6 +625,135 @@ mod tests {
                 content_length: usize::MAX,
                 viewport_content_length: 2,
                 position: usize::MAX - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn search_scrollbar_metrics_hide_when_results_fit_or_state_is_not_ready() {
+        let mut state = LogPaneState::new(500);
+        state.mode = ScrollMode::Search;
+        state.height = 3;
+        state.items = entries(1, 3);
+        state.selected_seq = Some(3);
+
+        assert_eq!(state.scrollbar_metrics(), None);
+
+        state.items = entries(1, 4);
+        state.selected_seq = None;
+
+        assert_eq!(state.scrollbar_metrics(), None);
+
+        state.selected_seq = Some(4);
+        state.height = 0;
+
+        assert_eq!(state.scrollbar_metrics(), None);
+    }
+
+    #[test]
+    fn search_scrollbar_metrics_use_fuzzy_rank_domain() {
+        let mut state = LogPaneState::new(500);
+        state.mode = ScrollMode::Search;
+        state.height = 3;
+        state.items = entries(1, 8);
+
+        state.selected_seq = Some(1);
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 8,
+                viewport_content_length: 3,
+                position: 0,
+            })
+        );
+
+        state.selected_seq = Some(4);
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 8,
+                viewport_content_length: 3,
+                position: 3,
+            })
+        );
+
+        state.selected_seq = Some(8);
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 8,
+                viewport_content_length: 3,
+                position: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn search_scrollbar_metrics_follow_sticky_selected_seq_after_rerank() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(3, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(5), entry(4), entry(3), entry(2), entry(1)],
+            (1, 5),
+            &mut cursor,
+        );
+        state.selected_seq = Some(3);
+        cursor = 2;
+
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(6), entry(3), entry(5), entry(1)],
+            (1, 6),
+            &mut cursor,
+        );
+
+        assert_eq!(state.selected_seq, Some(3));
+        assert_eq!(
+            state
+                .items
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 5, 3, 6]
+        );
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 4,
+                viewport_content_length: 3,
+                position: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn search_scrollbar_metrics_stay_at_highest_rank_when_pinned() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(3, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(3), entry(2), entry(1)],
+            (1, 3),
+            &mut cursor,
+        );
+
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(4), entry(2), entry(3), entry(1)],
+            (1, 4),
+            &mut cursor,
+        );
+
+        assert_eq!(state.selected_seq, Some(4));
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 4,
+                viewport_content_length: 3,
+                position: 3,
             })
         );
     }
