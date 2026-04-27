@@ -184,6 +184,10 @@ impl LogPaneState {
             }
             SearchKind::Fuzzy => {
                 self.mode = ScrollMode::Search;
+                let previous_selected_seq = self.selected_seq;
+                let previous_selected_index = self.selected_index();
+                let was_following_highest_rank = previous_selected_index
+                    .is_some_and(|idx| idx == self.items.len().saturating_sub(1));
                 // Keep match metadata alongside the resolved entries now so
                 // TODO #7 can render highlights without asking the search
                 // worker to replay or rescore the current result set.
@@ -192,8 +196,12 @@ impl LogPaneState {
                 // "tail" as highest rank so End/down naturally move toward
                 // the strongest hit just like tail mode moves toward newest.
                 self.items = entries.into_iter().rev().collect();
-                self.clamp_selected_seq();
-                self.preserve_cursor_row(cursor);
+                self.reconcile_fuzzy_selection(
+                    previous_selected_seq,
+                    previous_selected_index,
+                    was_following_highest_rank,
+                    cursor,
+                );
             }
         }
 
@@ -407,6 +415,42 @@ impl LogPaneState {
         }
 
         self.selected_seq = self.items.last().map(|entry| entry.seq);
+    }
+
+    fn reconcile_fuzzy_selection(
+        &mut self,
+        previous_selected_seq: Option<u64>,
+        previous_selected_index: Option<usize>,
+        was_following_highest_rank: bool,
+        cursor: &mut usize,
+    ) {
+        if self.items.is_empty() {
+            self.selected_seq = None;
+            self.view_start = 0;
+            *cursor = 0;
+            return;
+        }
+
+        if was_following_highest_rank {
+            self.selected_seq = self.items.last().map(|entry| entry.seq);
+            self.view_start = self.tail_view_start();
+            *cursor = self.visible_items().len().saturating_sub(1);
+            return;
+        }
+
+        if let Some(selected_seq) = previous_selected_seq {
+            if self.items.iter().any(|entry| entry.seq == selected_seq) {
+                self.selected_seq = Some(selected_seq);
+                self.preserve_cursor_row(cursor);
+                return;
+            }
+        }
+
+        let fallback_index = previous_selected_index
+            .unwrap_or_else(|| self.items.len().saturating_sub(1))
+            .min(self.items.len().saturating_sub(1));
+        self.selected_seq = self.items.get(fallback_index).map(|entry| entry.seq);
+        self.preserve_cursor_row(cursor);
     }
 
     fn preserve_cursor_row(&mut self, cursor: &mut usize) {
@@ -686,5 +730,164 @@ mod tests {
         assert_eq!(state.mode, ScrollMode::Tail);
         assert_eq!(state.selected_seq, Some(10));
         assert_eq!(query, Some(Query::Tail));
+    }
+
+    #[test]
+    fn fuzzy_refresh_preserves_selected_seq_after_rerank() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(3, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(3), entry(2), entry(1)],
+            (1, 3),
+            &mut cursor,
+        );
+        state.selected_seq = Some(2);
+        cursor = 1;
+
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(2), entry(4), entry(1)],
+            (1, 4),
+            &mut cursor,
+        );
+
+        assert_eq!(
+            state
+                .items
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 4, 2]
+        );
+        assert_eq!(state.selected_seq, Some(2));
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn fuzzy_refresh_falls_back_to_previous_rank_index_when_selected_seq_disappears() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(4, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(4), entry(3), entry(2), entry(1)],
+            (1, 4),
+            &mut cursor,
+        );
+        state.selected_seq = Some(2);
+        cursor = 1;
+
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(6), entry(5), entry(1)],
+            (1, 6),
+            &mut cursor,
+        );
+
+        assert_eq!(
+            state
+                .items
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 5, 6]
+        );
+        assert_eq!(state.selected_seq, Some(5));
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn fuzzy_refresh_fallback_clamps_to_highest_rank_when_new_results_are_shorter() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(4, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(4), entry(3), entry(2), entry(1)],
+            (1, 4),
+            &mut cursor,
+        );
+        state.selected_seq = Some(3);
+        cursor = 2;
+
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(5), entry(1)],
+            (1, 5),
+            &mut cursor,
+        );
+
+        assert_eq!(
+            state
+                .items
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 5]
+        );
+        assert_eq!(state.selected_seq, Some(5));
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn fuzzy_refresh_empty_results_clear_selection() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(3, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(3), entry(2), entry(1)],
+            (1, 3),
+            &mut cursor,
+        );
+
+        state.apply_results(SearchKind::Fuzzy, Vec::new(), (1, 3), &mut cursor);
+
+        assert!(state.items.is_empty());
+        assert_eq!(state.selected_seq, None);
+        assert_eq!(state.view_start, 0);
+        assert_eq!(cursor, 0);
+        assert_eq!(state.selected_visible_index(), None);
+    }
+
+    #[test]
+    fn fuzzy_refresh_follows_new_highest_rank_when_previous_selection_was_highest() {
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(3, &mut cursor);
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(3), entry(2), entry(1)],
+            (1, 3),
+            &mut cursor,
+        );
+
+        state.apply_results(
+            SearchKind::Fuzzy,
+            vec![entry(4), entry(2), entry(3), entry(1)],
+            (1, 4),
+            &mut cursor,
+        );
+
+        assert_eq!(
+            state
+                .items
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 2, 4]
+        );
+        assert_eq!(state.selected_seq, Some(4));
+        assert_eq!(
+            state
+                .visible_items()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![3, 2, 4]
+        );
+        assert_eq!(cursor, 2);
     }
 }

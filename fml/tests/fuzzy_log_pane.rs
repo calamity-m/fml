@@ -11,8 +11,9 @@ use fml::{
         Config,
         tui::{LogLevelThemeConfig, LogMatchStyle},
     },
-    event::{ProducerEvent, QuitEvent, TuiEvent},
+    event::{ProducerEvent, Query, QuitEvent, SearchEvent, SearchHit, TuiEvent},
     log::LogLevel,
+    producer, search,
     state::tui_state::log_pane_state::ScrollMode,
 };
 use ratatui::{
@@ -90,6 +91,48 @@ async fn type_query(tui_tx: &tokio::sync::mpsc::UnboundedSender<TuiEvent>, text:
             .send(key(KeyCode::Char(ch)))
             .expect("send query input");
     }
+}
+
+fn fuzzy_hit(seq_id: u64) -> SearchHit {
+    SearchHit {
+        seq_id,
+        matches: Vec::new(),
+    }
+}
+
+fn reducer_app_with_entries(count: u64) -> App<ratatui::backend::TestBackend> {
+    let mut app = App::with_test_backend(fuzzy_config(), 80, 24).expect("app construction");
+    for seq in 1..=count {
+        app.state = producer::handle_producer_event(
+            ProducerEvent::StoreEvent(make_entry(&format!("entry {seq}"), "src-a")),
+            app.state,
+        );
+    }
+    app.state.search.latest_request_id = 1;
+    app.state
+        .tui
+        .log_pane
+        .on_search_started(&Query::Fuzzy("entry".to_string()));
+    app.state
+        .tui
+        .log_pane
+        .set_height(10, &mut app.state.tui.absolute_cursor);
+    app
+}
+
+fn apply_fuzzy_emission(
+    mut app: App<ratatui::backend::TestBackend>,
+    best_first: &[u64],
+) -> App<ratatui::backend::TestBackend> {
+    app.state = search::handle_search_event(
+        SearchEvent::Result {
+            results: best_first.iter().copied().map(fuzzy_hit).collect(),
+            request_id: 1,
+            complete: true,
+        },
+        app.state,
+    );
+    app
 }
 
 #[tokio::test]
@@ -289,4 +332,72 @@ async fn fuzzy_highlighting_snapshot_uses_display_name_and_marks_matches() {
     assert_eq!(app.state.tui.log_pane.selected_seq, Some(1));
     assert_eq!(app.state.tui.log_pane.items[0].level, Some(LogLevel::Info));
     insta::assert_snapshot!(buffer_to_underlined_snapshot(buffer));
+}
+
+#[test]
+fn live_fuzzy_rerank_preserves_selected_entry() {
+    let app = reducer_app_with_entries(4);
+    let mut app = apply_fuzzy_emission(app, &[3, 2, 1]);
+    app.state.tui.log_pane.selected_seq = Some(2);
+    app.state.tui.absolute_cursor = 1;
+
+    let app = apply_fuzzy_emission(app, &[2, 4, 1]);
+
+    assert_eq!(app.state.tui.log_pane.mode, ScrollMode::Search);
+    assert_eq!(
+        app.state
+            .tui
+            .log_pane
+            .items
+            .iter()
+            .map(|entry| entry.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 4, 2]
+    );
+    assert_eq!(app.state.tui.log_pane.selected_seq, Some(2));
+    assert_eq!(app.state.tui.absolute_cursor, 2);
+}
+
+#[test]
+fn live_fuzzy_rerank_falls_back_when_selected_entry_disappears() {
+    let app = reducer_app_with_entries(6);
+    let mut app = apply_fuzzy_emission(app, &[4, 3, 2, 1]);
+    app.state.tui.log_pane.selected_seq = Some(2);
+    app.state.tui.absolute_cursor = 1;
+
+    let app = apply_fuzzy_emission(app, &[6, 5, 1]);
+
+    assert_eq!(
+        app.state
+            .tui
+            .log_pane
+            .items
+            .iter()
+            .map(|entry| entry.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 5, 6]
+    );
+    assert_eq!(app.state.tui.log_pane.selected_seq, Some(5));
+    assert_eq!(app.state.tui.absolute_cursor, 1);
+}
+
+#[test]
+fn live_fuzzy_rerank_keeps_highest_rank_pinned() {
+    let app = reducer_app_with_entries(4);
+    let app = apply_fuzzy_emission(app, &[3, 2, 1]);
+
+    let app = apply_fuzzy_emission(app, &[4, 2, 3, 1]);
+
+    assert_eq!(
+        app.state
+            .tui
+            .log_pane
+            .items
+            .iter()
+            .map(|entry| entry.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 3, 2, 4]
+    );
+    assert_eq!(app.state.tui.log_pane.selected_seq, Some(4));
+    assert_eq!(app.state.tui.absolute_cursor, 3);
 }
