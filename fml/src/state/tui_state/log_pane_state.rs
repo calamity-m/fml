@@ -620,6 +620,7 @@ mod tests {
             ts: Utc::now(),
             level: Some(LogLevel::Info),
             source: Source {
+                producer: "fake".to_string(),
                 id: "src-a".to_string(),
                 display_name: "src-a".to_string(),
                 group: None,

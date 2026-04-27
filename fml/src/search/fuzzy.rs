@@ -600,6 +600,7 @@ mod tests {
             ts: Utc::now(),
             level,
             source: Source {
+                producer: "fake".to_string(),
                 id: source_id.to_string(),
                 display_name: source_id.to_string(),
                 group: None,
@@ -619,6 +620,7 @@ mod tests {
             ts: Utc::now(),
             level,
             source: Source {
+                producer: "fake".to_string(),
                 id: source_id.to_string(),
                 display_name: source_id.to_string(),
                 group: None,
@@ -880,6 +882,7 @@ mod tests {
             ts: Utc::now(),
             level: Some(LogLevel::Info),
             source: Source {
+                producer: "fake".to_string(),
                 id: "s1".to_string(),
                 display_name: "payments-api".to_string(),
                 group: None,

@@ -164,6 +164,7 @@ mod tests {
             ts: Utc::now(),
             level: Some(LogLevel::Info),
             source: Source {
+                producer: "fake".to_string(),
                 id: source_id.to_string(),
                 display_name: source_id.to_string(),
                 group: None,

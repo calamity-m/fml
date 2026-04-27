@@ -366,6 +366,7 @@ mod tests {
             ts: Utc::now(),
             level: Some(level),
             source: Source {
+                producer: "fake".to_string(),
                 id: "src-a".to_string(),
                 display_name: "payments".to_string(),
                 group: None,

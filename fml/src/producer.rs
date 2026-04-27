@@ -21,7 +21,11 @@
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{event::ProducerEvent, log::SourceId, state::AppState};
+use crate::{
+    event::ProducerEvent,
+    log::{ProducerId, SourceId},
+    state::AppState,
+};
 
 pub mod fake;
 
@@ -39,6 +43,11 @@ pub trait LogProducer: Send + Sync {
     ///
     /// [`NewLogEntry`]: crate::log::NewLogEntry
     fn source_id(&self) -> SourceId;
+
+    /// Stable id identifying the producer itself. Used as the top-level
+    /// grouping key in the source selector tree (Producer -> Group ->
+    /// Display Name); must match `source.producer` of every emitted source.
+    fn producer_id(&self) -> ProducerId;
 
     /// Begin producing events on `tx`. Implementations should emit a
     /// [`ProducerEvent::SourceFound`] before any
@@ -98,6 +107,7 @@ mod tests {
 
     fn source(id: &str) -> Source {
         Source {
+            producer: "fake".to_string(),
             id: id.to_string(),
             display_name: format!("Source {id}"),
             group: None,

@@ -3,9 +3,13 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 pub type SourceId = String;
+pub type ProducerId = String;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Source {
+    /// Identity of the producer that emitted this source. Top-level grouping
+    /// key for the source selector tree (Producer -> Group -> Display Name).
+    pub producer: ProducerId,
     pub id: SourceId,
     /// Human-readable name shown in UI surfaces (status bar, source filters).
     pub display_name: String,

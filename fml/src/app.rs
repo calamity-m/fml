@@ -174,16 +174,19 @@ impl App<CrosstermBackend<Stdout>> {
 fn demo_sources() -> Vec<Source> {
     vec![
         Source {
+            producer: "fake".to_string(),
             id: "src-a".to_string(),
             display_name: "Service A".to_string(),
             group: Some("backend".to_string()),
         },
         Source {
+            producer: "fake".to_string(),
             id: "src-b".to_string(),
             display_name: "Service B".to_string(),
             group: Some("backend".to_string()),
         },
         Source {
+            producer: "fake".to_string(),
             id: "src-c".to_string(),
             display_name: "Service C".to_string(),
             group: Some("frontend".to_string()),

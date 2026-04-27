@@ -18,7 +18,7 @@ use tracing::debug;
 
 use crate::{
     event::ProducerEvent,
-    log::{LogLevel, NewLogEntry, Source, SourceId},
+    log::{LogLevel, NewLogEntry, ProducerId, Source, SourceId},
     producer::LogProducer,
 };
 
@@ -52,6 +52,10 @@ impl FakeProducer {
 impl LogProducer for FakeProducer {
     fn source_id(&self) -> SourceId {
         self.source.id.clone()
+    }
+
+    fn producer_id(&self) -> ProducerId {
+        self.source.producer.clone()
     }
 
     fn start(&self, tx: mpsc::Sender<ProducerEvent>) {

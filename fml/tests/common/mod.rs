@@ -22,6 +22,7 @@ pub fn make_entry_with_source_display(
         ts: Utc::now(),
         level: Some(LogLevel::Info),
         source: Source {
+            producer: "fake".to_string(),
             id: source_id.to_string(),
             display_name: display_name.to_string(),
             group: None,
