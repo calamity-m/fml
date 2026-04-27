@@ -116,4 +116,60 @@ The scroll bar should be calculated based on the log store, not any retained win
 
 Note: Ignore scroll bar for now
 
-TBD!
+Note: tail -> highest rank
+      head -> lowest rank
+
+FML's strength as a log viewing application will come from it's ability to naturally transition into fuzzy searching over 
+log lines, allowing for users to triage issues in log output, search for proverbial needles in a haystack, as well as any general
+high-level searching/analysis.
+
+To do this we require the query box to be hooked into emission of a search query, scrolling through the ranked matches and displaying new matches as they arrive.
+
+[ ] User can enter text into the query box to dispatch a `Query::Fuzzy`, using a debouncing algorithm
+[ ] Emptying query/clearing search sets the log pane back to Tail mode
+[ ] Log pane displays SEARCH for the mode title when fuzzy search dispatched
+[ ] In search mode Fuzzy emissions are rendered as they arrive - as the fuzzy searching is done in chunks, and continuously lives for
+live arrival of new highly matched entries, 
+[ ] In search mode the fuzzy ranked matches are scrollable, the low/high bounds become the fuzzy ranked result
+[ ] Home/End in search mode jumps to first/last fuzzy result.
+[ ] Fuzzy match metdata is preserved into the TUI state, so that the next TODO can be implemented. Do not yet handle highlight rendering
+[ ] Integration test added for submitting a fuzzy query and rendering ranked matches
+[ ] Integration test added for fuzzy result navigation boundaries
+[ ] Integration test added for fuzzy live re-ranked results being rendered
+[ ] Integration test added for exiting fuzzy mode by emptying the query box
+[ ] (Integration or unit) Test added for debouncing algorithm, ensuring latest request id is observed
+
+### 7. Log Pane Fuzzy Match Highlighting Functionality
+
+In the previous todo the fuzzy search functionality was added, but users of FML would expect highlighting of their ranked matches
+so that they can better refine their search, and have visual feedback to their matching. A key thing to note here is that the 
+ratatui TestBackend's insta snapshots **does not support color**, we can get around this by having a configurable "highlight_match_style" which may 
+be en enum of (Color, Underline, Bold, Block) or something - this will allow integration testing to confirm highlight functionality.
+
+[ ] Configuration for highlight_match_style added to the TUI, ensuring it will be usable later by the InfoPane
+[ ] Fuzzy search ranking is extended to cover source display name
+[ ] Log line rendering replaces source-id with source display name
+[ ] Highlighting of matched portions of entries in the LogPane added (message/level/display name)
+[ ] Integration test added for highlighting, using a highlight_match_style that renders in the TestBackend
+
+### 8. Log Pane Fuzzy Sticky Cursor Functionality
+
+In order to keep the user 
+In order to keep the user focused and to not confuse them, we should modify the Log Pane fuzzy functionality to be sticky when possible. 
+This will be a best effort. If the sequence remains in the re-ranked results, we should move the cursor to that sequence's new position. If the sequence vanishes, we should stay at the same rank index if possible. If not possible, clamp to the highest rank result.
+
+
+[ ] Fuzzy selection is tracked by selected sequence id, not only by visible row/index
+[ ] When a fuzzy emission arrives and the selected seq still exists, the cursor remains on that entry even if its rank changed
+[ ] When the selected seq disappears, selection falls back to the previous rank index, clamped to the new result list
+[ ] When there are no fuzzy results, SEARCH mode renders an empty result state with no selected seq
+
+### 9. Log Pane Fuzzy Scroll Bar Functionality
+
+The scroll bar should operate in the fuzzy search too, with the bounds instead being the size of the fuzzy search result emission.
+
+[ ] SEARCH mode scrollbar hides when fuzzy results fit into the rendered window
+[ ] SEARCH mode scrollbar appears and uses fuzzy result count as content length when the results grow beyond the rendered window
+[ ] SEARCH mode scrollbar position follows the sticky cursor
+[ ] Integration test added for fuzzy scrollbar at first, middle and last result
+[ ] Integration test added for fuzzy scrollbar with sticky cursor
