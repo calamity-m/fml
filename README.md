@@ -135,7 +135,6 @@ live arrival of new highly matched entries,
 [ ] Fuzzy match metdata is preserved into the TUI state, so that the next TODO can be implemented. Do not yet handle highlight rendering
 [ ] Integration test added for submitting a fuzzy query and rendering ranked matches
 [ ] Integration test added for fuzzy result navigation boundaries
-[ ] Integration test added for fuzzy live re-ranked results being rendered
 [ ] Integration test added for exiting fuzzy mode by emptying the query box
 [ ] (Integration or unit) Test added for debouncing algorithm, ensuring latest request id is observed
 
@@ -154,7 +153,6 @@ be en enum of (Color, Underline, Bold, Block) or something - this will allow int
 
 ### 8. Log Pane Fuzzy Sticky Cursor Functionality
 
-In order to keep the user 
 In order to keep the user focused and to not confuse them, we should modify the Log Pane fuzzy functionality to be sticky when possible. 
 This will be a best effort. If the sequence remains in the re-ranked results, we should move the cursor to that sequence's new position. If the sequence vanishes, we should stay at the same rank index if possible. If not possible, clamp to the highest rank result.
 
@@ -163,6 +161,8 @@ This will be a best effort. If the sequence remains in the re-ranked results, we
 [ ] When a fuzzy emission arrives and the selected seq still exists, the cursor remains on that entry even if its rank changed
 [ ] When the selected seq disappears, selection falls back to the previous rank index, clamped to the new result list
 [ ] When there are no fuzzy results, SEARCH mode renders an empty result state with no selected seq
+[ ] Integration test added for live fuzzy re-rank preserving the selected entry
+[ ] Integration test added for live fuzzy re-rank falling back when the selected entry disappears
 
 ### 9. Log Pane Fuzzy Scroll Bar Functionality
 
