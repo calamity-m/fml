@@ -109,6 +109,10 @@ pub fn start_fuzzy_search(
         };
 
         let mut ticker = tokio::time::interval(tick_rate);
+        // The tick is an emission cadence, not a backlog of mandatory sends.
+        // Skipping missed ticks lets scanning make progress after a slow chunk
+        // instead of repeatedly servicing stale interval wakeups.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_complete_bounds: Option<(u64, u64)> = None;
         // Active snapshot kept alive across ticks so partial emissions
         // resume instead of throwing away work. (low, high, scan).

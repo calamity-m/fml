@@ -5,12 +5,11 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use ratatui_textarea::TextArea;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::{
-    config::tui::{ThemeConfig, TuiConfig},
-    event::TuiEvent,
-    state::{AppState, events_bus::EventBus, tui_state::TuiState},
+    event::{Query, SearchEvent, TuiEvent},
+    state::{events_bus::EventBus, tui_state::TuiState},
     tui::{layout::Slot, widgets::FmlWidget},
 };
 
@@ -31,6 +30,65 @@ pub struct QueryBox {}
 impl QueryBox {
     pub fn new() -> Self {
         QueryBox {}
+    }
+
+    fn query_text(state: &TuiState) -> String {
+        state
+            .query_box_textarea
+            .lines()
+            .join("\n")
+            .trim()
+            .to_string()
+    }
+
+    fn dispatch_tail(state: &mut TuiState, events_bus: &mut EventBus) {
+        // Clearing the box is an explicit mode switch back to live logs, so any
+        // delayed fuzzy request must lose even if its timer is about to fire.
+        if let Some(handle) = state.query_box_debounce_handle.take() {
+            handle.abort();
+        }
+
+        if state.query_box_last_dispatched_query.is_empty() {
+            return;
+        }
+
+        state.query_box_last_dispatched_query.clear();
+        if let Err(err) = events_bus.search_event_tx.try_send(SearchEvent::Search {
+            query: Query::Tail,
+            sources: Vec::new(),
+        }) {
+            debug!("failed to dispatch tail search from query box - {}", err);
+        }
+    }
+
+    fn dispatch_debounced_fuzzy(term: String, state: &mut TuiState, events_bus: &mut EventBus) {
+        // Fuzzy scoring can be expensive over large retained buffers. Debouncing
+        // at the UI edge keeps typing responsive and avoids starting searches
+        // for transient prefixes the user never intended to inspect.
+        if state.query_box_last_dispatched_query == term {
+            return;
+        }
+
+        if let Some(handle) = state.query_box_debounce_handle.take() {
+            handle.abort();
+        }
+
+        let tx = events_bus.search_event_tx.clone();
+        let debounce_ms = state.fuzzy_debounce_ms;
+        let dispatched_term = term.clone();
+        state.query_box_last_dispatched_query = term;
+        state.query_box_debounce_handle = Some(tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)).await;
+            if let Err(err) = tx
+                .send(SearchEvent::Search {
+                    query: Query::Fuzzy(dispatched_term),
+                    sources: Vec::new(),
+                })
+                .await
+            {
+                debug!("failed to dispatch fuzzy search from query box - {}", err);
+            }
+        }));
     }
 }
 
@@ -88,9 +146,108 @@ impl FmlWidget for QueryBox {
 
         match event {
             TuiEvent::Input(key) => {
-                state.query_box_textarea.input(key);
+                let before = Self::query_text(state);
+                let changed = state.query_box_textarea.input(key);
+                let after = Self::query_text(state);
+
+                // TextArea handles navigation keys too; only content changes
+                // should affect search mode.
+                if !changed || before == after {
+                    return;
+                }
+
+                if after.is_empty() {
+                    Self::dispatch_tail(state, events_bus);
+                } else {
+                    Self::dispatch_debounced_fuzzy(after, state, events_bus);
+                }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::{
+        config::{search::SearchConfig, tui::TuiConfig},
+        state::events_bus::EventBus,
+    };
+
+    fn key(code: KeyCode) -> TuiEvent {
+        TuiEvent::Input(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    async fn recv_search(events_bus: &mut EventBus) -> SearchEvent {
+        tokio::time::timeout(Duration::from_secs(1), events_bus.search_event_rx.recv())
+            .await
+            .expect("timed out waiting for search event")
+            .expect("search channel closed")
+    }
+
+    #[tokio::test]
+    async fn debounce_dispatches_only_latest_fuzzy_query() {
+        let mut search_config = SearchConfig::default();
+        search_config.fuzzy_debounce_ms = 10;
+        let mut state = TuiState::new(&TuiConfig::default(), &search_config).unwrap();
+        let mut events_bus = EventBus::new();
+        let widget = QueryBox::new();
+
+        widget.handle_event(key(KeyCode::Char('e')), &mut state, &mut events_bus);
+        widget.handle_event(key(KeyCode::Char('r')), &mut state, &mut events_bus);
+        widget.handle_event(key(KeyCode::Char('r')), &mut state, &mut events_bus);
+
+        match recv_search(&mut events_bus).await {
+            SearchEvent::Search {
+                query: Query::Fuzzy(term),
+                sources,
+            } => {
+                assert_eq!(term, "err");
+                assert!(sources.is_empty());
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(40), events_bus.search_event_rx.recv())
+                .await
+                .is_err(),
+            "superseded fuzzy query should not dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_query_cancels_fuzzy_and_dispatches_tail() {
+        let mut search_config = SearchConfig::default();
+        search_config.fuzzy_debounce_ms = 100;
+        let mut state = TuiState::new(&TuiConfig::default(), &search_config).unwrap();
+        let mut events_bus = EventBus::new();
+        let widget = QueryBox::new();
+
+        widget.handle_event(key(KeyCode::Char('e')), &mut state, &mut events_bus);
+        widget.handle_event(key(KeyCode::Backspace), &mut state, &mut events_bus);
+
+        match recv_search(&mut events_bus).await {
+            SearchEvent::Search {
+                query: Query::Tail,
+                sources,
+            } => assert!(sources.is_empty()),
+            event => panic!("unexpected event: {event:?}"),
+        }
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(140),
+                events_bus.search_event_rx.recv()
+            )
+            .await
+            .is_err(),
+            "cancelled fuzzy query should not dispatch"
+        );
     }
 }

@@ -78,20 +78,35 @@ impl FmlWidget for LogPane {
             .log_pane
             .set_height(inner_area.height as usize, &mut state.absolute_cursor);
 
-        // Take the trailing `height` entries from the resolved tail window so
-        // the most recent log lines sit at the bottom of the pane.
+        // Render whatever domain the state resolved for this mode: retained
+        // sequence order for tail/history, rank order for search.
         let items: Vec<ListItem> = state
             .log_pane
             .visible_items()
             .iter()
+            .enumerate()
             .map(|entry| {
+                let (idx, entry) = entry;
                 let level = entry
                     .level
                     .map(|l| l.to_string())
                     .unwrap_or_else(|| "----".to_string());
+                let leading_id = if state.log_pane.mode == ScrollMode::Search {
+                    // In search mode the useful coordinate is rank position,
+                    // not the underlying log seq, because navigation is over
+                    // fuzzy results rather than retained log order.
+                    state
+                        .log_pane
+                        .view_start
+                        .saturating_add(idx)
+                        .saturating_add(1)
+                        .to_string()
+                } else {
+                    entry.seq.to_string()
+                };
                 ListItem::new(format!(
                     "{} {} {} {}",
-                    entry.seq, level, entry.source.id, entry.msg
+                    leading_id, level, entry.source.id, entry.msg
                 ))
             })
             .collect();

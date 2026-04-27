@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::layout::Rect;
 use ratatui_textarea::TextArea;
+use tokio::task::JoinHandle;
 
 pub mod log_pane_state;
 
@@ -21,6 +22,9 @@ pub struct TuiState {
     pub areas: HashMap<Slot, Rect>,
     pub selected_theme: ThemeConfig,
     pub query_box_textarea: TextArea<'static>,
+    pub query_box_last_dispatched_query: String,
+    pub query_box_debounce_handle: Option<JoinHandle<()>>,
+    pub fuzzy_debounce_ms: u64,
     /// Absolute index into the current display list (all entries or search results).
     pub absolute_cursor: usize,
     pub log_pane: LogPaneState,
@@ -34,6 +38,9 @@ impl TuiState {
             areas: HashMap::new(),
             selected_theme,
             query_box_textarea: query_box::query_box_textarea(),
+            query_box_last_dispatched_query: String::new(),
+            query_box_debounce_handle: None,
+            fuzzy_debounce_ms: search_config.fuzzy_debounce_ms,
             absolute_cursor: 0,
             log_pane: LogPaneState::new(search_config.tail_size),
         })

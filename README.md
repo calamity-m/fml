@@ -125,18 +125,18 @@ high-level searching/analysis.
 
 To do this we require the query box to be hooked into emission of a search query, scrolling through the ranked matches and displaying new matches as they arrive.
 
-[ ] User can enter text into the query box to dispatch a `Query::Fuzzy`, using a debouncing algorithm
-[ ] Emptying query/clearing search sets the log pane back to Tail mode
-[ ] Log pane displays SEARCH for the mode title when fuzzy search dispatched
-[ ] In search mode Fuzzy emissions are rendered as they arrive - as the fuzzy searching is done in chunks, and continuously lives for
+[x] User can enter text into the query box to dispatch a `Query::Fuzzy`, using a debouncing algorithm
+[x] Emptying query/clearing search sets the log pane back to Tail mode
+[x] Log pane displays SEARCH for the mode title when fuzzy search dispatched
+[x] In search mode Fuzzy emissions are rendered as they arrive - as the fuzzy searching is done in chunks, and continuously lives for
 live arrival of new highly matched entries, 
-[ ] In search mode the fuzzy ranked matches are scrollable, the low/high bounds become the fuzzy ranked result
-[ ] Home/End in search mode jumps to first/last fuzzy result.
-[ ] Fuzzy match metdata is preserved into the TUI state, so that the next TODO can be implemented. Do not yet handle highlight rendering
-[ ] Integration test added for submitting a fuzzy query and rendering ranked matches
-[ ] Integration test added for fuzzy result navigation boundaries
-[ ] Integration test added for exiting fuzzy mode by emptying the query box
-[ ] (Integration or unit) Test added for debouncing algorithm, ensuring latest request id is observed
+[x] In search mode the fuzzy ranked matches are scrollable, the low/high bounds become the fuzzy ranked result
+[x] Home/End in search mode jumps to first/last fuzzy result.
+[x] Fuzzy match metdata is preserved into the TUI state, so that the next TODO can be implemented. Do not yet handle highlight rendering
+[x] Integration test added for submitting a fuzzy query and rendering ranked matches
+[x] Integration test added for fuzzy result navigation boundaries
+[x] Integration test added for exiting fuzzy mode by emptying the query box
+[x] (Integration or unit) Test added for debouncing algorithm, ensuring latest request id is observed
 
 ### 7. Log Pane Fuzzy Match Highlighting Functionality
 

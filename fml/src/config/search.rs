@@ -19,6 +19,9 @@ pub struct SearchConfig {
 
     #[serde(default = "default_fuzzy_max_typos")]
     pub fuzzy_max_typos: Option<u16>,
+
+    #[serde(default = "default_fuzzy_debounce_ms")]
+    pub fuzzy_debounce_ms: u64,
 }
 
 fn default_tail_size() -> usize {
@@ -45,6 +48,10 @@ fn default_fuzzy_max_typos() -> Option<u16> {
     None
 }
 
+fn default_fuzzy_debounce_ms() -> u64 {
+    150
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
@@ -54,6 +61,7 @@ impl Default for SearchConfig {
             fuzzy_tick_rate_ms: default_fuzzy_tick_rate_ms(),
             fuzzy_result_limit: default_fuzzy_result_limit(),
             fuzzy_max_typos: default_fuzzy_max_typos(),
+            fuzzy_debounce_ms: default_fuzzy_debounce_ms(),
         }
     }
 }

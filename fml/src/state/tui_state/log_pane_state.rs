@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{event::Query, log::LogEntry};
+use crate::{
+    event::{Match, Query},
+    log::LogEntry,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScrollMode {
@@ -29,6 +32,7 @@ pub struct LogPaneState {
     pub search_results: Vec<usize>,
     /// Resolved log entries for the current display window, in render order.
     pub items: Vec<Arc<LogEntry>>,
+    pub fuzzy_matches: HashMap<u64, Vec<Match>>,
     pub height: usize,
     pub view_start: usize,
     pub selected_seq: Option<u64>,
@@ -43,6 +47,7 @@ impl Default for LogPaneState {
             mode: ScrollMode::Tail,
             search_results: Vec::new(),
             items: Vec::new(),
+            fuzzy_matches: HashMap::new(),
             height: 0,
             view_start: 0,
             selected_seq: None,
@@ -71,6 +76,11 @@ impl LogPaneState {
 
     pub fn on_search_started(&mut self, query: &Query) {
         self.active_query = Self::query_kind(query);
+        match self.active_query {
+            SearchKind::Tail => self.mode = ScrollMode::Tail,
+            SearchKind::Fuzzy => self.mode = ScrollMode::Search,
+            SearchKind::History => {}
+        }
     }
 
     /// Scrollbar metrics for the retained log stream.
@@ -79,6 +89,10 @@ impl LogPaneState {
     /// thumb stays stable as the retained window shifts. Search/fuzzy may need
     /// a mode-specific domain later, but that decision is deferred for TODO #6.
     pub fn scrollbar_metrics(&self) -> Option<ScrollbarMetrics> {
+        if self.mode == ScrollMode::Search {
+            return None;
+        }
+
         let (low, high) = self.retained_bounds;
         let selected_seq = self.selected_seq?;
 
@@ -138,6 +152,17 @@ impl LogPaneState {
         retained_bounds: (u64, u64),
         cursor: &mut usize,
     ) {
+        self.apply_results_with_matches(kind, entries, retained_bounds, HashMap::new(), cursor);
+    }
+
+    pub fn apply_results_with_matches(
+        &mut self,
+        kind: SearchKind,
+        entries: Vec<Arc<LogEntry>>,
+        retained_bounds: (u64, u64),
+        fuzzy_matches: HashMap<u64, Vec<Match>>,
+        cursor: &mut usize,
+    ) {
         self.retained_bounds = retained_bounds;
 
         match kind {
@@ -145,11 +170,13 @@ impl LogPaneState {
                 if self.mode != ScrollMode::Tail {
                     return;
                 }
+                self.fuzzy_matches.clear();
                 self.items = entries;
                 self.selected_seq = self.items.last().map(|entry| entry.seq);
                 self.view_start = self.tail_view_start();
             }
             SearchKind::History => {
+                self.fuzzy_matches.clear();
                 self.mode = ScrollMode::History;
                 self.items = entries;
                 self.clamp_selected_seq();
@@ -157,7 +184,14 @@ impl LogPaneState {
             }
             SearchKind::Fuzzy => {
                 self.mode = ScrollMode::Search;
-                self.items = entries;
+                // Keep match metadata alongside the resolved entries now so
+                // TODO #7 can render highlights without asking the search
+                // worker to replay or rescore the current result set.
+                self.fuzzy_matches = fuzzy_matches;
+                // Fuzzy results arrive best-first, but the README defines
+                // "tail" as highest rank so End/down naturally move toward
+                // the strongest hit just like tail mode moves toward newest.
+                self.items = entries.into_iter().rev().collect();
                 self.clamp_selected_seq();
                 self.preserve_cursor_row(cursor);
             }
@@ -172,6 +206,20 @@ impl LogPaneState {
         }
 
         match self.mode {
+            ScrollMode::Search => {
+                // Search mode is rank-local: navigation must not issue history
+                // queries because fuzzy result indices are not log sequence
+                // neighbors.
+                let selected = self.selected_seq.or_else(|| self.seq_at_cursor(*cursor))?;
+                let previous = self.previous_seq(selected)?;
+                if previous == selected {
+                    return None;
+                }
+
+                self.selected_seq = Some(previous);
+                self.reconcile_view(cursor);
+                None
+            }
             ScrollMode::Tail => {
                 let selected = self.seq_at_cursor(*cursor).or(self.selected_seq)?;
                 let previous = self
@@ -186,7 +234,7 @@ impl LogPaneState {
                 self.preserve_cursor_row(cursor);
                 Some(self.history_query(previous))
             }
-            ScrollMode::History | ScrollMode::Search => {
+            ScrollMode::History => {
                 let selected = self.selected_seq.or_else(|| self.seq_at_cursor(*cursor))?;
                 let previous = self
                     .previous_seq(selected)
@@ -213,6 +261,21 @@ impl LogPaneState {
 
     pub fn scroll_forward(&mut self, cursor: &mut usize) -> Option<Query> {
         if self.items.is_empty() {
+            return None;
+        }
+
+        if self.mode == ScrollMode::Search {
+            // Search mode is rank-local: navigation must not issue history or
+            // tail queries because fuzzy result indices are not log sequence
+            // neighbors.
+            let selected = self.selected_seq.or_else(|| self.seq_at_cursor(*cursor))?;
+            let next = self.next_seq(selected)?;
+            if next == selected {
+                return None;
+            }
+
+            self.selected_seq = Some(next);
+            self.reconcile_view(cursor);
             return None;
         }
 
@@ -251,6 +314,13 @@ impl LogPaneState {
     }
 
     pub fn jump_head(&mut self, cursor: &mut usize) -> Option<Query> {
+        if self.mode == ScrollMode::Search {
+            self.selected_seq = self.items.first().map(|entry| entry.seq);
+            *cursor = 0;
+            self.reconcile_view(cursor);
+            return None;
+        }
+
         let low = self.retained_bounds.0;
         if low == 0 {
             return None;
@@ -262,6 +332,14 @@ impl LogPaneState {
     }
 
     pub fn jump_tail(&mut self, cursor: &mut usize) -> Option<Query> {
+        if self.mode == ScrollMode::Search {
+            self.selected_seq = self.items.last().map(|entry| entry.seq);
+            self.view_start = self.tail_view_start();
+            *cursor = self.visible_items().len().saturating_sub(1);
+            self.reconcile_view(cursor);
+            return None;
+        }
+
         let high = self.retained_bounds.1;
         self.mode = ScrollMode::Tail;
         self.selected_seq = (high != 0).then_some(high);

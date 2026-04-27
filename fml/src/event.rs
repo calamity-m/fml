@@ -40,7 +40,7 @@ pub enum TuiEvent {
 /// A single field match within a search result.
 ///
 /// Stores the field key plus the character offsets of the matched span.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Match {
     /// Field name that contains the matched text.
     pub key: String,
@@ -52,7 +52,7 @@ pub struct Match {
 ///
 /// The hit is keyed by the entry sequence id and may contain multiple field
 /// matches for that entry.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SearchHit {
     /// Sequence id of the matching log entry.
     pub seq_id: u64,

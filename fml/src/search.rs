@@ -10,7 +10,7 @@
 //! correlated with the active request so outdated responses do not overwrite
 //! newer state.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -184,15 +184,27 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
 
             let kind = state.tui.log_pane.active_query;
             let retained_bounds = state.store.bounds();
+            let fuzzy_matches =
+                if kind == crate::state::tui_state::log_pane_state::SearchKind::Fuzzy {
+                    // Fetching entries by seq would otherwise discard the
+                    // per-field match offsets needed by the highlight stage.
+                    results
+                        .iter()
+                        .map(|hit| (hit.seq_id, hit.matches.clone()))
+                        .collect::<HashMap<_, _>>()
+                } else {
+                    HashMap::new()
+                };
             let seq_ids: Vec<u64> = results.into_iter().map(|hit| hit.seq_id).collect();
             let mut entries: Vec<Arc<LogEntry>> = Vec::with_capacity(seq_ids.len());
             if let Err(err) = state.store.fetch_requested(&seq_ids, &mut entries) {
                 warn!("failed to fetch search result entries from store: {err}");
             }
-            state.tui.log_pane.apply_results(
+            state.tui.log_pane.apply_results_with_matches(
                 kind,
                 entries,
                 retained_bounds,
+                fuzzy_matches,
                 &mut state.tui.absolute_cursor,
             );
 
