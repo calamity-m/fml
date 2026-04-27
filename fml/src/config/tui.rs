@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use super::themes::DEFAULT_THEME_NAME;
 use crate::error::FmlError;
 use crate::log::LogLevel;
-use crate::tui::keybindings::{ResolvedBindings, parse_specs, validate_conflicts};
 
 /// TUI rendering and interaction configuration.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -352,22 +351,6 @@ impl Default for KeybindingsConfig {
     }
 }
 
-impl KeybindingsConfig {
-    /// Parse and validate all configured key specs into [`ResolvedBindings`].
-    ///
-    /// Returns an error if any spec string cannot be parsed or if two different
-    /// configurable actions share an identical binding.
-    pub fn resolve(&self) -> Result<ResolvedBindings, FmlError> {
-        let toggle_help = parse_specs(&self.toggle_help)?;
-        let show_info = parse_specs(&self.show_info)?;
-        validate_conflicts(&[("toggle_help", &toggle_help), ("show_info", &show_info)])?;
-
-        Ok(ResolvedBindings {
-            toggle_help,
-            show_info,
-        })
-    }
-}
 
 fn default_toggle_help() -> Vec<String> {
     vec!["?".into()]

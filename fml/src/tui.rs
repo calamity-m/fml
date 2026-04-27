@@ -1,6 +1,5 @@
 use std::{io::stdout, time::Duration};
 
-pub mod keybindings;
 pub mod keybinds;
 pub mod layout;
 pub mod widgets;
