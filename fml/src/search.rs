@@ -153,9 +153,12 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 Query::Fuzzy(term) => fuzzy::start_fuzzy_search(
                     term,
                     sources,
-                    state.config.search.fuzzy_result_limit,
-                    Duration::from_millis(state.config.search.fuzzy_tick_rate_ms),
-                    state.config.search.fuzzy_max_typos,
+                    fuzzy::FuzzySearchOptions {
+                        result_limit: state.config.search.fuzzy_result_limit,
+                        tick_rate: Duration::from_millis(state.config.search.fuzzy_tick_rate_ms),
+                        matcher_kind: state.config.search.fuzzy_matcher,
+                        max_typos: state.config.search.fuzzy_max_typos,
+                    },
                     state.store.clone(),
                     request_id,
                     state.event_bus.search_event_tx.clone(),

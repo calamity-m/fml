@@ -1,6 +1,6 @@
 //! Fuzzy search worker.
 //!
-//! Runs a frizbee-backed fuzzy match of the user's needle against every
+//! Runs a configured fuzzy match of the user's needle against every
 //! retained [`LogEntry`]. For each entry the worker scores four field
 //! classes independently — `msg`, the `level` display name (`"INFO"`,
 //! `"WARN"`, …), the source display name, and each entry's `fields` values — and folds the per-class
@@ -30,16 +30,20 @@
 //! UI code can distinguish "best so far" from "full snapshot ranked".
 //!
 //! Per-hit highlight data is carried in [`Match::indices`] as ascending
-//! character offsets into the matched field's value. Frizbee returns
-//! these in reverse order; see [`reverse_to_u32`].
+//! character offsets into the matched field's value.
 
 use std::{sync::Arc, time::Duration};
 
 use frizbee::{Config as FrizbeeConfig, match_list_indices};
+use nucleo_matcher::{
+    Config as NucleoConfig, Matcher as NucleoEngine, Utf32Str,
+    pattern::{CaseMatching, Normalization, Pattern},
+};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::debug;
 
 use crate::{
+    config::search::FuzzyMatcherKind,
     event::{Match, SearchEvent, SearchHit},
     log::{LogEntry, SourceId},
     search::{EmitOutcome, emit_error, emit_hits},
@@ -61,11 +65,19 @@ const WEIGHT_SOURCE: f32 = 0.8;
 /// Weight applied to a frizbee score on each `fields` value.
 const WEIGHT_FIELDS: f32 = 0.3;
 
+#[derive(Clone, Copy, Debug)]
+pub struct FuzzySearchOptions {
+    pub result_limit: usize,
+    pub tick_rate: Duration,
+    pub matcher_kind: FuzzyMatcherKind,
+    pub max_typos: Option<u16>,
+}
+
 /// Starts the background worker for a fuzzy text search.
 ///
 /// The worker matches `term` against each retained `LogEntry`'s `msg`,
-/// `level` display name, source display name, and `fields` values using frizbee, weights
-/// those matches (msg > level > fields), and emits ranked hits at
+/// `level` display name, source display name, and `fields` values using the configured matcher,
+/// weights those matches (msg > level > fields), and emits ranked hits at
 /// `tick_rate` cadence. A snapshot of the retained `(low, high)` window
 /// and its [`ScanState`] are held across ticks: between ticks the
 /// `tokio::select!` advances the scan one `SCAN_CHUNK_SIZE` batch at a
@@ -78,9 +90,7 @@ const WEIGHT_FIELDS: f32 = 0.3;
 pub fn start_fuzzy_search(
     term: String,
     sources: Vec<SourceId>,
-    result_limit: usize,
-    tick_rate: Duration,
-    max_typos: Option<u16>,
+    options: FuzzySearchOptions,
     store: Arc<dyn LogStore>,
     request_id: u64,
     tx: mpsc::Sender<SearchEvent>,
@@ -88,7 +98,7 @@ pub fn start_fuzzy_search(
     tokio::spawn(async move {
         debug!(
             "spawned fuzzy search - term: {}, sources: {:?}, result_limit: {}, tick_rate: {:?}",
-            term, sources, result_limit, tick_rate
+            term, sources, options.result_limit, options.tick_rate
         );
 
         // An empty needle would match every entry with score 0 and produce
@@ -100,17 +110,9 @@ pub fn start_fuzzy_search(
             return;
         }
 
-        // `sort: false` — we combine scores across three frizbee calls
-        // (msg/level/fields) into a single aggregate and need to sort on
-        // that combined number ourselves. Letting frizbee sort would waste
-        // work and give us per-call orderings we'd immediately discard.
-        let frizbee_config = FrizbeeConfig {
-            max_typos,
-            sort: false,
-            scoring: frizbee::Scoring::default(),
-        };
+        let mut matcher = FuzzyMatcher::new(options.matcher_kind, &term, options.max_typos);
 
-        let mut ticker = tokio::time::interval(tick_rate);
+        let mut ticker = tokio::time::interval(options.tick_rate);
         // The tick is an emission cadence, not a backlog of mandatory sends.
         // Skipping missed ticks lets scanning make progress after a slow chunk
         // instead of repeatedly servicing stale interval wakeups.
@@ -160,16 +162,16 @@ pub fn start_fuzzy_search(
 
             tokio::select! {
                 _ = ticker.tick() => {
-                    let hits = build_hits(&state.scored, result_limit);
+                    let hits = build_hits(&state.scored, options.result_limit);
                     match emit_hits(hits, request_id, false, &tx).await {
                         EmitOutcome::Sent => {}
                         EmitOutcome::ReceiverGone => return,
                     }
                 }
                 _ = tokio::task::yield_now(), if !state.is_complete() => {
-                    state.process_next_chunk(&term, &frizbee_config);
+                    state.process_next_chunk(&term, &mut matcher);
                     if state.is_complete() {
-                        let hits = build_hits(&state.scored, result_limit);
+                        let hits = build_hits(&state.scored, options.result_limit);
                         match emit_hits(hits, request_id, true, &tx).await {
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
@@ -202,17 +204,14 @@ impl ScanState {
         self.next_index >= self.entries.len()
     }
 
-    fn process_next_chunk(&mut self, needle: &str, config: &FrizbeeConfig) {
+    fn process_next_chunk(&mut self, needle: &str, matcher: &mut FuzzyMatcher) {
         if self.is_complete() {
             return;
         }
 
         let end = (self.next_index + SCAN_CHUNK_SIZE).min(self.entries.len());
-        self.scored.extend(score_batch(
-            needle,
-            &self.entries[self.next_index..end],
-            config,
-        ));
+        self.scored
+            .extend(matcher.score_batch(needle, &self.entries[self.next_index..end]));
         self.next_index = end;
     }
 }
@@ -265,142 +264,267 @@ fn clone_matches(matches: &[Match]) -> Vec<Match> {
         .collect()
 }
 
-/// Scores one batch of new entries against `needle`.
-///
-/// Batches three frizbee calls — one per field class — rather than
-/// looping per-entry. Frizbee is designed to amortise its SIMD-wide
-/// inner loop across many haystack strings at once; a per-entry call
-/// with a 1–3 element haystack would leave that parallelism on the
-/// floor.
-///
-/// Returns only entries that scored on at least one field. Zero-score
-/// entries would waste cache capacity with no useful ranking signal.
-fn score_batch(needle: &str, entries: &[Arc<LogEntry>], config: &FrizbeeConfig) -> Vec<ScoredHit> {
-    if entries.is_empty() {
-        return Vec::new();
-    }
-
-    // Per-entry haystacks: the frizbee result's `index` maps 1:1 back
-    // into `entries` for these classes.
-    let msg_haystack: Vec<&str> = entries.iter().map(|e| e.msg.as_str()).collect();
-    let level_haystack: Vec<String> = entries
-        .iter()
-        .map(|e| e.level.map(|l| l.to_string()).unwrap_or_default())
-        .collect();
-    let source_haystack: Vec<&str> = entries
-        .iter()
-        .map(|e| e.source.display_name.as_str())
-        .collect();
-
-    // Fields are a variable number per entry, so the haystack is
-    // flattened across all entries and a parallel `field_owners`
-    // side-table records which entry and field name each haystack
-    // position came from.
-    let mut field_haystack: Vec<String> = Vec::new();
-    let mut field_owners: Vec<(usize, String)> = Vec::new();
-    for (idx, entry) in entries.iter().enumerate() {
-        for (key, value) in &entry.fields {
-            field_haystack.push(stringify_value(value));
-            field_owners.push((idx, key.clone()));
-        }
-    }
-
-    let msg_hits = match_list_indices(needle, &msg_haystack, config);
-    // Skip the frizbee call entirely when every entry's level is None;
-    // otherwise we'd pay to match the needle against a slice of empty
-    // strings for no benefit.
-    let level_hits = if level_haystack.iter().any(|s| !s.is_empty()) {
-        match_list_indices(needle, &level_haystack, config)
-    } else {
-        Vec::new()
-    };
-    let source_hits = match_list_indices(needle, &source_haystack, config);
-    let field_hits = if !field_haystack.is_empty() {
-        match_list_indices(needle, &field_haystack, config)
-    } else {
-        Vec::new()
-    };
-
-    // Pre-allocate one slot per entry so `apply_match` can O(1) index
-    // into the right accumulator regardless of which field class hit.
-    // `Option` wrapping is just so `apply_match` can borrow `&mut self`
-    // without owning/replacing.
-    let mut scored: Vec<Option<ScoredHit>> = entries
-        .iter()
-        .map(|e| {
-            Some(ScoredHit {
-                entry: e.clone(),
-                score: 0,
-                matches: Vec::new(),
-            })
-        })
-        .collect();
-
-    for m in msg_hits {
-        apply_match(
-            &mut scored,
-            m.index as usize,
-            "msg",
-            m.score,
-            m.indices,
-            WEIGHT_MSG,
-        );
-    }
-    for m in level_hits {
-        apply_match(
-            &mut scored,
-            m.index as usize,
-            "level",
-            m.score,
-            m.indices,
-            WEIGHT_LEVEL,
-        );
-    }
-    for m in source_hits {
-        apply_match(
-            &mut scored,
-            m.index as usize,
-            "source",
-            m.score,
-            m.indices,
-            WEIGHT_SOURCE,
-        );
-    }
-    for m in field_hits {
-        let owner_idx = m.index as usize;
-        if owner_idx >= field_owners.len() {
-            continue;
-        }
-        let (entry_idx, key) = &field_owners[owner_idx];
-        apply_match(
-            &mut scored,
-            *entry_idx,
-            key,
-            m.score,
-            m.indices,
-            WEIGHT_FIELDS,
-        );
-    }
-
-    // Frizbee can return a match for a haystack whose score computes to
-    // zero under our weights (e.g. an empty level string could in theory
-    // slip through). Filter to genuinely useful hits only.
-    scored
-        .into_iter()
-        .flatten()
-        .filter(|hit| hit.score > 0 && !hit.matches.is_empty())
-        .collect()
+enum FuzzyMatcher {
+    Frizbee(FrizbeeMatcher),
+    Nucleo(NucleoMatcher),
 }
 
-/// Folds a single frizbee match into the accumulator slot for its entry.
-///
-/// The score is weighted by field class and added to the running
-/// aggregate; the raw character indices are reversed (see
-/// [`reverse_to_u32`]) and appended as a per-field [`Match`]. Silently
-/// drops out-of-range indices rather than panicking — upstream code
-/// already bounds-checks `field_owners`, so this is a belt-and-braces
-/// guard against future changes.
-fn apply_match(
+impl FuzzyMatcher {
+    fn new(kind: FuzzyMatcherKind, needle: &str, max_typos: Option<u16>) -> Self {
+        match kind {
+            FuzzyMatcherKind::Frizbee => Self::Frizbee(FrizbeeMatcher::new(max_typos)),
+            FuzzyMatcherKind::Nucleo => Self::Nucleo(NucleoMatcher::new(needle)),
+        }
+    }
+
+    fn score_batch(&mut self, needle: &str, entries: &[Arc<LogEntry>]) -> Vec<ScoredHit> {
+        match self {
+            Self::Frizbee(matcher) => matcher.score_batch(needle, entries),
+            Self::Nucleo(matcher) => matcher.score_batch(entries),
+        }
+    }
+}
+
+struct FrizbeeMatcher {
+    config: FrizbeeConfig,
+}
+
+impl FrizbeeMatcher {
+    fn new(max_typos: Option<u16>) -> Self {
+        // `sort: false` — we combine scores across several frizbee calls
+        // into a single aggregate and need to sort on that combined number.
+        Self {
+            config: FrizbeeConfig {
+                max_typos,
+                sort: false,
+                scoring: frizbee::Scoring::default(),
+            },
+        }
+    }
+
+    /// Scores one batch with batched frizbee calls, preserving the original
+    /// implementation's ranking and highlight behavior.
+    fn score_batch(&self, needle: &str, entries: &[Arc<LogEntry>]) -> Vec<ScoredHit> {
+        if entries.is_empty() {
+            return Vec::new();
+        }
+
+        let msg_haystack: Vec<&str> = entries.iter().map(|e| e.msg.as_str()).collect();
+        let level_haystack: Vec<String> = entries
+            .iter()
+            .map(|e| e.level.map(|l| l.to_string()).unwrap_or_default())
+            .collect();
+        let source_haystack: Vec<&str> = entries
+            .iter()
+            .map(|e| e.source.display_name.as_str())
+            .collect();
+
+        let mut field_haystack: Vec<String> = Vec::new();
+        let mut field_owners: Vec<(usize, String)> = Vec::new();
+        for (idx, entry) in entries.iter().enumerate() {
+            for (key, value) in &entry.fields {
+                field_haystack.push(stringify_value(value));
+                field_owners.push((idx, key.clone()));
+            }
+        }
+
+        let msg_hits = match_list_indices(needle, &msg_haystack, &self.config);
+        let level_hits = if level_haystack.iter().any(|s| !s.is_empty()) {
+            match_list_indices(needle, &level_haystack, &self.config)
+        } else {
+            Vec::new()
+        };
+        let source_hits = match_list_indices(needle, &source_haystack, &self.config);
+        let field_hits = if !field_haystack.is_empty() {
+            match_list_indices(needle, &field_haystack, &self.config)
+        } else {
+            Vec::new()
+        };
+
+        let mut scored: Vec<Option<ScoredHit>> = entries
+            .iter()
+            .map(|e| {
+                Some(ScoredHit {
+                    entry: e.clone(),
+                    score: 0,
+                    matches: Vec::new(),
+                })
+            })
+            .collect();
+
+        for m in msg_hits {
+            apply_frizbee_match(
+                &mut scored,
+                m.index as usize,
+                "msg",
+                m.score,
+                m.indices,
+                WEIGHT_MSG,
+            );
+        }
+        for m in level_hits {
+            apply_frizbee_match(
+                &mut scored,
+                m.index as usize,
+                "level",
+                m.score,
+                m.indices,
+                WEIGHT_LEVEL,
+            );
+        }
+        for m in source_hits {
+            apply_frizbee_match(
+                &mut scored,
+                m.index as usize,
+                "source",
+                m.score,
+                m.indices,
+                WEIGHT_SOURCE,
+            );
+        }
+        for m in field_hits {
+            let owner_idx = m.index as usize;
+            if owner_idx >= field_owners.len() {
+                continue;
+            }
+            let (entry_idx, key) = &field_owners[owner_idx];
+            apply_frizbee_match(
+                &mut scored,
+                *entry_idx,
+                key,
+                m.score,
+                m.indices,
+                WEIGHT_FIELDS,
+            );
+        }
+
+        scored
+            .into_iter()
+            .flatten()
+            .filter(|hit| hit.score > 0 && !hit.matches.is_empty())
+            .collect()
+    }
+}
+
+struct NucleoMatcher {
+    pattern: Pattern,
+    engine: NucleoEngine,
+    has_positive_atoms: bool,
+}
+
+impl NucleoMatcher {
+    fn new(needle: &str) -> Self {
+        let pattern = Pattern::parse(needle, CaseMatching::Ignore, Normalization::Smart);
+        let has_positive_atoms = pattern.atoms.iter().any(|atom| !atom.negative);
+        Self {
+            pattern,
+            engine: NucleoEngine::new(NucleoConfig::DEFAULT),
+            has_positive_atoms,
+        }
+    }
+
+    fn score_batch(&mut self, entries: &[Arc<LogEntry>]) -> Vec<ScoredHit> {
+        entries
+            .iter()
+            .filter_map(|entry| self.score_entry(entry))
+            .collect()
+    }
+
+    fn score_entry(&mut self, entry: &Arc<LogEntry>) -> Option<ScoredHit> {
+        let mut fields = searchable_fields(entry);
+        if self.entry_matches_negative_atom(&fields) {
+            return None;
+        }
+
+        if !self.has_positive_atoms {
+            return Some(ScoredHit {
+                entry: entry.clone(),
+                score: 0,
+                matches: Vec::new(),
+            });
+        }
+
+        let mut scored = ScoredHit {
+            entry: entry.clone(),
+            score: 0,
+            matches: Vec::new(),
+        };
+
+        for field in &mut fields {
+            if let Some((score, indices)) = self.match_positive_field(&field.value) {
+                scored.score = scored
+                    .score
+                    .saturating_add((score as f32 * field.weight).round() as i64);
+                scored.matches.push(Match {
+                    key: field.key.clone(),
+                    indices,
+                });
+            }
+        }
+
+        (scored.score > 0 && !scored.matches.is_empty()).then_some(scored)
+    }
+
+    fn entry_matches_negative_atom(&mut self, fields: &[SearchableField]) -> bool {
+        self.pattern
+            .atoms
+            .iter()
+            .filter(|atom| atom.negative)
+            .any(|atom| {
+                fields.iter().any(|field| {
+                    let mut buf = Vec::new();
+                    atom.score(Utf32Str::new(&field.value, &mut buf), &mut self.engine)
+                        .is_none()
+                })
+            })
+    }
+
+    fn match_positive_field(&mut self, value: &str) -> Option<(u32, Vec<u32>)> {
+        let mut indices = Vec::new();
+        let mut buf = Vec::new();
+        let score = self.pattern.indices(
+            Utf32Str::new(value, &mut buf),
+            &mut self.engine,
+            &mut indices,
+        )?;
+        indices.sort_unstable();
+        indices.dedup();
+        (!indices.is_empty()).then_some((score, indices))
+    }
+}
+
+struct SearchableField {
+    key: String,
+    value: String,
+    weight: f32,
+}
+
+fn searchable_fields(entry: &LogEntry) -> Vec<SearchableField> {
+    let mut fields = Vec::with_capacity(3 + entry.fields.len());
+    fields.push(SearchableField {
+        key: "msg".to_string(),
+        value: entry.msg.clone(),
+        weight: WEIGHT_MSG,
+    });
+    fields.push(SearchableField {
+        key: "level".to_string(),
+        value: entry.level.map(|l| l.to_string()).unwrap_or_default(),
+        weight: WEIGHT_LEVEL,
+    });
+    fields.push(SearchableField {
+        key: "source".to_string(),
+        value: entry.source.display_name.clone(),
+        weight: WEIGHT_SOURCE,
+    });
+    fields.extend(entry.fields.iter().map(|(key, value)| SearchableField {
+        key: key.clone(),
+        value: stringify_value(value),
+        weight: WEIGHT_FIELDS,
+    }));
+    fields
+}
+
+fn apply_frizbee_match(
     scored: &mut [Option<ScoredHit>],
     entry_idx: usize,
     key: &str,
@@ -520,6 +644,20 @@ mod tests {
         }
     }
 
+    fn fuzzy_options(
+        result_limit: usize,
+        tick_rate: Duration,
+        matcher_kind: FuzzyMatcherKind,
+        max_typos: Option<u16>,
+    ) -> FuzzySearchOptions {
+        FuzzySearchOptions {
+            result_limit,
+            tick_rate,
+            matcher_kind,
+            max_typos,
+        }
+    }
+
     #[tokio::test]
     async fn empty_term_emits_empty_result() {
         let store = RingBufferStore::new(store_config(64));
@@ -528,9 +666,12 @@ mod tests {
         let handle = start_fuzzy_search(
             String::new(),
             vec![],
-            100,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             99,
             tx,
@@ -569,9 +710,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            100,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             1,
             tx,
@@ -604,9 +748,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec!["s1".to_string()],
-            100,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             7,
             tx,
@@ -630,9 +777,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            100,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             3,
             tx,
@@ -662,9 +812,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "er".to_string(),
             vec![],
-            100,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             1,
             tx,
@@ -696,9 +849,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "WARN".to_string(),
             vec![],
-            100,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             1,
             tx,
@@ -735,9 +891,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "payments".to_string(),
             vec![],
-            100,
-            Duration::from_millis(10),
-            Some(0),
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                Some(0),
+            ),
             store.clone(),
             1,
             tx,
@@ -770,9 +929,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            5,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                5,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             1,
             tx,
@@ -795,9 +957,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            10,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                10,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             11,
             tx,
@@ -839,9 +1004,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            2,
-            Duration::from_millis(10),
-            None,
+            fuzzy_options(
+                2,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             12,
             tx,
@@ -882,9 +1050,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            20,
-            Duration::from_millis(1),
-            None,
+            fuzzy_options(
+                20,
+                Duration::from_millis(1),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             13,
             tx,
@@ -915,9 +1086,12 @@ mod tests {
         let handle = start_fuzzy_search(
             "error".to_string(),
             vec![],
-            20_000,
-            Duration::from_millis(1),
-            None,
+            fuzzy_options(
+                20_000,
+                Duration::from_millis(1),
+                FuzzyMatcherKind::Frizbee,
+                None,
+            ),
             store.clone(),
             21,
             tx,
@@ -948,6 +1122,108 @@ mod tests {
         }
         assert!(saw_partial, "expected at least one partial emission");
         assert!(saw_complete, "expected a final complete=true emission");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn nucleo_parsed_apostrophe_query_requires_contiguous_substring() {
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("n e e d l e", "s1", Some(LogLevel::Info)));
+        store.insert(make_entry(
+            "contains needle here",
+            "s1",
+            Some(LogLevel::Info),
+        ));
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_fuzzy_search(
+            "'needle".to_string(),
+            vec![],
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Nucleo,
+                None,
+            ),
+            store.clone(),
+            31,
+            tx,
+        );
+
+        let (results, rid, complete) = recv_result(&mut rx).await;
+        assert_eq!(rid, 31);
+        assert!(complete);
+        assert_eq!(
+            results.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn nucleo_negative_terms_exclude_matching_entries() {
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("alpha error", "s1", Some(LogLevel::Info)));
+        store.insert(make_entry("beta error", "s1", Some(LogLevel::Info)));
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_fuzzy_search(
+            "error !beta".to_string(),
+            vec![],
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Nucleo,
+                None,
+            ),
+            store.clone(),
+            32,
+            tx,
+        );
+
+        let (results, rid, complete) = recv_result(&mut rx).await;
+        assert_eq!(rid, 32);
+        assert!(complete);
+        assert_eq!(
+            results.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
+            vec![1]
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn nucleo_negative_only_query_returns_non_excluded_entries_newest_first() {
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("alpha", "s1", Some(LogLevel::Info)));
+        store.insert(make_entry("beta", "s1", Some(LogLevel::Info)));
+        store.insert(make_entry("gamma", "s1", Some(LogLevel::Info)));
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_fuzzy_search(
+            "!beta".to_string(),
+            vec![],
+            fuzzy_options(
+                100,
+                Duration::from_millis(10),
+                FuzzyMatcherKind::Nucleo,
+                None,
+            ),
+            store.clone(),
+            33,
+            tx,
+        );
+
+        let (results, rid, complete) = recv_result(&mut rx).await;
+        assert_eq!(rid, 33);
+        assert!(complete);
+        assert_eq!(
+            results.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+        assert!(results.iter().all(|hit| hit.matches.is_empty()));
 
         handle.abort();
     }

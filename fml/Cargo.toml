@@ -35,6 +35,7 @@ rand.workspace = true
 config.workspace = true
 serde.workspace = true
 frizbee.workspace = true
+nucleo-matcher.workspace = true
 
 
 [features]

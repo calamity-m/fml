@@ -124,6 +124,7 @@ mod tests {
     use serial_test::serial;
 
     use super::*;
+    use crate::config::search::FuzzyMatcherKind;
 
     // --- default_config_dir ---
 
@@ -229,6 +230,52 @@ mod tests {
         let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
         assert!(config.enable_logging);
         assert_eq!(config.default_log_level, "debug");
+    }
+
+    #[test]
+    #[serial]
+    fn default_search_config_uses_nucleo_matcher() {
+        let config = Config::default();
+
+        assert_eq!(config.search.fuzzy_matcher, FuzzyMatcherKind::Nucleo);
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_config_dir_reads_fuzzy_matcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            [search]
+            fuzzy_matcher = "frizbee"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(config.search.fuzzy_matcher, FuzzyMatcherKind::Frizbee);
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_config_dir_rejects_unknown_fuzzy_matcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            [search]
+            fuzzy_matcher = "missing"
+            "#,
+        )
+        .unwrap();
+
+        let err = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap_err();
+
+        assert!(err.to_string().contains("fuzzy_matcher"));
     }
 
     #[test]

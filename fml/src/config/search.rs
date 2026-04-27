@@ -22,6 +22,17 @@ pub struct SearchConfig {
 
     #[serde(default = "default_fuzzy_debounce_ms")]
     pub fuzzy_debounce_ms: u64,
+
+    #[serde(default = "default_fuzzy_matcher")]
+    pub fuzzy_matcher: FuzzyMatcherKind,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FuzzyMatcherKind {
+    #[default]
+    Nucleo,
+    Frizbee,
 }
 
 fn default_tail_size() -> usize {
@@ -52,6 +63,10 @@ fn default_fuzzy_debounce_ms() -> u64 {
     150
 }
 
+fn default_fuzzy_matcher() -> FuzzyMatcherKind {
+    FuzzyMatcherKind::Nucleo
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
@@ -62,6 +77,7 @@ impl Default for SearchConfig {
             fuzzy_result_limit: default_fuzzy_result_limit(),
             fuzzy_max_typos: default_fuzzy_max_typos(),
             fuzzy_debounce_ms: default_fuzzy_debounce_ms(),
+            fuzzy_matcher: default_fuzzy_matcher(),
         }
     }
 }
