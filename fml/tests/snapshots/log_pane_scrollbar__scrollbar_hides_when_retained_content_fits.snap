@@ -1,7 +1,7 @@
 ---
-source: fml/tests/render_snapshot.rs
-assertion_line: 51
-expression: buffer_to_string(app.terminal.backend().buffer())
+source: fml/tests/log_pane_scrollbar.rs
+assertion_line: 53
+expression: render_app(&mut app)
 ---
 ┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
 │1 INFO src-a entry 1                                  ││                      │

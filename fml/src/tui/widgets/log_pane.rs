@@ -95,8 +95,6 @@ impl FmlWidget for LogPane {
                 ))
             })
             .collect();
-        let item_count = items.len();
-
         // The list itself only knows about display styles. It has no concept of
         // scroll position — that comes from ListState below.
         let list = List::new(items)
@@ -131,40 +129,34 @@ impl FmlWidget for LogPane {
         // corners of the border intact. The track symbol matches the border
         // character so inactive track segments are invisible — only the thumb
         // stands out.
-        // ScrollbarState needs three things to render correctly:
-        //   - content_length: total number of items in the full display list
-        //   - viewport_content_length: how many rows are visible at once
-        //   - position: where the cursor is in the full display list
-        //
-        // Without viewport_content_length, ratatui can't calculate the thumb
-        // size — it doesn't know what fraction of the content is on screen.
-        // content_length is a placeholder until the backing buffer exists.
-        let mut scrollbar_state = ScrollbarState::new(item_count)
-            .viewport_content_length(state.log_pane.height)
-            .position(state.absolute_cursor);
+        if let Some(metrics) = state.log_pane.scrollbar_metrics() {
+            let mut scrollbar_state = ScrollbarState::new(metrics.content_length)
+                .viewport_content_length(metrics.viewport_content_length)
+                .position(metrics.position);
 
-        // Inset by 1 row top and bottom so the track sits between the border
-        // corners rather than overwriting them.
-        let scrollbar_area = ratatui::prelude::Rect {
-            y: area.y + 1,
-            height: area.height.saturating_sub(2),
-            ..area
-        };
+            // Inset by 1 row top and bottom so the track sits between the border
+            // corners rather than overwriting them.
+            let scrollbar_area = ratatui::prelude::Rect {
+                y: area.y + 1,
+                height: area.height.saturating_sub(2),
+                ..area
+            };
 
-        debug!(
-            "absolute_cursor - {}, log_pane.height: {}",
-            state.absolute_cursor, state.log_pane.height
-        );
+            debug!(
+                "scrollbar metrics - {:?}, absolute_cursor - {}",
+                metrics, state.absolute_cursor
+            );
 
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(Some("▲"))
-                .end_symbol(Some("▼"))
-                .track_symbol(Some("│"))
-                .thumb_symbol("█"),
-            scrollbar_area,
-            &mut scrollbar_state,
-        );
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("▲"))
+                    .end_symbol(Some("▼"))
+                    .track_symbol(Some("│"))
+                    .thumb_symbol("█"),
+                scrollbar_area,
+                &mut scrollbar_state,
+            );
+        }
     }
 
     fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {

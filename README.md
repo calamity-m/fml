@@ -94,22 +94,23 @@ When scrolling the cursor should travel upwards, but logs should remain static. 
 
 e.g. if our retained window is [Seq_ID_LOW: 500, ..., Seq_ID_HIGH: 1000], once we reach half-way to Seq_ID, we may ask to fetch the window [Seq_ID_LOW:250, ..., Seq_ID_HIGH: 750].
 
-[] Log pane pauses when entering into history
-[] User can scroll to the bottom of the retained log store's low seq (scroll up) manually with repeated up-arrow keys
-[] User can scroll to the top of the log store's high seq (scroll down), re-entering into tail mode
-[] User can press Home to jump to the low bounds of the log store
-[] User can press End to jump to the high bounds of the log store and enter back into tail mode
-[] Integration test added for: 10k entries are populated into the log store, user inputs Home and should see sequence 1.
-[] Integration test added for: 100 entries are populated into the log store, user inputs 100 up-arrow inputs and sees sequence 1.
-[] Integration test added for: ... (others as needed/required)
+[x] Log pane pauses when entering into history
+[x] User can scroll to the bottom of the retained log store's low seq (scroll up) manually with repeated up-arrow keys
+[x] User can scroll to the top of the log store's high seq (scroll down), re-entering into tail mode
+[x] User can press Home to jump to the low bounds of the log store
+[x] User can press End to jump to the high bounds of the log store and enter back into tail mode
+[x] Integration test added for: 10k entries are populated into the log store, user inputs Home and should see sequence 1.
+[x] Integration test added for: 100 entries are populated into the log store, user inputs 100 up-arrow inputs and sees sequence 1.
+[x] Integration test added for: entering history pauses tail updates while new logs arrive.
+[x] Integration test added for: pressing End from history returns to tail and renders the newest log.
 
 ### 5. Log Pane Scroll Bar Functionality
 
 The scroll bar should be calculated based on the log store, not any retained window. We have a low, max and a cursor's sequence. We can then calculate the size of the scroll bar, and it's positioning.
 
-[] scroll bar reduces in size based on the amount of sequence ids retained, clamping to some minimum and maximum
-[] scroll bar scrolls based on the cursor in the log_pane
-[] integration test added to verify scrolling behaviour and size (top, mid, end) 
+[x] scroll bar reduces in size based on the amount of sequence ids retained, clamping to some minimum and maximum
+[x] scroll bar scrolls based on the cursor in the log_pane
+[x] integration test added to verify scrolling behaviour and size (top, mid, end) 
 
 ### 6. Log Pane Fuzzy Functionality
 

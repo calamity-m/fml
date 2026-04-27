@@ -16,6 +16,13 @@ pub enum SearchKind {
     Fuzzy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarMetrics {
+    pub content_length: usize,
+    pub viewport_content_length: usize,
+    pub position: usize,
+}
+
 pub struct LogPaneState {
     pub mode: ScrollMode,
     /// Indices into the backing buffer for the current search results, ranked best-last.
@@ -64,6 +71,38 @@ impl LogPaneState {
 
     pub fn on_search_started(&mut self, query: &Query) {
         self.active_query = Self::query_kind(query);
+    }
+
+    /// Scrollbar metrics for the retained log stream.
+    ///
+    /// This is intentionally store-relative rather than window-relative so the
+    /// thumb stays stable as the retained window shifts. Search/fuzzy may need
+    /// a mode-specific domain later, but that decision is deferred for TODO #6.
+    pub fn scrollbar_metrics(&self) -> Option<ScrollbarMetrics> {
+        let (low, high) = self.retained_bounds;
+        let selected_seq = self.selected_seq?;
+
+        if self.height == 0 || (low == 0 && high == 0) || high < low {
+            return None;
+        }
+
+        let retained_count = high.saturating_sub(low).saturating_add(1);
+        if retained_count <= self.height as u64 {
+            return None;
+        }
+
+        let content_length = usize::try_from(retained_count).unwrap_or(usize::MAX);
+        let viewport_content_length = self.height.min(content_length);
+        let clamped_selected = selected_seq.clamp(low, high);
+        let position = usize::try_from(clamped_selected.saturating_sub(low))
+            .unwrap_or(usize::MAX)
+            .min(content_length.saturating_sub(1));
+
+        Some(ScrollbarMetrics {
+            content_length,
+            viewport_content_length,
+            position,
+        })
     }
 
     pub fn set_height(&mut self, height: usize, cursor: &mut usize) {
@@ -365,6 +404,89 @@ mod tests {
 
     fn entries(start: u64, end: u64) -> Vec<Arc<LogEntry>> {
         (start..=end).map(entry).collect()
+    }
+
+    #[test]
+    fn scrollbar_metrics_hide_when_state_is_not_ready() {
+        let mut state = LogPaneState::new(500);
+        state.height = 5;
+        state.retained_bounds = (1, 10);
+
+        assert_eq!(state.scrollbar_metrics(), None);
+
+        state.selected_seq = Some(5);
+        state.height = 0;
+
+        assert_eq!(state.scrollbar_metrics(), None);
+
+        state.height = 5;
+        state.retained_bounds = (0, 0);
+
+        assert_eq!(state.scrollbar_metrics(), None);
+    }
+
+    #[test]
+    fn scrollbar_metrics_hide_when_content_fits() {
+        let mut state = LogPaneState::new(500);
+        state.height = 5;
+        state.selected_seq = Some(3);
+        state.retained_bounds = (1, 5);
+
+        assert_eq!(state.scrollbar_metrics(), None);
+    }
+
+    #[test]
+    fn scrollbar_metrics_clamp_selection_within_retained_bounds() {
+        let mut state = LogPaneState::new(500);
+        state.height = 4;
+        state.retained_bounds = (10, 20);
+
+        state.selected_seq = Some(10);
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 11,
+                viewport_content_length: 4,
+                position: 0,
+            })
+        );
+
+        state.selected_seq = Some(15);
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 11,
+                viewport_content_length: 4,
+                position: 5,
+            })
+        );
+
+        state.selected_seq = Some(25);
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 11,
+                viewport_content_length: 4,
+                position: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn scrollbar_metrics_saturate_extreme_ranges_without_panicking() {
+        let mut state = LogPaneState::new(500);
+        state.height = 2;
+        state.selected_seq = Some(u64::MAX);
+        state.retained_bounds = (0, u64::MAX);
+
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: usize::MAX,
+                viewport_content_length: 2,
+                position: usize::MAX - 1,
+            })
+        );
     }
 
     #[test]
