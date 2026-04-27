@@ -14,6 +14,7 @@ use crate::{
         tui::{ThemeConfig, TuiConfig},
     },
     error::FmlError,
+    event::SelectedEntry,
     tui::{layout::Slot, widgets::query_box},
 };
 
@@ -25,8 +26,10 @@ pub struct TuiState {
     pub query_box_last_dispatched_query: String,
     pub query_box_debounce_handle: Option<JoinHandle<()>>,
     pub fuzzy_debounce_ms: u64,
-    /// Absolute index into the current display list (all entries or search results).
-    pub absolute_cursor: usize,
+    /// Selected visible row in the log pane viewport.
+    pub log_pane_cursor_row: usize,
+    pub selected_entry: Option<SelectedEntry>,
+    pub info_pane_scroll_offset: usize,
     pub log_pane: LogPaneState,
 }
 
@@ -41,7 +44,9 @@ impl TuiState {
             query_box_last_dispatched_query: String::new(),
             query_box_debounce_handle: None,
             fuzzy_debounce_ms: search_config.fuzzy_debounce_ms,
-            absolute_cursor: 0,
+            log_pane_cursor_row: 0,
+            selected_entry: None,
+            info_pane_scroll_offset: 0,
             log_pane: LogPaneState::new(search_config.tail_size),
         })
     }

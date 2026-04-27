@@ -7,7 +7,10 @@ pub mod widgets;
 
 use crossterm::{
     ExecutableCommand as _,
-    event::{DisableMouseCapture, Event as CrosstermEvent, EventStream, KeyEventKind},
+    event::{
+        DisableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
 use futures_util::{FutureExt as _, StreamExt as _};
@@ -106,6 +109,12 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
 /// and lets tests drive the same handlers against a `TestBackend`.
 pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
     let mut new_state = match event {
+        TuiEvent::NewSelectedEntry(selected_entry) => {
+            let mut state = state;
+            state.tui.selected_entry = selected_entry;
+            state.tui.info_pane_scroll_offset = 0;
+            return state;
+        }
         TuiEvent::Render => {
             trace!("received render event");
 
@@ -117,6 +126,24 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
             state
         }
         TuiEvent::Input(key) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let mut state = state;
+                        state.tui.info_pane_scroll_offset =
+                            state.tui.info_pane_scroll_offset.saturating_sub(1);
+                        return state;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let mut state = state;
+                        state.tui.info_pane_scroll_offset =
+                            state.tui.info_pane_scroll_offset.saturating_add(1);
+                        return state;
+                    }
+                    _ => {}
+                }
+            }
+
             let (static_key, _) = keybinds::match_key(&key, &state.tui.focused);
 
             match static_key {
@@ -190,5 +217,149 @@ pub fn render<B: Backend>(state: &mut AppState, terminal: &mut Terminal<B>) {
                 err
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use chrono::Utc;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::widgets::ScrollDirection;
+
+    use super::*;
+    use crate::{
+        config::Config,
+        event::{SelectedEntry, TuiEvent},
+        log::{LogEntry, LogLevel, Source},
+    };
+
+    fn entry(seq: u64) -> Arc<LogEntry> {
+        Arc::new(LogEntry {
+            seq,
+            msg: format!("entry {seq}"),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: Source {
+                producer: "fake".to_string(),
+                id: "src-a".to_string(),
+                display_name: "src-a".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn new_selected_entry_event_updates_tui_state() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.info_pane_scroll_offset = 4;
+        let state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry(7),
+                matches: Vec::new(),
+            })),
+            state,
+        );
+
+        assert_eq!(
+            state
+                .tui
+                .selected_entry
+                .as_ref()
+                .map(|selected| selected.entry.seq),
+            Some(7)
+        );
+        assert_eq!(state.tui.info_pane_scroll_offset, 0);
+    }
+
+    #[test]
+    fn new_selected_entry_event_clears_tui_state() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(7),
+            matches: Vec::new(),
+        });
+        state.tui.info_pane_scroll_offset = 4;
+
+        let state = handle_tui_event(TuiEvent::NewSelectedEntry(None), state);
+
+        assert!(state.tui.selected_entry.is_none());
+        assert_eq!(state.tui.info_pane_scroll_offset, 0);
+    }
+
+    #[test]
+    fn ctrl_down_scrolls_info_pane_globally() {
+        let state = AppState::new(Config::default()).expect("app state");
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)),
+            state,
+        );
+
+        assert_eq!(state.tui.info_pane_scroll_offset, 1);
+    }
+
+    #[test]
+    fn ctrl_j_scrolls_info_pane_globally() {
+        let state = AppState::new(Config::default()).expect("app state");
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+            state,
+        );
+
+        assert_eq!(state.tui.info_pane_scroll_offset, 1);
+    }
+
+    #[test]
+    fn ctrl_up_scrolls_info_pane_and_saturates_at_zero() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.info_pane_scroll_offset = 2;
+
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
+            state,
+        );
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
+            state,
+        );
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
+            state,
+        );
+
+        assert_eq!(state.tui.info_pane_scroll_offset, 0);
+    }
+
+    #[test]
+    fn ctrl_k_scrolls_info_pane_and_saturates_at_zero() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.info_pane_scroll_offset = 1;
+
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+            state,
+        );
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+            state,
+        );
+
+        assert_eq!(state.tui.info_pane_scroll_offset, 0);
+    }
+
+    #[test]
+    fn regular_down_still_dispatches_to_focused_widget() {
+        let mut state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            AppState::new(Config::default()).expect("app state"),
+        );
+
+        assert_eq!(state.tui.info_pane_scroll_offset, 0);
+        assert!(matches!(
+            state.event_bus.tui_event_rx.try_recv(),
+            Ok(TuiEvent::Scroll(ScrollDirection::Forward))
+        ));
     }
 }

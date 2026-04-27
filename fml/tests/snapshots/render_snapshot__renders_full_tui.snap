@@ -1,20 +1,21 @@
 ---
 source: fml/tests/render_snapshot.rs
+assertion_line: 51
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
 ┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
-│  1 INFO src-a entry 1                                ││                      │
-│  2 INFO src-a entry 2                                ││                      │
-│  3 INFO src-a entry 3                                ││                      │
-│  4 INFO src-a entry 4                                ││                      │
-│> 5 INFO src-a entry 5                                ││                      │
+│  1 INFO src-a entry 1                                ││seq: 5                │
+│  2 INFO src-a entry 2                                ││timestamp: 2024-01-02T│
+│  3 INFO src-a entry 3                                ││level: INFO           │
+│  4 INFO src-a entry 4                                ││producer: fake        │
+│> 5 INFO src-a entry 5                                ││source: src-a         │
+│                                                      ││group:                │
+│                                                      ││message:              │
+│                                                      ││entry 5               │
+│                                                      ││                      │
+│                                                      ││                      │
 │                                                      │└──────────────────────┘
 │                                                      │┌ Preview [ MODE ] ────┐
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │

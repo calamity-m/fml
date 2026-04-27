@@ -3,7 +3,9 @@
 //! These values are sent over channels to keep terminal input, rendering,
 //! shutdown, and background search processing loosely coupled.
 
-use crate::log::{NewLogEntry, Source, SourceId};
+use std::sync::Arc;
+
+use crate::log::{LogEntry, NewLogEntry, Source, SourceId};
 
 /// Marker event used to request application shutdown.
 ///
@@ -35,6 +37,8 @@ pub enum TuiEvent {
     Input(crossterm::event::KeyEvent),
     /// An error occurred in the event stream.
     Error(String),
+    /// The log pane selected entry changed.
+    NewSelectedEntry(Option<SelectedEntry>),
 }
 
 /// A single field match within a search result.
@@ -46,6 +50,13 @@ pub struct Match {
     pub key: String,
     /// Character indice highlights.
     pub indices: Vec<u32>,
+}
+
+/// Snapshot of the log entry currently selected by the log pane.
+#[derive(Debug, Clone)]
+pub struct SelectedEntry {
+    pub entry: Arc<LogEntry>,
+    pub matches: Vec<Match>,
 }
 
 /// A search result for one stored log entry.

@@ -1,20 +1,21 @@
 ---
 source: fml/tests/fuzzy_log_pane.rs
+assertion_line: 387
 expression: buffer_to_underlined_snapshot(buffer)
 ---
 ┌ FML [SEARCH] ────────────────────────────────────────┐┌ Info ────────────────┐
-│> 1 INFO [Service] A needle                             ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
+│> 1 INFO [Service] A needle                             ││seq: 1                │
+│                                                      ││timestamp: 2024-01-02T│
+│                                                      ││level: INFO           │
+│                                                      ││producer: fake        │
+│                                                      ││source: [Service] A     │
+│                                                      ││group:                │
+│                                                      ││message:              │
+│                                                      ││needle                │
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      │└──────────────────────┘
 │                                                      │┌ Preview [ MODE ] ────┐
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │

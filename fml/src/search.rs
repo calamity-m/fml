@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::{
-    event::{Query, SearchEvent, SearchHit},
+    event::{Query, SearchEvent, SearchHit, TuiEvent},
     log::LogEntry,
     state::{
         AppState,
@@ -219,11 +219,139 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             state
                 .tui
                 .log_pane
-                .apply_update(update, &mut state.tui.absolute_cursor);
+                .apply_update(update, &mut state.tui.log_pane_cursor_row);
+            if let Err(err) = state
+                .event_bus
+                .tui_event_tx
+                .send(TuiEvent::NewSelectedEntry(
+                    state.tui.log_pane.selected_entry(),
+                ))
+            {
+                warn!("failed to send selected entry event after search result: {err}");
+            }
 
             state
         }
 
         SearchEvent::Error(_) => state,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
+
+    use super::*;
+    use crate::{
+        config::Config,
+        event::{Match, ProducerEvent},
+        log::{LogLevel, NewLogEntry, Source},
+        producer,
+        state::AppState,
+    };
+
+    fn state_with_entries(count: u64) -> AppState {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        for seq in 1..=count {
+            state = producer::handle_producer_event(
+                ProducerEvent::StoreEvent(NewLogEntry {
+                    msg: format!("entry {seq}"),
+                    ts: Utc::now(),
+                    level: Some(LogLevel::Info),
+                    source: Source {
+                        producer: "fake".to_string(),
+                        id: "src-a".to_string(),
+                        display_name: "src-a".to_string(),
+                        group: None,
+                    },
+                    fields: HashMap::new(),
+                }),
+                state,
+            );
+        }
+        state.search.latest_request_id = 1;
+        state
+    }
+
+    fn take_selected_entry_event(state: &mut AppState) -> Option<crate::event::SelectedEntry> {
+        match state
+            .event_bus
+            .tui_event_rx
+            .try_recv()
+            .expect("selected entry event")
+        {
+            TuiEvent::NewSelectedEntry(selected_entry) => selected_entry,
+            event => panic!("expected selected entry event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn tail_result_emits_selected_entry_event() {
+        let state = state_with_entries(3);
+        let mut state = handle_search_event(
+            SearchEvent::Result {
+                results: vec![1, 2, 3]
+                    .into_iter()
+                    .map(|seq_id| SearchHit {
+                        seq_id,
+                        matches: Vec::new(),
+                    })
+                    .collect(),
+                request_id: 1,
+                complete: true,
+            },
+            state,
+        );
+
+        let selected = take_selected_entry_event(&mut state).expect("selected entry");
+
+        assert_eq!(selected.entry.seq, 3);
+        assert!(selected.matches.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_result_emits_selected_entry_with_matches() {
+        let mut state = state_with_entries(2);
+        state
+            .tui
+            .log_pane
+            .on_search_started(&Query::Fuzzy("entry".to_string()));
+
+        let mut state = handle_search_event(
+            SearchEvent::Result {
+                results: vec![SearchHit {
+                    seq_id: 2,
+                    matches: vec![Match {
+                        key: "msg".to_string(),
+                        indices: vec![0, 1],
+                    }],
+                }],
+                request_id: 1,
+                complete: true,
+            },
+            state,
+        );
+
+        let selected = take_selected_entry_event(&mut state).expect("selected entry");
+
+        assert_eq!(selected.entry.seq, 2);
+        assert_eq!(selected.matches[0].key, "msg");
+    }
+
+    #[test]
+    fn empty_result_emits_clear_selected_entry_event() {
+        let state = state_with_entries(2);
+        let mut state = handle_search_event(
+            SearchEvent::Result {
+                results: Vec::new(),
+                request_id: 1,
+                complete: true,
+            },
+            state,
+        );
+
+        assert!(take_selected_entry_event(&mut state).is_none());
     }
 }

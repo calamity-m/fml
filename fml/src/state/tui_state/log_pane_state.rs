@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    event::{Match, Query},
+    event::{Match, Query, SelectedEntry},
     log::LogEntry,
 };
 
@@ -181,6 +181,24 @@ impl LogPaneState {
 
     pub fn fuzzy_matches_for(&self, seq: u64) -> Option<&[Match]> {
         self.content.fuzzy_matches.get(&seq).map(Vec::as_slice)
+    }
+
+    pub(crate) fn selected_entry(&self) -> Option<SelectedEntry> {
+        let selected_seq = self.viewport.selected_seq?;
+        let entry = self
+            .content
+            .items
+            .iter()
+            .find(|entry| entry.seq == selected_seq)?
+            .clone();
+        let matches = self
+            .content
+            .fuzzy_matches
+            .get(&selected_seq)
+            .cloned()
+            .unwrap_or_default();
+
+        Some(SelectedEntry { entry, matches })
     }
 
     pub fn fuzzy_matches_is_empty(&self) -> bool {

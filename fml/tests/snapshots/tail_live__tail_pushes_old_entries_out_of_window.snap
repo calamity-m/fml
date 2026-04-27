@@ -1,20 +1,21 @@
 ---
 source: fml/tests/tail_live.rs
+assertion_line: 60
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
 ┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
-│  23 INFO src-b second 3                              ▲│                      │
-│  24 INFO src-b second 4                              ││                      │
-│  25 INFO src-b second 5                              ││                      │
-│  26 INFO src-b second 6                              ││                      │
-│  27 INFO src-b second 7                              ││                      │
-│  28 INFO src-b second 8                              │└──────────────────────┘
-│  29 INFO src-b second 9                              │┌ Preview [ MODE ] ────┐
-│  30 INFO src-b second 10                             ││                      │
+│  23 INFO src-b second 3                              ▲│seq: 40               │
+│  24 INFO src-b second 4                              ││timestamp: 2024-01-02T│
+│  25 INFO src-b second 5                              ││level: INFO           │
+│  26 INFO src-b second 6                              ││producer: fake        │
+│  27 INFO src-b second 7                              ││source: src-b         │
+│  28 INFO src-b second 8                              ││group:                │
+│  29 INFO src-b second 9                              ││message:              │
+│  30 INFO src-b second 10                             ││second 20             │
 │  31 INFO src-b second 11                             ││                      │
 │  32 INFO src-b second 12                             ││                      │
-│  33 INFO src-b second 13                             ││                      │
-│  34 INFO src-b second 14                             ││                      │
+│  33 INFO src-b second 13                             │└──────────────────────┘
+│  34 INFO src-b second 14                             │┌ Preview [ MODE ] ────┐
 │  35 INFO src-b second 15                             █│                      │
 │  36 INFO src-b second 16                             █│                      │
 │  37 INFO src-b second 17                             █│                      │

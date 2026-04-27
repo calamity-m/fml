@@ -1,7 +1,6 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use ratatui::{
-    style::Style,
     text::{Line, Span},
     widgets::{
         Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
@@ -24,7 +23,7 @@ use crate::{
     tui::{
         keybinds::{self, StaticKeyAction},
         layout::Slot,
-        widgets::FmlWidget,
+        widgets::{FmlWidget, highlight},
     },
 };
 
@@ -74,7 +73,7 @@ impl LogPane {
         let mut spans = Vec::new();
         spans.push(Span::styled(leading_id, base_style));
         spans.push(Span::styled(" ", base_style));
-        spans.extend(Self::styled_field(
+        spans.extend(highlight::styled_field(
             &level,
             matches,
             "level",
@@ -82,7 +81,7 @@ impl LogPane {
             match_style,
         ));
         spans.push(Span::styled(" ", base_style));
-        spans.extend(Self::styled_field(
+        spans.extend(highlight::styled_field(
             &entry.source.display_name,
             matches,
             "source",
@@ -90,7 +89,7 @@ impl LogPane {
             match_style,
         ));
         spans.push(Span::styled(" ", base_style));
-        spans.extend(Self::styled_field(
+        spans.extend(highlight::styled_field(
             &entry.msg,
             matches,
             "msg",
@@ -101,58 +100,16 @@ impl LogPane {
         Line::from(spans)
     }
 
-    fn styled_field(
-        text: &str,
-        matches: Option<&[Match]>,
-        key: &str,
-        base_style: Style,
-        match_style: Style,
-    ) -> Vec<Span<'static>> {
-        let matched = Self::matched_indices(matches, key);
-        if matched.is_empty() {
-            return vec![Span::styled(text.to_string(), base_style)];
+    fn dispatch_selected_entry(state: &TuiState, events_bus: &mut EventBus) {
+        if let Err(err) = events_bus
+            .tui_event_tx
+            .send(TuiEvent::NewSelectedEntry(state.log_pane.selected_entry()))
+        {
+            error!(
+                "failed to send selected entry event from log pane - {}",
+                err
+            );
         }
-
-        let mut spans = Vec::new();
-        let mut chunk = String::new();
-        let mut chunk_is_match = false;
-        let mut has_chunk = false;
-
-        for (idx, ch) in text.chars().enumerate() {
-            let is_match = matched.contains(&idx);
-            if has_chunk && is_match != chunk_is_match {
-                let style = if chunk_is_match {
-                    match_style
-                } else {
-                    base_style
-                };
-                spans.push(Span::styled(std::mem::take(&mut chunk), style));
-            }
-            chunk.push(ch);
-            chunk_is_match = is_match;
-            has_chunk = true;
-        }
-
-        if has_chunk {
-            let style = if chunk_is_match {
-                match_style
-            } else {
-                base_style
-            };
-            spans.push(Span::styled(chunk, style));
-        }
-
-        spans
-    }
-
-    fn matched_indices(matches: Option<&[Match]>, key: &str) -> HashSet<usize> {
-        matches
-            .into_iter()
-            .flat_map(|matches| matches.iter())
-            .filter(|m| m.key == key)
-            .flat_map(|m| m.indices.iter())
-            .map(|idx| *idx as usize)
-            .collect()
     }
 }
 
@@ -181,7 +138,7 @@ impl FmlWidget for LogPane {
         // also the number of visible log entries at any time.
         state
             .log_pane
-            .set_height(inner_area.height as usize, &mut state.absolute_cursor);
+            .set_height(inner_area.height as usize, &mut state.log_pane_cursor_row);
 
         // Render whatever domain the state resolved for this mode: retained
         // sequence order for tail/history, rank order for search.
@@ -234,10 +191,9 @@ impl FmlWidget for LogPane {
         // not persistent state. `with_selected` tells the List which item in the
         // Vec to highlight.
         //
-        // `absolute_cursor - window_start` translates from the full display list
-        // index to the index within the Vec<ListItem> slice we just built.
-        // These must use the same window_start or the highlight lands on the
-        // wrong row.
+        // The selected sequence is translated into the Vec<ListItem> slice we
+        // just built. These must use the same view window or the highlight
+        // lands on the wrong row.
         let mut list_state =
             ListState::default().with_selected(state.log_pane.selected_visible_index());
 
@@ -265,8 +221,8 @@ impl FmlWidget for LogPane {
             };
 
             debug!(
-                "scrollbar metrics - {:?}, absolute_cursor - {}",
-                metrics, state.absolute_cursor
+                "scrollbar metrics - {:?}, log_pane_cursor_row - {}",
+                metrics, state.log_pane_cursor_row
             );
 
             frame.render_stateful_widget(
@@ -287,24 +243,27 @@ impl FmlWidget for LogPane {
                 debug!("received scroll event - {:?}", scroll);
 
                 let query = match scroll {
-                    ScrollDirection::Forward => {
-                        state.log_pane.scroll_forward(&mut state.absolute_cursor)
-                    }
-                    ScrollDirection::Backward => {
-                        state.log_pane.scroll_backward(&mut state.absolute_cursor)
-                    }
+                    ScrollDirection::Forward => state
+                        .log_pane
+                        .scroll_forward(&mut state.log_pane_cursor_row),
+                    ScrollDirection::Backward => state
+                        .log_pane
+                        .scroll_backward(&mut state.log_pane_cursor_row),
                 };
                 Self::dispatch_search(query, events_bus);
+                Self::dispatch_selected_entry(state, events_bus);
             }
             TuiEvent::ScrollHead => {
                 debug!("received scroll head event");
-                let query = state.log_pane.jump_head(&mut state.absolute_cursor);
+                let query = state.log_pane.jump_head(&mut state.log_pane_cursor_row);
                 Self::dispatch_search(query, events_bus);
+                Self::dispatch_selected_entry(state, events_bus);
             }
             TuiEvent::ScrollTail => {
                 debug!("received scroll tail event");
-                let query = state.log_pane.jump_tail(&mut state.absolute_cursor);
+                let query = state.log_pane.jump_tail(&mut state.log_pane_cursor_row);
                 Self::dispatch_search(query, events_bus);
+                Self::dispatch_selected_entry(state, events_bus);
             }
             TuiEvent::Input(key) => {
                 debug!("received input event - {:?}", key);
@@ -355,8 +314,9 @@ mod tests {
     use super::*;
     use crate::{
         config::tui::{LogMatchStyle, ThemeConfig},
-        event::Match,
+        event::{Match, TuiEvent},
         log::{LogLevel, Source},
+        state::{events_bus::EventBus, tui_state::TuiState},
     };
 
     fn entry(level: LogLevel) -> Arc<LogEntry> {
@@ -375,6 +335,22 @@ mod tests {
         })
     }
 
+    fn sequenced_entry(seq: u64) -> Arc<LogEntry> {
+        Arc::new(LogEntry {
+            seq,
+            msg: format!("entry {seq}"),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: Source {
+                producer: "fake".to_string(),
+                id: "src-a".to_string(),
+                display_name: "src-a".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        })
+    }
+
     #[test]
     fn styled_field_splits_non_adjacent_match_indices() {
         let base = Style::default().fg(Color::Red);
@@ -384,7 +360,7 @@ mod tests {
             indices: vec![0, 2],
         }];
 
-        let spans = LogPane::styled_field("error", Some(&matches), "msg", base, matched);
+        let spans = highlight::styled_field("error", Some(&matches), "msg", base, matched);
 
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].content, "e");
@@ -439,5 +415,40 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn scroll_emits_selected_entry_event() {
+        let mut state = TuiState::new(
+            &crate::config::tui::TuiConfig::default(),
+            &crate::config::search::SearchConfig::default(),
+        )
+        .expect("tui state");
+        let mut events_bus = EventBus::new();
+        state.log_pane.set_height(3, &mut state.log_pane_cursor_row);
+        state.log_pane.apply_update(
+            crate::state::tui_state::log_pane_state::LogPaneUpdate::Tail {
+                entries: (1..=5).map(sequenced_entry).collect(),
+                retained_bounds: (1, 5),
+            },
+            &mut state.log_pane_cursor_row,
+        );
+
+        LogPane::new().handle_event(
+            TuiEvent::Scroll(ScrollDirection::Backward),
+            &mut state,
+            &mut events_bus,
+        );
+
+        match events_bus
+            .tui_event_rx
+            .try_recv()
+            .expect("selected entry event")
+        {
+            TuiEvent::NewSelectedEntry(Some(selected_entry)) => {
+                assert_eq!(selected_entry.entry.seq, 4);
+            }
+            event => panic!("expected selected entry event, got {event:?}"),
+        }
     }
 }

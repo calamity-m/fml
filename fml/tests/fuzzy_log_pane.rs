@@ -125,7 +125,7 @@ fn reducer_app_with_entries(count: u64) -> App<ratatui::backend::TestBackend> {
     app.state
         .tui
         .log_pane
-        .set_height(10, &mut app.state.tui.absolute_cursor);
+        .set_height(10, &mut app.state.tui.log_pane_cursor_row);
     app
 }
 
@@ -394,8 +394,8 @@ fn live_fuzzy_rerank_preserves_selected_entry() {
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(2), &mut app.state.tui.absolute_cursor);
-    app.state.tui.absolute_cursor = 1;
+        .set_selected_seq(Some(2), &mut app.state.tui.log_pane_cursor_row);
+    app.state.tui.log_pane_cursor_row = 1;
 
     let app = apply_fuzzy_emission(app, &[2, 4, 1]);
 
@@ -411,7 +411,7 @@ fn live_fuzzy_rerank_preserves_selected_entry() {
         vec![1, 4, 2]
     );
     assert_eq!(app.state.tui.log_pane.selected_seq(), Some(2));
-    assert_eq!(app.state.tui.absolute_cursor, 2);
+    assert_eq!(app.state.tui.log_pane_cursor_row, 2);
 }
 
 #[test]
@@ -421,8 +421,8 @@ fn live_fuzzy_rerank_falls_back_when_selected_entry_disappears() {
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(2), &mut app.state.tui.absolute_cursor);
-    app.state.tui.absolute_cursor = 1;
+        .set_selected_seq(Some(2), &mut app.state.tui.log_pane_cursor_row);
+    app.state.tui.log_pane_cursor_row = 1;
 
     let app = apply_fuzzy_emission(app, &[6, 5, 1]);
 
@@ -437,7 +437,7 @@ fn live_fuzzy_rerank_falls_back_when_selected_entry_disappears() {
         vec![1, 5, 6]
     );
     assert_eq!(app.state.tui.log_pane.selected_seq(), Some(5));
-    assert_eq!(app.state.tui.absolute_cursor, 1);
+    assert_eq!(app.state.tui.log_pane_cursor_row, 1);
 }
 
 #[test]
@@ -458,5 +458,5 @@ fn live_fuzzy_rerank_keeps_highest_rank_pinned() {
         vec![1, 3, 2, 4]
     );
     assert_eq!(app.state.tui.log_pane.selected_seq(), Some(4));
-    assert_eq!(app.state.tui.absolute_cursor, 3);
+    assert_eq!(app.state.tui.log_pane_cursor_row, 3);
 }

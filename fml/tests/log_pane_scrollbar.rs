@@ -67,7 +67,7 @@ fn scrollbar_hides_when_retained_content_fits() {
             entries: entries(1, 5),
             retained_bounds: (1, 5),
         },
-        &mut app.state.tui.absolute_cursor,
+        &mut app.state.tui.log_pane_cursor_row,
     );
 
     insta::assert_snapshot!(render_app(&mut app));
@@ -85,7 +85,7 @@ fn search_scrollbar_hides_when_fuzzy_results_fit() {
             retained_bounds: (1, 5),
             matches_by_seq: HashMap::new(),
         },
-        &mut app.state.tui.absolute_cursor,
+        &mut app.state.tui.log_pane_cursor_row,
     );
 
     assert!(log_pane_scrollbar_thumb_rows(&mut app).is_empty());
@@ -103,25 +103,25 @@ fn search_scrollbar_renders_at_first_middle_and_last_result() {
             retained_bounds: (1, 30),
             matches_by_seq: HashMap::new(),
         },
-        &mut app.state.tui.absolute_cursor,
+        &mut app.state.tui.log_pane_cursor_row,
     );
 
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(1), &mut app.state.tui.absolute_cursor);
+        .set_selected_seq(Some(1), &mut app.state.tui.log_pane_cursor_row);
     let first = log_pane_scrollbar_thumb_rows(&mut app);
 
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(15), &mut app.state.tui.absolute_cursor);
+        .set_selected_seq(Some(15), &mut app.state.tui.log_pane_cursor_row);
     let middle = log_pane_scrollbar_thumb_rows(&mut app);
 
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(30), &mut app.state.tui.absolute_cursor);
+        .set_selected_seq(Some(30), &mut app.state.tui.log_pane_cursor_row);
     let last = log_pane_scrollbar_thumb_rows(&mut app);
 
     assert!(!first.is_empty());
@@ -193,12 +193,12 @@ fn scrollbar_renders_at_top_of_retained_window() {
             entries: entries(1, 20),
             retained_bounds: (1, 20),
         },
-        &mut app.state.tui.absolute_cursor,
+        &mut app.state.tui.log_pane_cursor_row,
     );
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(1), &mut app.state.tui.absolute_cursor);
+        .set_selected_seq(Some(1), &mut app.state.tui.log_pane_cursor_row);
 
     insta::assert_snapshot!(render_app(&mut app));
 }
@@ -214,12 +214,12 @@ fn scrollbar_renders_in_the_middle_of_retained_window() {
             entries: entries(1, 20),
             retained_bounds: (1, 20),
         },
-        &mut app.state.tui.absolute_cursor,
+        &mut app.state.tui.log_pane_cursor_row,
     );
     app.state
         .tui
         .log_pane
-        .set_selected_seq(Some(10), &mut app.state.tui.absolute_cursor);
+        .set_selected_seq(Some(10), &mut app.state.tui.log_pane_cursor_row);
 
     insta::assert_snapshot!(render_app(&mut app));
 }
@@ -235,7 +235,7 @@ fn scrollbar_renders_at_bottom_of_retained_window() {
             entries: entries(1, 20),
             retained_bounds: (1, 20),
         },
-        &mut app.state.tui.absolute_cursor,
+        &mut app.state.tui.log_pane_cursor_row,
     );
 
     insta::assert_snapshot!(render_app(&mut app));

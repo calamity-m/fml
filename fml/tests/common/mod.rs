@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use ratatui::buffer::Buffer;
 
 use fml::log::{LogLevel, NewLogEntry, Source};
@@ -19,7 +19,10 @@ pub fn make_entry_with_source_display(
 ) -> NewLogEntry {
     NewLogEntry {
         msg: msg.to_string(),
-        ts: Utc::now(),
+        ts: Utc
+            .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+            .single()
+            .expect("fixed timestamp"),
         level: Some(LogLevel::Info),
         source: Source {
             producer: "fake".to_string(),

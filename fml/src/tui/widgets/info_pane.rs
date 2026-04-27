@@ -1,12 +1,101 @@
-use ratatui::widgets::Block;
+use ratatui::{
+    text::{Line, Span},
+    widgets::{Block, Paragraph},
+};
 
-use crate::tui::{layout::Slot, widgets::FmlWidget};
+use crate::tui::{
+    layout::Slot,
+    widgets::{FmlWidget, highlight},
+};
 
 pub struct InfoPane {}
 
 impl InfoPane {
     pub fn new() -> Self {
         InfoPane {}
+    }
+
+    fn stringify_value(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::String(value) => value.clone(),
+            serde_json::Value::Null => String::new(),
+            value => value.to_string(),
+        }
+    }
+
+    fn wrap_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Line<'static>> {
+        let width = usize::from(width).max(1);
+        let styled_chars = spans
+            .into_iter()
+            .flat_map(|span| {
+                let style = span.style;
+                span.content
+                    .chars()
+                    .map(move |ch| (ch, style))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        if styled_chars.is_empty() {
+            return vec![Line::default()];
+        }
+
+        let mut lines = Vec::new();
+        let mut start = 0;
+        while start < styled_chars.len() {
+            while styled_chars
+                .get(start)
+                .is_some_and(|(ch, _)| ch.is_whitespace())
+            {
+                start += 1;
+            }
+
+            if start >= styled_chars.len() {
+                break;
+            }
+
+            let hard_end = start.saturating_add(width).min(styled_chars.len());
+            let end = if hard_end < styled_chars.len() {
+                styled_chars[start..hard_end]
+                    .iter()
+                    .rposition(|(ch, _)| ch.is_whitespace())
+                    .filter(|idx| *idx > 0)
+                    .map(|idx| start + idx)
+                    .unwrap_or(hard_end)
+            } else {
+                hard_end
+            };
+
+            lines.push(Self::line_from_styled_chars(&styled_chars[start..end]));
+            start = end;
+        }
+
+        if lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines
+    }
+
+    fn line_from_styled_chars(chars: &[(char, ratatui::style::Style)]) -> Line<'static> {
+        let mut spans = Vec::new();
+        let mut current = String::new();
+        let mut current_style = None;
+
+        for (ch, style) in chars {
+            if current_style.is_some_and(|current_style| current_style != *style) {
+                let style = current_style.expect("checked above");
+                spans.push(Span::styled(std::mem::take(&mut current), style));
+            }
+
+            current.push(*ch);
+            current_style = Some(*style);
+        }
+
+        if let Some(style) = current_style {
+            spans.push(Span::styled(current, style));
+        }
+
+        Line::from(spans)
     }
 }
 
@@ -32,8 +121,112 @@ impl FmlWidget for InfoPane {
             )
             .style(state.selected_theme.surface_style());
 
-        let _inner_area = block.inner(area);
+        let inner_area = block.inner(area);
         frame.render_widget(block, area);
+
+        let base_style = state.selected_theme.surface_style();
+        let label_style = base_style.fg(state.selected_theme.primary_accent_fg);
+        let value_style = base_style;
+        let match_style = base_style.patch(state.selected_theme.match_style());
+
+        let lines = if let Some(selected_entry) = &state.selected_entry {
+            let entry = &selected_entry.entry;
+            let matches = Some(selected_entry.matches.as_slice());
+            let level = entry
+                .level
+                .map(|level| level.to_string())
+                .unwrap_or_else(|| "----".to_string());
+            let group = entry.source.group.as_deref().unwrap_or("");
+            let mut lines = vec![
+                highlight::field_line(
+                    "seq",
+                    &entry.seq.to_string(),
+                    "seq",
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                ),
+                highlight::field_line(
+                    "timestamp",
+                    &entry.ts.to_rfc3339(),
+                    "timestamp",
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                ),
+                highlight::field_line(
+                    "level",
+                    &level,
+                    "level",
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                ),
+                highlight::field_line(
+                    "producer",
+                    &entry.source.producer,
+                    "producer",
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                ),
+                highlight::field_line(
+                    "source",
+                    &entry.source.display_name,
+                    "source",
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                ),
+                highlight::field_line(
+                    "group",
+                    group,
+                    "group",
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                ),
+                Line::from(vec![Span::styled("message:", label_style)]),
+            ];
+            lines.extend(Self::wrap_spans(
+                highlight::styled_field(&entry.msg, matches, "msg", value_style, match_style),
+                inner_area.width,
+            ));
+
+            let mut custom_fields = entry.fields.iter().collect::<Vec<_>>();
+            custom_fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+            lines.extend(custom_fields.into_iter().map(|(key, value)| {
+                highlight::field_line(
+                    key,
+                    &Self::stringify_value(value),
+                    key,
+                    matches,
+                    label_style,
+                    value_style,
+                    match_style,
+                )
+            }));
+            lines
+        } else {
+            vec![Line::styled("No log selected", value_style)]
+        };
+
+        let max_offset = lines.len().saturating_sub(usize::from(inner_area.height));
+        state.info_pane_scroll_offset = state.info_pane_scroll_offset.min(max_offset);
+        let scroll_offset = state.info_pane_scroll_offset.min(usize::from(u16::MAX)) as u16;
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(state.selected_theme.surface_style())
+                .scroll((scroll_offset, 0)),
+            inner_area,
+        );
     }
 
     fn handle_event(
@@ -42,5 +235,69 @@ impl FmlWidget for InfoPane {
         _state: &mut crate::state::tui_state::TuiState,
         _events_bus: &mut crate::state::events_bus::EventBus,
     ) {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use chrono::{TimeZone, Utc};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::{
+        config::{search::SearchConfig, tui::TuiConfig},
+        event::SelectedEntry,
+        log::{LogEntry, LogLevel, Source},
+        state::tui_state::TuiState,
+    };
+
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area();
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn message_uses_full_inner_width_and_wraps() {
+        let mut state =
+            TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
+        state.selected_entry = Some(SelectedEntry {
+            entry: Arc::new(LogEntry {
+                seq: 1,
+                msg: "alpha beta gamma delta epsilon".to_string(),
+                ts: Utc
+                    .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+                    .single()
+                    .expect("fixed timestamp"),
+                level: Some(LogLevel::Info),
+                source: Source {
+                    producer: "fake".to_string(),
+                    id: "src-a".to_string(),
+                    display_name: "src-a".to_string(),
+                    group: None,
+                },
+                fields: HashMap::new(),
+            }),
+            matches: Vec::new(),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(24, 16)).expect("terminal");
+        terminal
+            .draw(|frame| InfoPane::new().render(frame, frame.area(), &mut state))
+            .expect("draw");
+
+        let rendered = buffer_to_string(terminal.backend().buffer());
+
+        assert!(rendered.contains("│message:"));
+        assert!(rendered.contains("│alpha beta gamma"));
+        assert!(rendered.contains("epsilon"));
     }
 }

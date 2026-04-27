@@ -1,20 +1,21 @@
 ---
 source: fml/tests/log_pane_scrollbar.rs
+assertion_line: 73
 expression: render_app(&mut app)
 ---
 ┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
-│  1 INFO src-a entry 1                                ││                      │
+│  1 INFO src-a entry 1                                ││No log selected       │
 │  2 INFO src-a entry 2                                ││                      │
 │  3 INFO src-a entry 3                                ││                      │
 │  4 INFO src-a entry 4                                ││                      │
 │> 5 INFO src-a entry 5                                ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
+│                                                      ││                      │
 │                                                      │└──────────────────────┘
 │                                                      │┌ Preview [ MODE ] ────┐
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
