@@ -46,7 +46,7 @@ impl AppState {
             event_bus,
             store,
             tui: TuiState::new(&config.tui, &config.search)?,
-            search: SearchState::new(&config.search)?,
+            search: SearchState::new(),
             producer: ProducerState::new(),
         })
     }

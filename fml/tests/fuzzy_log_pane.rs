@@ -84,6 +84,15 @@ fn buffer_to_underlined_snapshot(buf: &Buffer) -> String {
     out
 }
 
+fn scrollbar_thumb_rows(buf: &Buffer) -> Vec<u16> {
+    let area = buf.area();
+    let scrollbar_x = 55;
+
+    (1..area.height.saturating_sub(5))
+        .filter(|y| buf[(scrollbar_x, *y)].symbol() == "█")
+        .collect()
+}
+
 async fn type_query(tui_tx: &tokio::sync::mpsc::UnboundedSender<TuiEvent>, text: &str) {
     tui_tx.send(key(KeyCode::Tab)).expect("focus query box");
     for ch in text.chars() {
@@ -162,7 +171,7 @@ async fn submitting_fuzzy_query_renders_ranked_matches() {
         app.state
             .tui
             .log_pane
-            .items
+            .items()
             .iter()
             .map(|entry| entry.seq)
             .collect::<Vec<_>>(),
@@ -171,14 +180,55 @@ async fn submitting_fuzzy_query_renders_ranked_matches() {
     assert!(rendered.contains("1 INFO src-a needle"));
     assert!(rendered.contains("3 INFO src-a needle"));
     assert!(!rendered.contains("5 INFO src-a needle"));
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(5));
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(5));
     assert!(
         app.state
             .tui
             .log_pane
-            .fuzzy_matches
-            .get(&5)
+            .fuzzy_matches_for(5)
             .is_some_and(|matches| matches.iter().any(|m| m.key == "msg"))
+    );
+}
+
+#[tokio::test]
+async fn submitting_fuzzy_query_renders_search_scrollbar_when_results_overflow() {
+    let app = App::with_test_backend(fuzzy_config(), 80, 24).expect("app construction");
+
+    let producer_tx = app.state.event_bus.producer_event_tx.clone();
+    let tui_tx = app.state.event_bus.tui_event_tx.clone();
+    let quit_tx = app.state.event_bus.quit_tx.clone();
+
+    tokio::spawn(async move {
+        for i in 1..=30u64 {
+            producer_tx
+                .send(ProducerEvent::StoreEvent(make_entry(
+                    &format!("needle {i}"),
+                    "src-a",
+                )))
+                .await
+                .expect("send producer event");
+        }
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        type_query(&tui_tx, "needle").await;
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        tui_tx.send(TuiEvent::Render).expect("send render event");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        quit_tx.send(QuitEvent {}).await.expect("send quit");
+    });
+
+    let app = app.run_until_quit().await;
+    let buffer = app.terminal.backend().buffer();
+    let rendered = buffer_to_string(buffer);
+
+    assert_eq!(app.state.tui.log_pane.mode, ScrollMode::Search);
+    assert!(rendered.contains(" FML [SEARCH] "));
+    assert!(
+        app.state.tui.log_pane.scrollbar_metrics().is_some(),
+        "overflowing fuzzy results should expose scrollbar metrics"
+    );
+    assert!(
+        !scrollbar_thumb_rows(buffer).is_empty(),
+        "overflowing fuzzy results should render a scrollbar thumb"
     );
 }
 
@@ -218,13 +268,13 @@ async fn fuzzy_result_navigation_clamps_to_rank_boundaries() {
         app.state
             .tui
             .log_pane
-            .items
+            .items()
             .iter()
             .map(|entry| entry.seq)
             .collect::<Vec<_>>(),
         vec![1, 3, 5]
     );
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(5));
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(5));
 }
 
 #[tokio::test]
@@ -258,8 +308,8 @@ async fn clearing_fuzzy_query_returns_to_tail_mode() {
 
     assert_eq!(app.state.tui.log_pane.mode, ScrollMode::Tail);
     assert!(rendered.contains(" FML [TAIL] "));
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(6));
-    assert!(app.state.tui.log_pane.fuzzy_matches.is_empty());
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(6));
+    assert!(app.state.tui.log_pane.fuzzy_matches_is_empty());
 }
 
 #[tokio::test]
@@ -329,8 +379,11 @@ async fn fuzzy_highlighting_snapshot_uses_display_name_and_marks_matches() {
             .contains(Modifier::UNDERLINED),
         "unmatched rendered field should keep only the level style"
     );
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(1));
-    assert_eq!(app.state.tui.log_pane.items[0].level, Some(LogLevel::Info));
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(1));
+    assert_eq!(
+        app.state.tui.log_pane.items()[0].level,
+        Some(LogLevel::Info)
+    );
     insta::assert_snapshot!(buffer_to_underlined_snapshot(buffer));
 }
 
@@ -338,7 +391,10 @@ async fn fuzzy_highlighting_snapshot_uses_display_name_and_marks_matches() {
 fn live_fuzzy_rerank_preserves_selected_entry() {
     let app = reducer_app_with_entries(4);
     let mut app = apply_fuzzy_emission(app, &[3, 2, 1]);
-    app.state.tui.log_pane.selected_seq = Some(2);
+    app.state
+        .tui
+        .log_pane
+        .set_selected_seq(Some(2), &mut app.state.tui.absolute_cursor);
     app.state.tui.absolute_cursor = 1;
 
     let app = apply_fuzzy_emission(app, &[2, 4, 1]);
@@ -348,13 +404,13 @@ fn live_fuzzy_rerank_preserves_selected_entry() {
         app.state
             .tui
             .log_pane
-            .items
+            .items()
             .iter()
             .map(|entry| entry.seq)
             .collect::<Vec<_>>(),
         vec![1, 4, 2]
     );
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(2));
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(2));
     assert_eq!(app.state.tui.absolute_cursor, 2);
 }
 
@@ -362,7 +418,10 @@ fn live_fuzzy_rerank_preserves_selected_entry() {
 fn live_fuzzy_rerank_falls_back_when_selected_entry_disappears() {
     let app = reducer_app_with_entries(6);
     let mut app = apply_fuzzy_emission(app, &[4, 3, 2, 1]);
-    app.state.tui.log_pane.selected_seq = Some(2);
+    app.state
+        .tui
+        .log_pane
+        .set_selected_seq(Some(2), &mut app.state.tui.absolute_cursor);
     app.state.tui.absolute_cursor = 1;
 
     let app = apply_fuzzy_emission(app, &[6, 5, 1]);
@@ -371,13 +430,13 @@ fn live_fuzzy_rerank_falls_back_when_selected_entry_disappears() {
         app.state
             .tui
             .log_pane
-            .items
+            .items()
             .iter()
             .map(|entry| entry.seq)
             .collect::<Vec<_>>(),
         vec![1, 5, 6]
     );
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(5));
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(5));
     assert_eq!(app.state.tui.absolute_cursor, 1);
 }
 
@@ -392,12 +451,12 @@ fn live_fuzzy_rerank_keeps_highest_rank_pinned() {
         app.state
             .tui
             .log_pane
-            .items
+            .items()
             .iter()
             .map(|entry| entry.seq)
             .collect::<Vec<_>>(),
         vec![1, 3, 2, 4]
     );
-    assert_eq!(app.state.tui.log_pane.selected_seq, Some(4));
+    assert_eq!(app.state.tui.log_pane.selected_seq(), Some(4));
     assert_eq!(app.state.tui.absolute_cursor, 3);
 }

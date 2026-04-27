@@ -101,7 +101,5 @@ impl FmlWidget for StatusBar {
         );
     }
 
-    fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus) {
-        todo!()
-    }
+    fn handle_event(&self, _event: TuiEvent, _state: &mut TuiState, _events_bus: &mut EventBus) {}
 }

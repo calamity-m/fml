@@ -198,7 +198,7 @@ impl FmlWidget for LogPane {
                     // fuzzy results rather than retained log order.
                     state
                         .log_pane
-                        .view_start
+                        .view_start()
                         .saturating_add(idx)
                         .saturating_add(1)
                         .to_string()
@@ -206,9 +206,8 @@ impl FmlWidget for LogPane {
                     entry.seq.to_string()
                 };
                 let matches = (state.log_pane.mode == ScrollMode::Search)
-                    .then(|| state.log_pane.fuzzy_matches.get(&entry.seq))
-                    .flatten()
-                    .map(Vec::as_slice);
+                    .then(|| state.log_pane.fuzzy_matches_for(entry.seq))
+                    .flatten();
                 ListItem::new(Self::render_line(
                     entry,
                     leading_id,

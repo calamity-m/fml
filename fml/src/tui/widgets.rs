@@ -1,9 +1,9 @@
-use ratatui::{Frame, buffer::Buffer, layout::Rect, style::Style};
+use ratatui::{Frame, layout::Rect, style::Style};
 
 use crate::{
-    config::tui::{ThemeConfig, TuiConfig},
+    config::tui::ThemeConfig,
     event::TuiEvent,
-    state::{AppState, events_bus::EventBus, tui_state::TuiState},
+    state::{events_bus::EventBus, tui_state::TuiState},
     tui::layout::Slot,
 };
 

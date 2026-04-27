@@ -15,7 +15,7 @@ use common::{buffer_to_string, make_entry};
 /// Drives the real event loop end-to-end: routes producer events into the
 /// store, lets the tail search emit a result back into TUI state, then issues
 /// a render against `TestBackend` and snapshots the resulting buffer. The
-/// snapshot exercises the wired-up tail path (README TODO #3).
+/// snapshot exercises the wired-up tail path.
 #[tokio::test]
 async fn renders_full_tui() {
     let config = Config::default();

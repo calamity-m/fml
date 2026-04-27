@@ -111,10 +111,10 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
 
             state
         }
-        TuiEvent::Error(err) => {
+        TuiEvent::Error(ref err) => {
             error!("received error event - {}", err);
 
-            todo!()
+            state
         }
         TuiEvent::Input(key) => {
             let (static_key, _) = keybinds::match_key(&key, &state.tui.focused);
