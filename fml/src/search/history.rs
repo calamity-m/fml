@@ -5,7 +5,7 @@ use tracing::debug;
 
 use crate::{
     error::FmlError,
-    event::SearchEvent,
+    event::{Query, SearchEvent, SearchTarget},
     log::{LogEntry, SourceId},
     search::{EmitOutcome, emit_error, emit_results},
     store::LogStore,
@@ -26,6 +26,8 @@ use crate::{
 /// before the buffer is saturated is therefore safe: subsequent inserts will
 /// flow through to the receiver instead of being lost when the worker exits.
 pub fn start_history_search(
+    target: SearchTarget,
+    query: Query,
     middle_seq_id: u64,
     buffer: u64,
     sources: Vec<SourceId>,
@@ -59,7 +61,7 @@ pub fn start_history_search(
                 }
             };
 
-            match emit_results(entries, request_id, true, &tx).await {
+            match emit_results(target, query.clone(), entries, request_id, true, &tx).await {
                 EmitOutcome::Sent => {}
                 EmitOutcome::ReceiverGone => return,
             }
@@ -69,7 +71,7 @@ pub fn start_history_search(
     })
 }
 
-fn collect_window(
+pub(crate) fn collect_window(
     store: &Arc<dyn LogStore>,
     middle: u64,
     buffer: u64,
@@ -149,7 +151,7 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::SearchHit,
+        event::{SearchHit, SearchTarget},
         log::{LogLevel, NewLogEntry, Source},
         store::RingBufferStore,
     };
@@ -181,17 +183,44 @@ mod tests {
             .expect("channel closed before delivering SearchEvent");
         match evt {
             SearchEvent::Result {
+                target: _,
+                query: _,
                 results,
                 request_id,
                 complete,
             } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
+            SearchEvent::Cancel { .. } => panic!("unexpected SearchEvent::Cancel"),
         }
     }
 
     fn fast_poll() -> Duration {
         Duration::from_millis(10)
+    }
+
+    fn start_test_history_search(
+        middle_seq_id: u64,
+        buffer: u64,
+        sources: Vec<SourceId>,
+        store: Arc<dyn LogStore>,
+        request_id: u64,
+        tx: mpsc::Sender<SearchEvent>,
+    ) -> JoinHandle<()> {
+        start_history_search(
+            SearchTarget::LogPane,
+            Query::History {
+                middle_seq_id,
+                buffer,
+            },
+            middle_seq_id,
+            buffer,
+            sources,
+            fast_poll(),
+            store,
+            request_id,
+            tx,
+        )
     }
 
     #[tokio::test]
@@ -202,7 +231,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(5, 2, vec![], fast_poll(), store.clone(), 1, tx);
+        let handle = start_test_history_search(5, 2, vec![], store.clone(), 1, tx);
 
         let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 1);
@@ -225,15 +254,8 @@ mod tests {
         // middle=10 (s2). s1 entries: 1,3,5,7,9,11,13,15,17,19. Left ≤ 10 matches:
         // 9, 7. Right > 10 matches: 11, 13.
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(
-            10,
-            2,
-            vec!["s1".to_string()],
-            fast_poll(),
-            store.clone(),
-            42,
-            tx,
-        );
+        let handle =
+            start_test_history_search(10, 2, vec!["s1".to_string()], store.clone(), 42, tx);
 
         let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 42);
@@ -256,15 +278,8 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(
-            1000,
-            2,
-            vec!["s1".to_string()],
-            fast_poll(),
-            store.clone(),
-            7,
-            tx,
-        );
+        let handle =
+            start_test_history_search(1000, 2, vec!["s1".to_string()], store.clone(), 7, tx);
 
         let (results, _, complete) = recv_result(&mut rx).await;
         assert!(complete);
@@ -282,7 +297,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(100, 3, vec![], fast_poll(), store.clone(), 1, tx);
+        let handle = start_test_history_search(100, 3, vec![], store.clone(), 1, tx);
 
         let (results, _, complete) = recv_result(&mut rx).await;
         assert!(complete);
@@ -297,7 +312,7 @@ mod tests {
         let store = RingBufferStore::new(store_config(64));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(10, 3, vec![], fast_poll(), store.clone(), 99, tx);
+        let handle = start_test_history_search(10, 3, vec![], store.clone(), 99, tx);
 
         let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 99);
@@ -315,15 +330,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(
-            3,
-            2,
-            vec!["s2".to_string()],
-            fast_poll(),
-            store.clone(),
-            1,
-            tx,
-        );
+        let handle = start_test_history_search(3, 2, vec!["s2".to_string()], store.clone(), 1, tx);
 
         let (results, _, complete) = recv_result(&mut rx).await;
         assert!(complete);
@@ -340,7 +347,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(2, 3, vec![], fast_poll(), store.clone(), 5, tx);
+        let handle = start_test_history_search(2, 3, vec![], store.clone(), 5, tx);
 
         let (seed, rid, _) = recv_result(&mut rx).await;
         assert_eq!(rid, 5);
@@ -366,7 +373,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_history_search(2, 3, vec![], fast_poll(), store.clone(), 1, tx);
+        let handle = start_test_history_search(2, 3, vec![], store.clone(), 1, tx);
 
         let _seed = recv_result(&mut rx).await;
 

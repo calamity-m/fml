@@ -71,11 +71,31 @@ pub struct SearchHit {
     pub matches: Vec<Match>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Query {
     Tail,
     History { middle_seq_id: u64, buffer: u64 },
+    Surrounding { middle_seq_id: u64, buffer: u64 },
     Fuzzy(String),
+}
+
+/// Routing key identifying which search engine instance a [`SearchEvent`]
+/// belongs to.
+///
+/// Each variant corresponds to a distinct, independently-running search engine
+/// (one per pane). The reason this is an enum rather than a unit-less event
+/// stream is that engines are addressable: every [`SearchEvent::Search`] and
+/// [`SearchEvent::Cancel`] must be dispatched to exactly one engine, and every
+/// [`SearchEvent::Result`] must be attributable back to the engine that
+/// produced it so consumers can update the correct pane.
+///
+/// Engines are independent: starting or cancelling work for one target has no
+/// effect on the other. Within a single target, a new `Search` cancels that
+/// target's previous in-flight query (one query at a time per engine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchTarget {
+    LogPane,
+    PreviewPane,
 }
 
 /// Messages exchanged with the search subsystem.
@@ -83,11 +103,20 @@ pub enum Query {
 pub enum SearchEvent {
     /// Request execution of a search query, optionally restricted to sources.
     Search {
+        target: SearchTarget,
         query: Query,
         sources: Vec<SourceId>,
     },
+    /// Explicitly cancel in-flight search work for one target.
+    ///
+    /// Starting a new search for the same target also cancels that target's
+    /// previous worker. Use this event when a target should become inactive
+    /// without immediately replacing its search.
+    Cancel { target: SearchTarget },
     /// Completed search results for a query.
     Result {
+        target: SearchTarget,
+        query: Query,
         results: Vec<SearchHit>,
         request_id: u64,
         complete: bool,

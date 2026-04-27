@@ -10,15 +10,15 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 │  26 INFO src-b second 6                              ││producer: fake        │
 │  27 INFO src-b second 7                              ││source: src-b         │
 │  28 INFO src-b second 8                              │└──────────────────────┘
-│  29 INFO src-b second 9                              │┌ Preview [ MODE ] ────┐
-│  30 INFO src-b second 10                             ││                      │
-│  31 INFO src-b second 11                             ││                      │
-│  32 INFO src-b second 12                             ││                      │
-│  33 INFO src-b second 13                             ││                      │
-│  34 INFO src-b second 14                             ││                      │
-│  35 INFO src-b second 15                             █│                      │
-│  36 INFO src-b second 16                             █│                      │
-│  37 INFO src-b second 17                             █│                      │
+│  29 INFO src-b second 9                              │┌ Preview [ SURROUNDING┐
+│  30 INFO src-b second 10                             ││  33 INFO src-b second│
+│  31 INFO src-b second 11                             ││  34 INFO src-b second│
+│  32 INFO src-b second 12                             ││  35 INFO src-b second│
+│  33 INFO src-b second 13                             ││  36 INFO src-b second│
+│  34 INFO src-b second 14                             ││  37 INFO src-b second│
+│  35 INFO src-b second 15                             █│  38 INFO src-b second│
+│  36 INFO src-b second 16                             █│  39 INFO src-b second│
+│  37 INFO src-b second 17                             █│> 40 INFO src-b second│
 │  38 INFO src-b second 18                             █│                      │
 │  39 INFO src-b second 19                             █│                      │
 │> 40 INFO src-b second 20                             ▼│                      │

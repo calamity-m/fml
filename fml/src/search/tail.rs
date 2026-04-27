@@ -4,7 +4,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::debug;
 
 use crate::{
-    event::SearchEvent,
+    event::{Query, SearchEvent, SearchTarget},
     log::{LogEntry, SourceId},
     search::{EmitOutcome, emit_error, emit_results},
     store::LogStore,
@@ -13,11 +13,12 @@ use crate::{
 /// Starts the background worker for a tail-oriented search request.
 ///
 /// The worker re-emits the full tail window (up to `tail_size` entries) each
-/// time `LogStore::bounds().1` advances. Emissions share `request_id` so that
-/// `handle_search_event` discards results from superseded queries. Cancellation
-/// is prompt because every iteration yields at `ticker.tick().await` or inside
-/// `emit_results`.
+/// time `LogStore::bounds().1` advances. Emissions share `target` and
+/// `request_id` so that `handle_search_event` discards results from superseded
+/// queries. Cancellation is prompt because every iteration yields at
+/// `ticker.tick().await` or inside `emit_results`.
 pub fn start_tail_search(
+    target: SearchTarget,
     sources: Vec<SourceId>,
     tail_size: usize,
     poll_interval: Duration,
@@ -56,7 +57,7 @@ pub fn start_tail_search(
                     .collect()
             };
 
-            match emit_results(entries, request_id, true, &tx).await {
+            match emit_results(target, Query::Tail, entries, request_id, true, &tx).await {
                 EmitOutcome::Sent => {}
                 EmitOutcome::ReceiverGone => return,
             }
@@ -76,7 +77,7 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::SearchHit,
+        event::{SearchHit, SearchTarget},
         log::{LogLevel, NewLogEntry, Source},
         store::RingBufferStore,
     };
@@ -114,12 +115,15 @@ mod tests {
             .expect("channel closed before delivering SearchEvent");
         match evt {
             SearchEvent::Result {
+                target: _,
+                query: _,
                 results,
                 request_id,
                 complete,
             } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
+            SearchEvent::Cancel { .. } => panic!("unexpected SearchEvent::Cancel"),
         }
     }
 
@@ -138,7 +142,15 @@ mod tests {
         );
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_tail_search(vec![], 3, Duration::from_millis(10), store.clone(), 1, tx);
+        let handle = start_tail_search(
+            SearchTarget::LogPane,
+            vec![],
+            3,
+            Duration::from_millis(10),
+            store.clone(),
+            1,
+            tx,
+        );
 
         let (results, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 1);
@@ -155,7 +167,15 @@ mod tests {
         populate(&store, &[("a", "s1"), ("b", "s1"), ("c", "s1")]);
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_tail_search(vec![], 5, Duration::from_millis(10), store.clone(), 7, tx);
+        let handle = start_tail_search(
+            SearchTarget::LogPane,
+            vec![],
+            5,
+            Duration::from_millis(10),
+            store.clone(),
+            7,
+            tx,
+        );
 
         let (seed, _, complete) = recv_result(&mut rx).await;
         assert!(complete);
@@ -182,7 +202,15 @@ mod tests {
         let store = RingBufferStore::new(test_store_config());
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_tail_search(vec![], 4, Duration::from_millis(10), store.clone(), 42, tx);
+        let handle = start_tail_search(
+            SearchTarget::LogPane,
+            vec![],
+            4,
+            Duration::from_millis(10),
+            store.clone(),
+            42,
+            tx,
+        );
 
         let (seed, rid, complete) = recv_result(&mut rx).await;
         assert_eq!(rid, 42);
@@ -211,6 +239,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
+            SearchTarget::LogPane,
             vec!["s1".to_string()],
             10,
             Duration::from_millis(10),

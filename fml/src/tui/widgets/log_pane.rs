@@ -11,7 +11,7 @@ use tracing::{debug, error};
 
 use crate::{
     config::tui::ThemeConfig,
-    event::{Match, Query, SearchEvent, TuiEvent},
+    event::{Match, Query, SearchEvent, SearchTarget, TuiEvent},
     log::LogEntry,
     state::{
         events_bus::EventBus,
@@ -50,6 +50,7 @@ impl LogPane {
         };
 
         if let Err(err) = events_bus.search_event_tx.try_send(SearchEvent::Search {
+            target: SearchTarget::LogPane,
             query,
             sources: Vec::new(),
         }) {

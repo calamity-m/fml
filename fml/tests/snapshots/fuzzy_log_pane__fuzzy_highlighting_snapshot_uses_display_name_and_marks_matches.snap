@@ -1,6 +1,6 @@
 ---
 source: fml/tests/fuzzy_log_pane.rs
-assertion_line: 387
+assertion_line: 392
 expression: buffer_to_underlined_snapshot(buffer)
 ---
 ┌ FML [SEARCH] ────────────────────────────────────────┐┌ Info ────────────────┐
@@ -10,7 +10,7 @@ expression: buffer_to_underlined_snapshot(buffer)
 │                                                      ││producer: fake        │
 │                                                      ││source: [Service] A     │
 │                                                      │└──────────────────────┘
-│                                                      │┌ Preview [ MODE ] ────┐
+│                                                      │┌ Preview [ SURROUNDING┐
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
@@ -18,7 +18,7 @@ expression: buffer_to_underlined_snapshot(buffer)
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
-│                                                      ││                      │
+│                                                      ││> 1 INFO Service A nee│
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │

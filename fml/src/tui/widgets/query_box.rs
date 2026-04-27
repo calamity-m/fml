@@ -8,7 +8,7 @@ use ratatui_textarea::TextArea;
 use tracing::{debug, trace};
 
 use crate::{
-    event::{Query, SearchEvent, TuiEvent},
+    event::{Query, SearchEvent, SearchTarget, TuiEvent},
     state::{events_bus::EventBus, tui_state::TuiState},
     tui::{layout::Slot, widgets::FmlWidget},
 };
@@ -54,6 +54,7 @@ impl QueryBox {
 
         state.query_box_last_dispatched_query.clear();
         if let Err(err) = events_bus.search_event_tx.try_send(SearchEvent::Search {
+            target: SearchTarget::LogPane,
             query: Query::Tail,
             sources: Vec::new(),
         }) {
@@ -81,6 +82,7 @@ impl QueryBox {
             tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)).await;
             if let Err(err) = tx
                 .send(SearchEvent::Search {
+                    target: SearchTarget::LogPane,
                     query: Query::Fuzzy(dispatched_term),
                     sources: Vec::new(),
                 })
@@ -204,9 +206,11 @@ mod tests {
 
         match recv_search(&mut events_bus).await {
             SearchEvent::Search {
+                target,
                 query: Query::Fuzzy(term),
                 sources,
             } => {
+                assert_eq!(target, SearchTarget::LogPane);
                 assert_eq!(term, "err");
                 assert!(sources.is_empty());
             }
@@ -234,9 +238,13 @@ mod tests {
 
         match recv_search(&mut events_bus).await {
             SearchEvent::Search {
+                target,
                 query: Query::Tail,
                 sources,
-            } => assert!(sources.is_empty()),
+            } => {
+                assert_eq!(target, SearchTarget::LogPane);
+                assert!(sources.is_empty());
+            }
             event => panic!("unexpected event: {event:?}"),
         }
 

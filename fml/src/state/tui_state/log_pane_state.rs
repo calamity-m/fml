@@ -90,6 +90,7 @@ impl LogPaneState {
         match query {
             Query::Tail => SearchKind::Tail,
             Query::History { .. } => SearchKind::History,
+            Query::Surrounding { .. } => SearchKind::History,
             Query::Fuzzy(_) => SearchKind::Fuzzy,
         }
     }

@@ -44,7 +44,7 @@ use tracing::debug;
 
 use crate::{
     config::search::FuzzyMatcherKind,
-    event::{Match, SearchEvent, SearchHit},
+    event::{Match, Query, SearchEvent, SearchHit, SearchTarget},
     log::{LogEntry, SourceId},
     search::{EmitOutcome, emit_error, emit_hits},
     store::LogStore,
@@ -88,6 +88,7 @@ pub struct FuzzySearchOptions {
 /// Final ranking is by aggregate score, then `seq desc`. The returned
 /// [`JoinHandle`] is used to cancel superseded work.
 pub fn start_fuzzy_search(
+    target: SearchTarget,
     term: String,
     sources: Vec<SourceId>,
     options: FuzzySearchOptions,
@@ -105,8 +106,10 @@ pub fn start_fuzzy_search(
         // no useful ranking. Emit one empty result so the dispatcher sees
         // this request_id respond at least once, then exit — no point
         // holding a ticker open for something that can never produce hits.
+        let query = Query::Fuzzy(term.clone());
+
         if term.is_empty() {
-            let _ = emit_hits(Vec::new(), request_id, true, &tx).await;
+            let _ = emit_hits(target, query, Vec::new(), request_id, true, &tx).await;
             return;
         }
 
@@ -132,7 +135,9 @@ pub fn start_fuzzy_search(
 
                 if high == 0 {
                     if last_complete_bounds != Some((low, high)) {
-                        match emit_hits(Vec::new(), request_id, true, &tx).await {
+                        match emit_hits(target, query.clone(), Vec::new(), request_id, true, &tx)
+                            .await
+                        {
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
                         }
@@ -163,7 +168,7 @@ pub fn start_fuzzy_search(
             tokio::select! {
                 _ = ticker.tick() => {
                     let hits = build_hits(&state.scored, options.result_limit);
-                    match emit_hits(hits, request_id, false, &tx).await {
+                    match emit_hits(target, query.clone(), hits, request_id, false, &tx).await {
                         EmitOutcome::Sent => {}
                         EmitOutcome::ReceiverGone => return,
                     }
@@ -172,7 +177,7 @@ pub fn start_fuzzy_search(
                     state.process_next_chunk(&term, &mut matcher);
                     if state.is_complete() {
                         let hits = build_hits(&state.scored, options.result_limit);
-                        match emit_hits(hits, request_id, true, &tx).await {
+                        match emit_hits(target, query.clone(), hits, request_id, true, &tx).await {
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
                         }
@@ -637,12 +642,15 @@ mod tests {
             .expect("channel closed before delivering SearchEvent");
         match evt {
             SearchEvent::Result {
+                target: _,
+                query: _,
                 results,
                 request_id,
                 complete,
             } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
+            SearchEvent::Cancel { .. } => panic!("unexpected SearchEvent::Cancel"),
         }
     }
 
@@ -660,12 +668,31 @@ mod tests {
         }
     }
 
+    fn start_test_fuzzy_search(
+        term: String,
+        sources: Vec<SourceId>,
+        options: FuzzySearchOptions,
+        store: Arc<dyn LogStore>,
+        request_id: u64,
+        tx: mpsc::Sender<SearchEvent>,
+    ) -> JoinHandle<()> {
+        start_fuzzy_search(
+            SearchTarget::LogPane,
+            term,
+            sources,
+            options,
+            store,
+            request_id,
+            tx,
+        )
+    }
+
     #[tokio::test]
     async fn empty_term_emits_empty_result() {
         let store = RingBufferStore::new(store_config(64));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             String::new(),
             vec![],
             fuzzy_options(
@@ -709,7 +736,7 @@ mod tests {
         ));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -747,7 +774,7 @@ mod tests {
         store.insert(make_entry("server error", "s1", Some(LogLevel::Error)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec!["s1".to_string()],
             fuzzy_options(
@@ -776,7 +803,7 @@ mod tests {
         store.insert(make_entry("alpha error", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -811,7 +838,7 @@ mod tests {
         store.insert(make_entry("server", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "er".to_string(),
             vec![],
             fuzzy_options(
@@ -848,7 +875,7 @@ mod tests {
         store.insert(make_entry("nothing", "s1", Some(LogLevel::Warn)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "WARN".to_string(),
             vec![],
             fuzzy_options(
@@ -891,7 +918,7 @@ mod tests {
         });
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "payments".to_string(),
             vec![],
             fuzzy_options(
@@ -929,7 +956,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -957,7 +984,7 @@ mod tests {
         store.insert(make_entry("error", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -1004,7 +1031,7 @@ mod tests {
         ));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -1050,7 +1077,7 @@ mod tests {
         }
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -1086,7 +1113,7 @@ mod tests {
         // 1ms tick is short enough that several emissions race the scan
         // before it finishes, but long enough that a few chunks score
         // between ticks — so partials grow rather than always being empty.
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error".to_string(),
             vec![],
             fuzzy_options(
@@ -1140,7 +1167,7 @@ mod tests {
         ));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "'needle".to_string(),
             vec![],
             fuzzy_options(
@@ -1172,7 +1199,7 @@ mod tests {
         store.insert(make_entry("beta error", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "error !beta".to_string(),
             vec![],
             fuzzy_options(
@@ -1205,7 +1232,7 @@ mod tests {
         store.insert(make_entry("gamma", "s1", Some(LogLevel::Info)));
 
         let (tx, mut rx) = mpsc::channel(8);
-        let handle = start_fuzzy_search(
+        let handle = start_test_fuzzy_search(
             "!beta".to_string(),
             vec![],
             fuzzy_options(

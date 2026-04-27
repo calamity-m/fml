@@ -5,10 +5,9 @@
 //! dispatches the appropriate search strategy for each [`Query`], and routes
 //! asynchronous search results back into [`AppState`].
 //!
-//! Searches are intended to behave as latest-wins work: issuing a new request
-//! should cancel any superseded in-flight search, and result messages should be
-//! correlated with the active request so outdated responses do not overwrite
-//! newer state.
+//! Searches are latest-wins per target: issuing a new request for one target
+//! cancels only that target's superseded in-flight work, and result messages
+//! are correlated with the active request for the same target.
 
 use std::{sync::Arc, time::Duration};
 
@@ -16,11 +15,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::{
-    event::{Query, SearchEvent, SearchHit, TuiEvent},
+    event::{Query, SearchEvent, SearchHit, SearchTarget, TuiEvent},
     log::LogEntry,
     state::{
         AppState,
-        tui_state::log_pane_state::{LogPaneUpdate, SearchKind},
+        tui_state::log_pane_state::{LogPaneState, LogPaneUpdate, SearchKind},
     },
 };
 
@@ -37,6 +36,8 @@ pub(crate) enum EmitOutcome {
 /// single `SearchEvent::Result`. Workers own their own selection logic
 /// (tail window, history buffer, fuzzy matches) and delegate emission here.
 pub(crate) async fn emit_results(
+    target: SearchTarget,
+    query: Query,
     entries: Vec<Arc<LogEntry>>,
     request_id: u64,
     complete: bool,
@@ -52,6 +53,8 @@ pub(crate) async fn emit_results(
 
     match tx
         .send(SearchEvent::Result {
+            target,
+            query,
             results,
             request_id,
             complete,
@@ -70,6 +73,8 @@ pub(crate) async fn emit_results(
 /// workers (fuzzy) that populate per-field `Match` data; the entry-only
 /// `emit_results` helper hard-codes an empty matches vec.
 pub(crate) async fn emit_hits(
+    target: SearchTarget,
+    query: Query,
     hits: Vec<SearchHit>,
     request_id: u64,
     complete: bool,
@@ -77,6 +82,8 @@ pub(crate) async fn emit_hits(
 ) -> EmitOutcome {
     match tx
         .send(SearchEvent::Result {
+            target,
+            query,
             results: hits,
             request_id,
             complete,
@@ -105,32 +112,42 @@ pub(crate) async fn emit_error(message: String, tx: &mpsc::Sender<SearchEvent>) 
 ///
 /// This is the search subsystem's main reducer entry point. It is intended to:
 ///
-/// - start or replace in-flight work when a new [`SearchEvent::Search`] request
-///   arrives,
+/// - start or replace in-flight work for a target when a new
+///   [`SearchEvent::Search`] request arrives,
 /// - accept [`SearchEvent::Result`] messages produced by background workers and
 ///   merge them into the active search state, and
 /// - handle [`SearchEvent::Error`] messages without destabilizing the rest of
 ///   the application loop.
 ///
-/// Search requests are expected to be request-scoped so that results can be
-/// matched to the currently active query and stale responses can be discarded.
+/// Search requests are target/request scoped so stale responses can be
+/// discarded without one pane cancelling another pane's work.
 pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState {
     match event {
-        SearchEvent::Search { query, sources } => {
+        SearchEvent::Search {
+            target,
+            query,
+            sources,
+        } => {
             debug!(
-                "received search query event - query: {:?}, sources: {:?}",
-                query, sources
+                "received search query event - target: {:?}, query: {:?}, sources: {:?}",
+                target, query, sources
             );
 
-            if let Some(handle) = &state.search.running_handle {
-                handle.abort();
+            {
+                let client = state.search.client_mut(target);
+                if let Some(handle) = client.running_handle.take() {
+                    handle.abort();
+                }
             }
 
-            let request_id = &state.search.latest_request_id + 1;
-            state.tui.log_pane.on_search_started(&query);
+            let request_id = state.search.latest_request_id(target) + 1;
+            if target == SearchTarget::LogPane {
+                state.tui.log_pane.on_search_started(&query);
+            }
 
-            let new_handle = match query {
+            let new_handle = match query.clone() {
                 Query::Tail => tail::start_tail_search(
+                    target,
                     sources,
                     state.config.search.tail_size,
                     Duration::from_millis(state.config.search.tail_poll_interval_ms),
@@ -142,6 +159,22 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     middle_seq_id,
                     buffer,
                 } => history::start_history_search(
+                    target,
+                    query,
+                    middle_seq_id,
+                    buffer,
+                    sources,
+                    Duration::from_millis(state.config.search.history_poll_interval_ms),
+                    state.store.clone(),
+                    request_id,
+                    state.event_bus.search_event_tx.clone(),
+                ),
+                Query::Surrounding {
+                    middle_seq_id,
+                    buffer,
+                } => history::start_history_search(
+                    target,
+                    query,
                     middle_seq_id,
                     buffer,
                     sources,
@@ -151,6 +184,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     state.event_bus.search_event_tx.clone(),
                 ),
                 Query::Fuzzy(term) => fuzzy::start_fuzzy_search(
+                    target,
                     term,
                     sources,
                     fuzzy::FuzzySearchOptions {
@@ -165,30 +199,38 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 ),
             };
 
-            state.search.running_handle = Some(new_handle);
-            state.search.latest_request_id = request_id;
+            let client = state.search.client_mut(target);
+            client.running_handle = Some(new_handle);
+            client.latest_request_id = request_id;
+            state
+        }
+        SearchEvent::Cancel { target } => {
+            state.search.cancel(target);
             state
         }
         SearchEvent::Result {
+            target,
+            query,
             results,
             request_id,
             complete,
         } => {
             debug!(
-                "received search result - request_id: {}, complete: {}, results: {:?}",
-                request_id, complete, results
+                "received search result - target: {:?}, query: {:?}, request_id: {}, complete: {}, results: {:?}",
+                target, query, request_id, complete, results
             );
 
             // Ignore stale request_id responses
-            if request_id != state.search.latest_request_id {
+            let latest_request_id = state.search.latest_request_id(target);
+            if request_id != latest_request_id {
                 warn!(
                     "received result for stale request - expected request_id {}, but got result for request_id {}",
-                    state.search.latest_request_id, request_id
+                    latest_request_id, request_id
                 );
                 return state;
             }
 
-            let kind = state.tui.log_pane.active_query;
+            let kind = LogPaneState::query_kind(&query);
             let retained_bounds = state.store.bounds();
             let matches_by_seq = (kind == SearchKind::Fuzzy).then(|| {
                 results
@@ -201,6 +243,16 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             if let Err(err) = state.store.fetch_requested(&seq_ids, &mut entries) {
                 warn!("failed to fetch search result entries from store: {err}");
             }
+            if target == SearchTarget::PreviewPane {
+                if let Query::Surrounding { middle_seq_id, .. } = query {
+                    state
+                        .tui
+                        .preview_pane
+                        .apply_surrounding(middle_seq_id, entries);
+                }
+                return state;
+            }
+
             let update = match kind {
                 SearchKind::Tail => LogPaneUpdate::Tail {
                     entries,
@@ -271,7 +323,10 @@ mod tests {
                 state,
             );
         }
-        state.search.latest_request_id = 1;
+        state
+            .search
+            .client_mut(SearchTarget::LogPane)
+            .latest_request_id = 1;
         state
     }
 
@@ -292,6 +347,8 @@ mod tests {
         let state = state_with_entries(3);
         let mut state = handle_search_event(
             SearchEvent::Result {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
                 results: vec![1, 2, 3]
                     .into_iter()
                     .map(|seq_id| SearchHit {
@@ -321,6 +378,8 @@ mod tests {
 
         let mut state = handle_search_event(
             SearchEvent::Result {
+                target: SearchTarget::LogPane,
+                query: Query::Fuzzy("entry".to_string()),
                 results: vec![SearchHit {
                     seq_id: 2,
                     matches: vec![Match {
@@ -345,6 +404,8 @@ mod tests {
         let state = state_with_entries(2);
         let mut state = handle_search_event(
             SearchEvent::Result {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
                 results: Vec::new(),
                 request_id: 1,
                 complete: true,
@@ -353,5 +414,76 @@ mod tests {
         );
 
         assert!(take_selected_entry_event(&mut state).is_none());
+    }
+
+    #[test]
+    fn preview_surrounding_result_updates_preview_state_only() {
+        let mut state = state_with_entries(5);
+        state.tui.preview_pane.start_surrounding(3);
+        state
+            .search
+            .client_mut(SearchTarget::PreviewPane)
+            .latest_request_id = 1;
+
+        let mut state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::PreviewPane,
+                query: Query::Surrounding {
+                    middle_seq_id: 3,
+                    buffer: 2,
+                },
+                results: vec![2, 3, 4]
+                    .into_iter()
+                    .map(|seq_id| SearchHit {
+                        seq_id,
+                        matches: Vec::new(),
+                    })
+                    .collect(),
+                request_id: 1,
+                complete: true,
+            },
+            state,
+        );
+
+        assert_eq!(
+            state
+                .tui
+                .preview_pane
+                .items()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn stale_preview_result_is_dropped_per_target() {
+        let mut state = state_with_entries(5);
+        state.tui.preview_pane.start_surrounding(3);
+        state
+            .search
+            .client_mut(SearchTarget::PreviewPane)
+            .latest_request_id = 2;
+
+        let state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::PreviewPane,
+                query: Query::Surrounding {
+                    middle_seq_id: 3,
+                    buffer: 2,
+                },
+                results: vec![SearchHit {
+                    seq_id: 3,
+                    matches: Vec::new(),
+                }],
+                request_id: 1,
+                complete: true,
+            },
+            state,
+        );
+
+        assert!(state.tui.preview_pane.items().is_empty());
     }
 }

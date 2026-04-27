@@ -5,8 +5,10 @@ use ratatui_textarea::TextArea;
 use tokio::task::JoinHandle;
 
 pub mod log_pane_state;
+pub mod preview_pane_state;
 
 use log_pane_state::LogPaneState;
+use preview_pane_state::PreviewPaneState;
 
 use crate::{
     config::{
@@ -31,6 +33,7 @@ pub struct TuiState {
     pub selected_entry: Option<SelectedEntry>,
     pub info_pane_scroll_offset: usize,
     pub log_pane: LogPaneState,
+    pub preview_pane: PreviewPaneState,
 }
 
 impl TuiState {
@@ -48,6 +51,7 @@ impl TuiState {
             selected_entry: None,
             info_pane_scroll_offset: 0,
             log_pane: LogPaneState::new(search_config.tail_size),
+            preview_pane: PreviewPaneState::new(),
         })
     }
 }

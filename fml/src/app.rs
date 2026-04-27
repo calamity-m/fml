@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::{
     error::FmlError,
-    event::{Query, SearchEvent, TuiEvent},
+    event::{Query, SearchEvent, SearchTarget, TuiEvent},
     log::Source,
     producer::{self, LogProducer, fake::FakeProducer},
     search,
@@ -92,6 +92,7 @@ impl<B: Backend> App<B> {
             .event_bus
             .search_event_tx
             .send(SearchEvent::Search {
+                target: SearchTarget::LogPane,
                 query: Query::Tail,
                 sources: Vec::new(),
             })

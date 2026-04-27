@@ -10,8 +10,8 @@ expression: render_app(&mut app)
 │  4 INFO src-a entry 4                                ││                      │
 │  5 INFO src-a entry 5                                ││                      │
 │  6 INFO src-a entry 6                                █└──────────────────────┘
-│  7 INFO src-a entry 7                                █┌ Preview [ MODE ] ────┐
-│  8 INFO src-a entry 8                                █│                      │
+│  7 INFO src-a entry 7                                █┌ Preview [ SURROUNDING┐
+│  8 INFO src-a entry 8                                █│No log selected       │
 │  9 INFO src-a entry 9                                █│                      │
 │> 10 INFO src-a entry 10                              █│                      │
 │  11 INFO src-a entry 11                              █│                      │

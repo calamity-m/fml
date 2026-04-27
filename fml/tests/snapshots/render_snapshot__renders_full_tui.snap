@@ -10,15 +10,15 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 │  4 INFO src-a entry 4                                ││producer: fake        │
 │> 5 INFO src-a entry 5                                ││source: src-a         │
 │                                                      │└──────────────────────┘
-│                                                      │┌ Preview [ MODE ] ────┐
+│                                                      │┌ Preview [ SURROUNDING┐
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
+│                                                      ││  1 INFO src-a entry 1│
+│                                                      ││  2 INFO src-a entry 2│
+│                                                      ││  3 INFO src-a entry 3│
+│                                                      ││  4 INFO src-a entry 4│
+│                                                      ││> 5 INFO src-a entry 5│
 │                                                      ││                      │
 │                                                      ││                      │
 │                                                      ││                      │

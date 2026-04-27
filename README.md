@@ -63,12 +63,12 @@ The info pane should display the log entry currently selected by the log pane cu
 
 The preview pane's first mode should show nearby logs from the selected log entry's source.
 
-[] Introduce an enum-backed preview mode model with `Surrounding` as the only initial mode
-[] Add a "surrounding" preview mode
-[] Fetch and render entries around the selected sequence, e.g. cursor -7 through cursor +7
-[] Restrict surrounding preview entries to the selected log line's source
-[] Clearly mark the selected entry in the preview pane
-[] Add tests for tail, history, and fuzzy selections driving surrounding preview output
+[x] Introduce an enum-backed preview mode model with `Surrounding` as the only initial mode
+[x] Add a "surrounding" preview mode
+[x] Fetch and render entries around the selected sequence, e.g. cursor -7 through cursor +7
+[x] Restrict surrounding preview entries to the selected log line's source
+[x] Clearly mark the selected entry in the preview pane
+[x] Add tests for tail, history, and fuzzy selections driving surrounding preview output
 
 ### 3. Source Selector Popup
 

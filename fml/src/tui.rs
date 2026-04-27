@@ -21,7 +21,7 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     config::tui::TuiConfig,
     error::FmlError,
-    event::{QuitEvent, TuiEvent},
+    event::{Query, QuitEvent, SearchEvent, SearchTarget, TuiEvent},
     state::AppState,
     tui::{keybinds::StaticKeyAction, layout::Slot},
 };
@@ -111,8 +111,37 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
     let mut new_state = match event {
         TuiEvent::NewSelectedEntry(selected_entry) => {
             let mut state = state;
-            state.tui.selected_entry = selected_entry;
+            state.tui.selected_entry = selected_entry.clone();
             state.tui.info_pane_scroll_offset = 0;
+            if let Some(selected_entry) = selected_entry {
+                let anchor_seq = selected_entry.entry.seq;
+                state.tui.preview_pane.start_surrounding(anchor_seq);
+                if let Err(err) = state
+                    .event_bus
+                    .search_event_tx
+                    .try_send(SearchEvent::Search {
+                        target: SearchTarget::PreviewPane,
+                        query: Query::Surrounding {
+                            middle_seq_id: anchor_seq,
+                            buffer: state.config.search.tail_size as u64,
+                        },
+                        sources: vec![selected_entry.entry.source.id.clone()],
+                    })
+                {
+                    error!("failed to dispatch preview surrounding search: {err}");
+                }
+            } else {
+                state.tui.preview_pane.clear();
+                if let Err(err) = state
+                    .event_bus
+                    .search_event_tx
+                    .try_send(SearchEvent::Cancel {
+                        target: SearchTarget::PreviewPane,
+                    })
+                {
+                    error!("failed to cancel preview search: {err}");
+                }
+            }
             return state;
         }
         TuiEvent::Render => {
@@ -233,6 +262,7 @@ mod tests {
         config::Config,
         event::{SelectedEntry, TuiEvent},
         log::{LogEntry, LogLevel, Source},
+        state::tui_state::preview_pane_state::PreviewStatus,
     };
 
     fn entry(seq: u64) -> Arc<LogEntry> {
@@ -255,7 +285,7 @@ mod tests {
     fn new_selected_entry_event_updates_tui_state() {
         let mut state = AppState::new(Config::default()).expect("app state");
         state.tui.info_pane_scroll_offset = 4;
-        let state = handle_tui_event(
+        let mut state = handle_tui_event(
             TuiEvent::NewSelectedEntry(Some(SelectedEntry {
                 entry: entry(7),
                 matches: Vec::new(),
@@ -272,6 +302,25 @@ mod tests {
             Some(7)
         );
         assert_eq!(state.tui.info_pane_scroll_offset, 0);
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::Loading);
+        assert_eq!(state.tui.preview_pane.anchor_seq, Some(7));
+        match state.event_bus.search_event_rx.try_recv() {
+            Ok(SearchEvent::Search {
+                target,
+                query:
+                    Query::Surrounding {
+                        middle_seq_id,
+                        buffer,
+                    },
+                sources,
+            }) => {
+                assert_eq!(target, SearchTarget::PreviewPane);
+                assert_eq!(middle_seq_id, 7);
+                assert_eq!(buffer, state.config.search.tail_size as u64);
+                assert_eq!(sources, vec!["src-a".to_string()]);
+            }
+            event => panic!("expected preview surrounding search, got {event:?}"),
+        }
     }
 
     #[test]
@@ -283,10 +332,18 @@ mod tests {
         });
         state.tui.info_pane_scroll_offset = 4;
 
-        let state = handle_tui_event(TuiEvent::NewSelectedEntry(None), state);
+        let mut state = handle_tui_event(TuiEvent::NewSelectedEntry(None), state);
 
         assert!(state.tui.selected_entry.is_none());
         assert_eq!(state.tui.info_pane_scroll_offset, 0);
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
+        assert_eq!(state.tui.preview_pane.anchor_seq, None);
+        assert!(matches!(
+            state.event_bus.search_event_rx.try_recv(),
+            Ok(SearchEvent::Cancel {
+                target: SearchTarget::PreviewPane
+            })
+        ));
     }
 
     #[test]

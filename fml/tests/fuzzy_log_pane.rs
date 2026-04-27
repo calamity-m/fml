@@ -11,7 +11,7 @@ use fml::{
         Config,
         tui::{LogLevelThemeConfig, LogMatchStyle},
     },
-    event::{ProducerEvent, Query, QuitEvent, SearchEvent, SearchHit, TuiEvent},
+    event::{ProducerEvent, Query, QuitEvent, SearchEvent, SearchHit, SearchTarget, TuiEvent},
     log::LogLevel,
     producer, search,
     state::tui_state::log_pane_state::ScrollMode,
@@ -117,7 +117,10 @@ fn reducer_app_with_entries(count: u64) -> App<ratatui::backend::TestBackend> {
             app.state,
         );
     }
-    app.state.search.latest_request_id = 1;
+    app.state
+        .search
+        .client_mut(SearchTarget::LogPane)
+        .latest_request_id = 1;
     app.state
         .tui
         .log_pane
@@ -135,6 +138,8 @@ fn apply_fuzzy_emission(
 ) -> App<ratatui::backend::TestBackend> {
     app.state = search::handle_search_event(
         SearchEvent::Result {
+            target: SearchTarget::LogPane,
+            query: Query::Fuzzy("entry".to_string()),
             results: best_first.iter().copied().map(fuzzy_hit).collect(),
             request_id: 1,
             complete: true,
@@ -179,8 +184,8 @@ async fn submitting_fuzzy_query_renders_ranked_matches() {
     );
     assert!(rendered.contains("1 INFO src-a needle"));
     assert!(rendered.contains("3 INFO src-a needle"));
-    assert!(!rendered.contains("5 INFO src-a needle"));
     assert_eq!(app.state.tui.log_pane.selected_seq(), Some(5));
+    assert_eq!(app.state.tui.preview_pane.anchor_seq, Some(5));
     assert!(
         app.state
             .tui
