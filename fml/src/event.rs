@@ -37,11 +37,6 @@ pub enum TuiEvent {
     DispatchLogPaneSearch(Query),
     /// Redispatch the active log-pane search after source-filter changes.
     RedispatchLogPaneSearch,
-    /// Dispatch preview surrounding search after preview selection settles.
-    DispatchPreviewSurrounding {
-        anchor_seq: u64,
-        source_id: SourceId,
-    },
     /// A user input key event was received.
     Input(crossterm::event::KeyEvent),
     /// An error occurred in the event stream.

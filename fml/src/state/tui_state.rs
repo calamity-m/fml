@@ -77,7 +77,7 @@ impl TuiState {
             selected_entry: None,
             info_pane_scroll_offset: 0,
             log_pane: LogPaneState::new(search_config.tail_size),
-            preview_pane: PreviewPaneState::new(search_config.preview_debounce_ms),
+            preview_pane: PreviewPaneState::new(),
             source_selector: SourceSelectorState::new(),
         })
     }

@@ -125,9 +125,14 @@ impl LogPane {
     }
 
     fn dispatch_selected_entry(state: &TuiState, events_bus: &mut EventBus) {
+        let selected_entry = state.log_pane.selected_entry();
+        if selected_entry.is_none() && state.log_pane.selected_seq().is_some() {
+            return;
+        }
+
         if let Err(err) = events_bus
             .tui_event_tx
-            .send(TuiEvent::NewSelectedEntry(state.log_pane.selected_entry()))
+            .send(TuiEvent::NewSelectedEntry(selected_entry))
         {
             error!(
                 "failed to send selected entry event from log pane - {}",
@@ -516,5 +521,43 @@ mod tests {
             }
             event => panic!("expected selected entry event, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn scroll_does_not_emit_clear_when_selected_seq_is_pending_fetch() {
+        let mut state = TuiState::new(
+            &crate::config::tui::TuiConfig::default(),
+            &crate::config::search::SearchConfig::default(),
+        )
+        .expect("tui state");
+        let mut events_bus = EventBus::new();
+        state.log_pane.set_height(3, &mut state.log_pane_cursor_row);
+        state.log_pane.apply_update(
+            crate::state::tui_state::log_pane_state::LogPaneUpdate::History {
+                entries: (3..=5).map(sequenced_entry).collect(),
+                retained_bounds: (1, 5),
+            },
+            &mut state.log_pane_cursor_row,
+        );
+        state
+            .log_pane
+            .set_selected_seq(Some(3), &mut state.log_pane_cursor_row);
+
+        LogPane::new().handle_event(
+            TuiEvent::Scroll(ScrollDirection::Backward),
+            &mut state,
+            &mut events_bus,
+        );
+
+        match events_bus.tui_event_rx.try_recv().expect("search event") {
+            TuiEvent::DispatchLogPaneSearch(Query::History { middle_seq_id, .. }) => {
+                assert_eq!(middle_seq_id, 2);
+            }
+            event => panic!("expected history search dispatch event, got {event:?}"),
+        }
+        assert!(
+            events_bus.tui_event_rx.try_recv().is_err(),
+            "pending selected seq should not emit NewSelectedEntry(None)"
+        );
     }
 }
