@@ -1,5 +1,5 @@
 background = "#181616"
-border_unfocused_fg = "Reset"
+border_unfocused_fg = "DarkGray"
 primary_accent_fg = "#C4B28A"
 secondary_accent_fg = "#87A987"
 log_selected_bg = "#2D4F67"
@@ -9,8 +9,8 @@ status_dim = true
 
 [log_level]
 default_fg = "#C5C9C5"
-trace_fg = "#625E5A"
-debug_fg = "#625E5A"
+trace_fg = "#6E6660"
+debug_fg = "#8BA4B0"
 info_fg = "#87A987"
 warn_fg = "#C4B28A"
 error_fg = "#C4746E"

@@ -1,5 +1,5 @@
 background = "#111C2D"
-border_unfocused_fg = "Reset"
+border_unfocused_fg = "DarkGray"
 primary_accent_fg = "LightCyan"
 secondary_accent_fg = "LightCyan"
 log_selected_bg = "#16304A"
@@ -9,8 +9,8 @@ status_dim = true
 
 [log_level]
 default_fg = "Gray"
-trace_fg = "DarkGray"
-debug_fg = "DarkGray"
+trace_fg = "#4A5C70"
+debug_fg = "#7AB8C9"
 info_fg = "LightBlue"
 warn_fg = "LightYellow"
 error_fg = "LightRed"

@@ -104,6 +104,13 @@ pub struct ThemeConfig {
     #[serde(default = "default_log_selected_bg")]
     pub log_selected_bg: Color,
 
+    /// Text modifier applied on top of the selection background.
+    ///
+    /// Defaults to `BOLD` so selected rows remain legible even when the level
+    /// foreground colour is close to `log_selected_bg`.
+    #[serde(default = "default_log_selected_modifier")]
+    pub log_selected_modifier: Modifier,
+
     /// Foreground color for highlighted text that matches the active search.
     #[serde(default = "default_log_match_fg")]
     pub log_match_fg: Color,
@@ -133,6 +140,7 @@ impl Default for ThemeConfig {
             primary_accent_fg: default_primary_accent_fg(),
             secondary_accent_fg: default_secondary_accent_fg(),
             log_selected_bg: default_log_selected_bg(),
+            log_selected_modifier: default_log_selected_modifier(),
             log_match_fg: default_log_match_fg(),
             log_match_style: LogMatchStyle::default(),
             log_level: LogLevelThemeConfig::default(),
@@ -149,6 +157,15 @@ impl ThemeConfig {
             Some(color) => ratatui::style::Style::default().bg(color),
             None => ratatui::style::Style::default(),
         }
+    }
+
+    /// Style for the currently selected row, combining bg tint and modifier.
+    pub fn selected_style(&self) -> Style {
+        let mut style = self.surface_style().bg(self.log_selected_bg);
+        if !self.log_selected_modifier.is_empty() {
+            style = style.add_modifier(self.log_selected_modifier);
+        }
+        style
     }
 
     /// Map a parsed log level to the configured row foreground color.
@@ -249,11 +266,11 @@ impl LogLevelThemeConfig {
 }
 
 fn default_border_unfocused_fg() -> Color {
-    Color::Reset
+    Color::DarkGray
 }
 
 fn default_secondary_accent_fg() -> Color {
-    Color::DarkGray
+    Color::Indexed(244)
 }
 
 fn default_primary_accent_fg() -> Color {
@@ -261,7 +278,11 @@ fn default_primary_accent_fg() -> Color {
 }
 
 fn default_log_selected_bg() -> Color {
-    Color::DarkGray
+    Color::Rgb(0x2A, 0x2A, 0x2A)
+}
+
+fn default_log_selected_modifier() -> Modifier {
+    Modifier::BOLD
 }
 
 fn default_log_match_fg() -> Color {
@@ -273,11 +294,11 @@ fn default_log_default_fg() -> Color {
 }
 
 fn default_log_trace_fg() -> Color {
-    Color::DarkGray
+    Color::Gray
 }
 
 fn default_log_debug_fg() -> Color {
-    Color::DarkGray
+    Color::Cyan
 }
 
 fn default_log_info_fg() -> Color {
@@ -358,4 +379,17 @@ fn default_toggle_help() -> Vec<String> {
 
 fn default_show_info() -> Vec<String> {
     vec!["enter".into()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_theme_has_bold_selection_modifier() {
+        assert_eq!(
+            ThemeConfig::default().log_selected_modifier,
+            Modifier::BOLD
+        );
+    }
 }

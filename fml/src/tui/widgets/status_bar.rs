@@ -65,6 +65,11 @@ impl FmlWidget for StatusBar {
         .split(area);
 
         let base_style = state.selected_theme.surface_style();
+        let dim_style = if state.selected_theme.status_dim {
+            base_style.add_modifier(Modifier::DIM)
+        } else {
+            base_style
+        };
         let key_style = base_style
             .fg(state.selected_theme.primary_accent_fg)
             .add_modifier(Modifier::BOLD);
@@ -72,9 +77,9 @@ impl FmlWidget for StatusBar {
         let mut spans = Vec::new();
         for (index, hint) in hints.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled(" | ", base_style));
+                spans.push(Span::styled(" | ", dim_style));
             }
-            spans.push(Span::styled(format!("{} ", hint.title), base_style));
+            spans.push(Span::styled(format!("{} ", hint.title), dim_style));
             spans.push(Span::styled(format!("<{}>", hint.label), key_style));
         }
 

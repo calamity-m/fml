@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashSet};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
-    style::Modifier,
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
@@ -149,7 +148,7 @@ pub fn render_source_selector(frame: &mut Frame, area: Rect, state: &mut TuiStat
             inner.width as usize,
             narrow,
             base_style,
-            state.selected_theme.primary_accent_fg,
+            state.selected_theme.selected_style(),
         ));
     }
 
@@ -273,7 +272,7 @@ fn render_row(
     width: usize,
     narrow: bool,
     base_style: ratatui::style::Style,
-    accent: ratatui::style::Color,
+    selected_style: ratatui::style::Style,
 ) -> Line<'static> {
     let pointer = if selected { "> " } else { "  " };
     let indent = "  ".repeat(row.depth);
@@ -286,10 +285,7 @@ fn render_row(
     };
 
     if selected {
-        Line::from(Span::styled(
-            line,
-            base_style.fg(accent).add_modifier(Modifier::BOLD),
-        ))
+        Line::from(Span::styled(line, selected_style))
     } else {
         Line::from(Span::styled(line, base_style))
     }

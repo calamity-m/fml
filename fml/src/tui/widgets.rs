@@ -1,4 +1,4 @@
-use ratatui::{Frame, layout::Rect, style::Style};
+use ratatui::{Frame, layout::Rect, style::{Modifier, Style}, widgets::BorderType};
 
 use crate::{
     config::tui::ThemeConfig,
@@ -25,13 +25,24 @@ pub trait FmlWidget {
     /// Handle tui event
     fn handle_event(&self, event: TuiEvent, state: &mut TuiState, events_bus: &mut EventBus);
 
-    fn border_style(&self, focused: &Slot, theme: &ThemeConfig) -> Style {
-        // When this pane has focus, highlight the border with the primary accent color.
-        // When unfocused, use the terminal default so the focused pane stands out.
+    /// Returns the border style and type for this widget based on focus state.
+    ///
+    /// Focused panes get a bold accent-coloured thick border; unfocused panes
+    /// get a plain border in the configured unfocused foreground colour.
+    fn border(&self, focused: &Slot, theme: &ThemeConfig) -> (Style, BorderType) {
         if *focused == self.slot() {
-            return theme.surface_style().fg(theme.primary_accent_fg);
+            (
+                theme
+                    .surface_style()
+                    .fg(theme.primary_accent_fg)
+                    .add_modifier(Modifier::BOLD),
+                BorderType::Thick,
+            )
+        } else {
+            (
+                theme.surface_style().fg(theme.border_unfocused_fg),
+                BorderType::Plain,
+            )
         }
-
-        theme.surface_style().fg(theme.border_unfocused_fg)
     }
 }

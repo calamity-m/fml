@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use ratatui::{
+    style::Modifier,
     text::{Line, Span},
     widgets::{Block, List, ListItem, ListState},
 };
@@ -33,11 +34,14 @@ impl PreviewPane {
         }
     }
 
-    fn render_line(entry: &Arc<LogEntry>, state: &TuiState) -> Line<'static> {
-        let base_style = state
+    fn render_line(entry: &Arc<LogEntry>, state: &TuiState, is_anchor: bool) -> Line<'static> {
+        let mut base_style = state
             .selected_theme
             .surface_style()
             .fg(state.selected_theme.log_row_fg(entry.level));
+        if !is_anchor {
+            base_style = base_style.add_modifier(Modifier::DIM);
+        }
         let level = entry
             .level
             .map(|level| level.to_string())
@@ -79,9 +83,10 @@ impl PreviewPane {
                 }
             });
 
+            let is_anchor = anchor_index.is_some() && row == anchor_row;
             items.push(ListItem::new(
                 entry
-                    .map(|entry| Self::render_line(entry, state))
+                    .map(|entry| Self::render_line(entry, state, is_anchor))
                     .unwrap_or_default(),
             ));
         }
@@ -151,12 +156,7 @@ impl FmlWidget for PreviewPane {
                 let list = List::new(items)
                     .style(state.selected_theme.surface_style())
                     .highlight_symbol("> ")
-                    .highlight_style(
-                        state
-                            .selected_theme
-                            .surface_style()
-                            .bg(state.selected_theme.log_selected_bg),
-                    );
+                    .highlight_style(state.selected_theme.selected_style());
                 let mut list_state = ListState::default().with_selected(selected);
                 frame.render_stateful_widget(list, inner_area, &mut list_state);
             }

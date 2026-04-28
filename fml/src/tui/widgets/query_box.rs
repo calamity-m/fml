@@ -108,9 +108,11 @@ impl FmlWidget for QueryBox {
         trace!("render called on QueryBox");
 
         // Outer border
+        let (border_style, border_type) = self.border(&state.focused, &state.selected_theme);
         let inner = Block::bordered()
             .title(" Query ")
-            .border_style(self.border_style(&state.focused, &state.selected_theme))
+            .border_style(border_style)
+            .border_type(border_type)
             .style(state.selected_theme.surface_style());
         let inner_area = inner.inner(area);
         frame.render_widget(inner, area);

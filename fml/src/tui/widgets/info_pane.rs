@@ -116,15 +116,13 @@ impl FmlWidget for InfoPane {
         area: ratatui::prelude::Rect,
         state: &mut crate::state::tui_state::TuiState,
     ) {
-        // Draw the outer border and title.
+        // Draw the outer border and title. InfoPane is not focusable so always
+        // uses the unfocused (DarkGray, Plain) border.
+        let (border_style, border_type) = self.border(&state.focused, &state.selected_theme);
         let block = Block::bordered()
             .title(" Info ")
-            .border_style(
-                state
-                    .selected_theme
-                    .surface_style()
-                    .fg(state.selected_theme.border_unfocused_fg),
-            )
+            .border_style(border_style)
+            .border_type(border_type)
             .style(state.selected_theme.surface_style());
 
         let inner_area = block.inner(area);

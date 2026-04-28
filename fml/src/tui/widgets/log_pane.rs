@@ -150,9 +150,11 @@ impl FmlWidget for LogPane {
     ) {
         // Draw the outer border and title. `inner_area` is the rect inside the
         // border — this is where the list actually goes.
+        let (border_style, border_type) = self.border(&state.focused, &state.selected_theme);
         let block = Block::bordered()
             .title(self.title(&state.log_pane))
-            .border_style(self.border_style(&state.focused, &state.selected_theme))
+            .border_style(border_style)
+            .border_type(border_type)
             .style(state.selected_theme.surface_style());
 
         let inner_area = block.inner(area);
@@ -214,14 +216,9 @@ impl FmlWidget for LogPane {
         let list = List::new(items)
             .style(state.selected_theme.surface_style())
             .highlight_symbol("> ")
-            // The selected row gets this style applied on top, giving it a
-            // highlighted background to show where the cursor is.
-            .highlight_style(
-                state
-                    .selected_theme
-                    .surface_style()
-                    .bg(state.selected_theme.log_selected_bg),
-            );
+            // Three independent cues: tinted bg, bold weight, and the leading
+            // marker. Even if level fg matches selected bg, the row stays legible.
+            .highlight_style(state.selected_theme.selected_style());
 
         // ListState is constructed fresh every frame — it's just a render detail,
         // not persistent state. `with_selected` tells the List which item in the
