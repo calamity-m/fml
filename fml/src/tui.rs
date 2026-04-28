@@ -116,35 +116,25 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
             let mut state = state;
             state.tui.selected_entry = selected_entry.clone();
             state.tui.info_pane_scroll_offset = 0;
-            if let Some(selected_entry) = selected_entry {
-                let anchor_seq = selected_entry.entry.seq;
-                state.tui.preview_pane.start_surrounding(anchor_seq);
-                if let Err(err) = state
-                    .event_bus
-                    .search_event_tx
-                    .try_send(SearchEvent::Search {
-                        target: SearchTarget::PreviewPane,
-                        query: Query::Surrounding {
-                            middle_seq_id: anchor_seq,
-                            buffer: state.config.search.tail_size as u64,
-                        },
-                        sources: vec![selected_entry.entry.source.id.clone()],
-                    })
-                {
-                    error!("failed to dispatch preview surrounding search: {err}");
-                }
-            } else {
-                state.tui.preview_pane.clear();
-                if let Err(err) = state
-                    .event_bus
-                    .search_event_tx
-                    .try_send(SearchEvent::Cancel {
-                        target: SearchTarget::PreviewPane,
-                    })
-                {
-                    error!("failed to cancel preview search: {err}");
-                }
-            }
+            state.tui.preview_pane.selected_entry_changed(
+                selected_entry.as_ref(),
+                &state.event_bus.tui_event_tx,
+                &state.event_bus.search_event_tx,
+            );
+            return state;
+        }
+        TuiEvent::DispatchPreviewSurrounding {
+            anchor_seq,
+            source_id,
+        } => {
+            let mut state = state;
+            state.tui.preview_pane.dispatch_surrounding(
+                anchor_seq,
+                source_id,
+                state.tui.selected_entry.as_ref(),
+                state.config.search.tail_size as u64,
+                &state.event_bus.search_event_tx,
+            );
             return state;
         }
         TuiEvent::Render => {
@@ -414,7 +404,7 @@ pub fn render<B: Backend>(state: &mut AppState, terminal: &mut Terminal<B>) {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::{collections::HashMap, sync::Arc, time::Duration};
 
     use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -473,6 +463,13 @@ mod tests {
             .expect("search event")
     }
 
+    async fn recv_tui_event(state: &mut AppState) -> TuiEvent {
+        tokio::time::timeout(Duration::from_secs(1), state.event_bus.tui_event_rx.recv())
+            .await
+            .expect("timed out waiting for tui event")
+            .expect("tui event channel closed")
+    }
+
     #[test]
     fn new_selected_entry_event_updates_tui_state() {
         let mut state = AppState::new(Config::default()).expect("app state");
@@ -494,10 +491,46 @@ mod tests {
             Some(7)
         );
         assert_eq!(state.tui.info_pane_scroll_offset, 0);
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
+        assert_eq!(state.tui.preview_pane.anchor_seq, None);
+        assert!(matches!(
+            state.event_bus.search_event_rx.try_recv(),
+            Ok(SearchEvent::Cancel {
+                target: SearchTarget::PreviewPane
+            })
+        ));
+        match state.event_bus.tui_event_rx.try_recv() {
+            Ok(TuiEvent::DispatchPreviewSurrounding {
+                anchor_seq,
+                source_id,
+            }) => {
+                assert_eq!(anchor_seq, 7);
+                assert_eq!(source_id, "src-a");
+            }
+            event => panic!("expected debounced preview dispatch event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_preview_surrounding_starts_search_for_current_selection() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(7),
+            matches: Vec::new(),
+        });
+
+        let mut state = handle_tui_event(
+            TuiEvent::DispatchPreviewSurrounding {
+                anchor_seq: 7,
+                source_id: "src-a".to_string(),
+            },
+            state,
+        );
+
         assert_eq!(state.tui.preview_pane.status, PreviewStatus::Loading);
         assert_eq!(state.tui.preview_pane.anchor_seq, Some(7));
-        match state.event_bus.search_event_rx.try_recv() {
-            Ok(SearchEvent::Search {
+        match recv_search_event(&mut state) {
+            SearchEvent::Search {
                 target,
                 query:
                     Query::Surrounding {
@@ -505,7 +538,7 @@ mod tests {
                         buffer,
                     },
                 sources,
-            }) => {
+            } => {
                 assert_eq!(target, SearchTarget::PreviewPane);
                 assert_eq!(middle_seq_id, 7);
                 assert_eq!(buffer, state.config.search.tail_size as u64);
@@ -513,6 +546,94 @@ mod tests {
             }
             event => panic!("expected preview surrounding search, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn stale_dispatch_preview_surrounding_is_ignored() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(8),
+            matches: Vec::new(),
+        });
+
+        let mut state = handle_tui_event(
+            TuiEvent::DispatchPreviewSurrounding {
+                anchor_seq: 7,
+                source_id: "src-a".to_string(),
+            },
+            state,
+        );
+
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
+        assert!(state.event_bus.search_event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn preview_surrounding_dispatch_is_debounced_to_latest_selection() {
+        let mut config = Config::default();
+        config.search.preview_debounce_ms = 10;
+        let state = AppState::new(config).expect("app state");
+        let state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry(7),
+                matches: Vec::new(),
+            })),
+            state,
+        );
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry(8),
+                matches: Vec::new(),
+            })),
+            state,
+        );
+
+        match recv_tui_event(&mut state).await {
+            TuiEvent::DispatchPreviewSurrounding {
+                anchor_seq,
+                source_id,
+            } => {
+                assert_eq!(anchor_seq, 8);
+                assert_eq!(source_id, "src-a");
+            }
+            event => panic!("expected preview dispatch for latest selection, got {event:?}"),
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(40),
+                state.event_bus.tui_event_rx.recv()
+            )
+            .await
+            .is_err(),
+            "superseded preview selection should not dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_selection_cancels_pending_preview_dispatch() {
+        let mut config = Config::default();
+        config.search.preview_debounce_ms = 30;
+        let state = AppState::new(config).expect("app state");
+        let state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry(7),
+                matches: Vec::new(),
+            })),
+            state,
+        );
+        let mut state = handle_tui_event(TuiEvent::NewSelectedEntry(None), state);
+
+        assert!(state.tui.selected_entry.is_none());
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(70),
+                state.event_bus.tui_event_rx.recv()
+            )
+            .await
+            .is_err(),
+            "cleared selection should abort pending preview dispatch"
+        );
     }
 
     #[test]

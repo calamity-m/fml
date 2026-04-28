@@ -242,6 +242,14 @@ mod tests {
 
     #[test]
     #[serial]
+    fn default_search_config_uses_preview_debounce() {
+        let config = Config::default();
+
+        assert_eq!(config.search.preview_debounce_ms, 75);
+    }
+
+    #[test]
+    #[serial]
     fn load_with_config_dir_reads_fuzzy_matcher() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
@@ -257,6 +265,25 @@ mod tests {
         let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
 
         assert_eq!(config.search.fuzzy_matcher, FuzzyMatcherKind::Frizbee);
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_config_dir_reads_preview_debounce() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            [search]
+            preview_debounce_ms = 25
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(config.search.preview_debounce_ms, 25);
     }
 
     #[test]
