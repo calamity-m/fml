@@ -47,6 +47,7 @@ struct LogPaneContent {
     /// Resolved log entries for the current display window, in render order.
     items: Vec<Arc<LogEntry>>,
     fuzzy_matches: HashMap<u64, Vec<Match>>,
+    empty_message: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -61,7 +62,7 @@ pub struct LogPaneState {
     content: LogPaneContent,
     viewport: LogPaneViewport,
     pub retained_bounds: (u64, u64),
-    pub active_query: SearchKind,
+    pub active_query: Option<Query>,
     history_buffer_limit: usize,
 }
 
@@ -72,7 +73,7 @@ impl Default for LogPaneState {
             content: LogPaneContent::default(),
             viewport: LogPaneViewport::default(),
             retained_bounds: (0, 0),
-            active_query: SearchKind::Tail,
+            active_query: None,
             history_buffer_limit: 500,
         }
     }
@@ -96,8 +97,9 @@ impl LogPaneState {
     }
 
     pub fn on_search_started(&mut self, query: &Query) {
-        self.active_query = Self::query_kind(query);
-        match self.active_query {
+        self.content.empty_message = None;
+        self.active_query = Some(query.clone());
+        match Self::query_kind(query) {
             SearchKind::Tail => self.mode = ScrollMode::Tail,
             SearchKind::Fuzzy => self.mode = ScrollMode::Search,
             SearchKind::History => {}
@@ -215,6 +217,19 @@ impl LogPaneState {
         &self.content.items[self.viewport.view_start..end]
     }
 
+    pub fn empty_message(&self) -> Option<&'static str> {
+        self.content.empty_message
+    }
+
+    pub fn show_no_sources_selected(&mut self, cursor: &mut usize) {
+        self.content.items.clear();
+        self.content.fuzzy_matches.clear();
+        self.content.empty_message = Some("No sources selected");
+        self.viewport.selected_seq = None;
+        self.viewport.view_start = 0;
+        *cursor = 0;
+    }
+
     pub fn selected_visible_index(&self) -> Option<usize> {
         let selected_index = self.selected_index()?;
         let end = self
@@ -230,6 +245,7 @@ impl LogPaneState {
     }
 
     pub fn apply_update(&mut self, update: LogPaneUpdate, cursor: &mut usize) {
+        self.content.empty_message = None;
         match update {
             LogPaneUpdate::Tail {
                 entries,

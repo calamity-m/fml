@@ -33,6 +33,10 @@ pub enum TuiEvent {
     ScrollHead,
     /// A request to jump the scroll position to the end of the buffer.
     ScrollTail,
+    /// Dispatch a log-pane search after applying the current source filter.
+    DispatchLogPaneSearch(Query),
+    /// Redispatch the active log-pane search after source-filter changes.
+    RedispatchLogPaneSearch,
     /// A user input key event was received.
     Input(crossterm::event::KeyEvent),
     /// An error occurred in the event stream.

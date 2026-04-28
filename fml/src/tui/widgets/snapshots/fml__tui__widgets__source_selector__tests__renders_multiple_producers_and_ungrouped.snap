@@ -1,0 +1,27 @@
+---
+source: fml/src/tui/widgets/source_selector.rs
+expression: "render(state(sources, &[\"api\", \"syslog\", \"web\"]), 88, 26)"
+---
+                                                                                        
+                                                                                        
+            ┌ Sources ─────────────────────────────────────────────────────┐            
+            │Filter visible logs by source                                 │            
+            │                                                              │            
+            │> [-] docker                                               1/2│            
+            │    [ ] (ungrouped)                                        0/1│            
+            │      [ ] standalone                                          │            
+            │    [x] compose-a                                          1/1│            
+            │      [x] api                                                 │            
+            │  [x] file                                                 1/1│            
+            │    [x] /var/log                                           1/1│            
+            │      [x] syslog                                              │            
+            │  [x] namespace1                                           1/1│            
+            │    [x] deployments                                        1/1│            
+            │      [x] web                                                 │            
+            │  [ ] namespace2                                           0/1│            
+            │    [ ] deployments                                        0/1│            
+            │      [ ] worker                                              │            
+            │                                                              │            
+            │                                                              │            
+            │space toggle  a all  n none  esc close                        │            
+            └──────────────────────────────────────────────────────────────┘

@@ -229,11 +229,11 @@ This deliverable settles the user-visible popup behavior before code changes. It
 
 This deliverable adds a hardcoded `ctrl+s` source selector action and enough TUI state to open, close, and navigate the popup without changing search results yet. The keybinding is added as `CustomizedKeyAction::ToggleSourceSelector` in `keybinds.rs` and matched in `match_key()`; config-loadable remapping is out of scope for this deliverable. It should keep reserved keys and existing pane focus behavior intact.
 
-- [ ] Add `CustomizedKeyAction::ToggleSourceSelector` to `keybinds.rs` and match `ctrl+s` in `match_key()`
-- [ ] Add popup state to `TuiState`: open/closed flag, cursor index, persistent enabled-source set, open-time source snapshot (used for tree rendering only)
-- [ ] Subscribe persistent enabled set to `ProducerEvent::SourceFound`/`SourceLost` so it stays in sync with `producer_state` while popup is closed (Found → add to enabled, preserves "see all" default; Lost → remove)
-- [ ] Define key precedence: when popup is open, global fallbacks (e.g. `ctrl+c` quit) run first; popup-local keys (`ctrl+s`, `esc`, `up`/`k`, `down`/`j`, `space`, `enter`, `a`, `n`) are consumed by the popup before focused widgets see them; all other keys are swallowed (no leak to underlying pane)
-- [ ] Add unit tests for open/close behavior, focus preservation, key swallowing, and `ctrl+c`-still-quits while open
+- [x] Add `CustomizedKeyAction::ToggleSourceSelector` to `keybinds.rs` and match `ctrl+s` in `match_key()`
+- [x] Add popup state to `TuiState`: open/closed flag, cursor index, persistent enabled-source set, open-time source snapshot (used for tree rendering only)
+- [x] Subscribe persistent enabled set to `ProducerEvent::SourceFound`/`SourceLost` so it stays in sync with `producer_state` while popup is closed (Found → add to enabled, preserves "see all" default; Lost → remove)
+- [x] Define key precedence: when popup is open, global fallbacks (e.g. `ctrl+c` quit) run first; popup-local keys (`ctrl+s`, `esc`, `up`/`k`, `down`/`j`, `space`, `enter`, `a`, `n`) are consumed by the popup before focused widgets see them; all other keys are swallowed (no leak to underlying pane)
+- [x] Add unit tests for open/close behavior, focus preservation, key swallowing, and `ctrl+c`-still-quits while open
 
 ### Deliverable 3. Source Tree Rendering And Navigation
 
@@ -241,12 +241,12 @@ This deliverable adds a hardcoded `ctrl+s` source selector action and enough TUI
 
 This deliverable renders the centered popup from known producer sources and supports keyboard navigation over tree rows. It should derive all display rows from `producer_state.sources`, sort them predictably, and never use display names as identity keys. Tests here are state/UI-only; end-to-end filter propagation is covered by Deliverable 5.
 
-- [ ] Build a tree projection from the **open-time snapshot** of `producer_state.sources` into producer, group, and source rows; the tree is stable mid-session (sources arriving or disappearing during the popup are not reflected until the next open). Future upgrade to live projection is a localized change here
-- [ ] Represent aggregate checkbox states as checked, unchecked, and mixed
-- [ ] Render a centered overlay with bounded width; implement cursor-follows scroll window with max height (~80% of terminal rows), no scrollbar
-- [ ] Implement narrow-terminal fallback layout (drop count column, condense footer); apply the same scrolling if the tree overflows fallback height
-- [ ] Move the cursor through visible rows with `up`/`k` and `down`/`j`; scroll window follows cursor
-- [ ] Add snapshot tests for all-enabled, partial, multiple-producer, ungrouped, narrow-width, and taller-than-viewport layouts
+- [x] Build a tree projection from the **open-time snapshot** of `producer_state.sources` into producer, group, and source rows; the tree is stable mid-session (sources arriving or disappearing during the popup are not reflected until the next open). Future upgrade to live projection is a localized change here
+- [x] Represent aggregate checkbox states as checked, unchecked, and mixed
+- [x] Render a centered overlay with bounded width; implement cursor-follows scroll window with max height (~80% of terminal rows), no scrollbar
+- [x] Implement narrow-terminal fallback layout (drop count column, condense footer); apply the same scrolling if the tree overflows fallback height
+- [x] Move the cursor through visible rows with `up`/`k` and `down`/`j`; scroll window follows cursor
+- [x] Add snapshot tests for all-enabled, partial, multiple-producer, ungrouped, narrow-width, and taller-than-viewport layouts
 
 ### Deliverable 4. Toggle Semantics
 
@@ -254,12 +254,12 @@ This deliverable renders the centered popup from known producer sources and supp
 
 This deliverable makes source, group, and producer rows change the enabled source set. It should handle newly discovered sources predictably and keep aggregate checkbox states correct after every toggle.
 
-- [ ] Toggle individual source IDs with `space`
-- [ ] Toggle group rows by applying the target state to all child source IDs
-- [ ] Toggle producer rows by applying the target state to all descendant source IDs
-- [ ] Confirm between-session policy from D2 also covers in-popup arrivals: a source discovered while the popup is open is added to the persistent enabled set (default-enabled) but does not appear in the tree until next open. Document this in code comments since the snapshot/live split is non-obvious
-- [ ] Implement Option B empty-selection at the UI boundary: allow disabling all sources; cancel the in-flight log-pane query, do not dispatch a new `SearchEvent::Search`, render "no sources selected" empty state. Wire format (`SearchEvent::Search.sources: Vec<SourceId>`) is unchanged
-- [ ] Add tests for source, group, producer, mixed-state, all-disabled, source-loss, in-popup-arrival, and reopen-after-arrival cases
+- [x] Toggle individual source IDs with `space`
+- [x] Toggle group rows by applying the target state to all child source IDs
+- [x] Toggle producer rows by applying the target state to all descendant source IDs
+- [x] Confirm between-session policy from D2 also covers in-popup arrivals: a source discovered while the popup is open is added to the persistent enabled set (default-enabled) but does not appear in the tree until next open. Document this in code comments since the snapshot/live split is non-obvious
+- [x] Implement Option B empty-selection at the UI boundary: allow disabling all sources; cancel the in-flight log-pane query, do not dispatch a new `SearchEvent::Search`, render "no sources selected" empty state. Wire format (`SearchEvent::Search.sources: Vec<SourceId>`) is unchanged
+- [x] Add tests for source, group, producer, mixed-state, all-disabled, source-loss, in-popup-arrival, and reopen-after-arrival cases
 
 ### Deliverable 5. Search Filtering Integration
 
@@ -267,13 +267,13 @@ This deliverable makes source, group, and producer rows change the enabled sourc
 
 This deliverable wires the enabled source set into every log-pane search dispatch. Tail, history, and fuzzy modes should all use the same conversion helper so empty/all/partial selection behavior cannot diverge by mode.
 
-- [ ] Replace `LogPaneState::active_query: SearchKind` with a payload-bearing form (e.g. `active_query: Option<Query>` or a separate `last_dispatched: Option<Query>`) so source-filter redispatch can reconstruct tail / fuzzy term / history anchor without guessing. Update all `on_search_started` call sites
-- [ ] Add a conversion helper `dispatch_log_pane_search(query)` that compares the persistent enabled set against **live** `producer_state.sources`: enabled empty → cancel in-flight query, no dispatch, render empty state; enabled ⊇ live → emit `sources: []` (wildcard); else → emit `(enabled & live).sorted_by_tree_order()`
-- [ ] Apply debounce to source-filter redispatch using the same constant as the query-box debounce
-- [ ] Redispatch the current log-pane query (reconstructed from the payload-bearing `active_query`) when the enabled source set changes
-- [ ] Update initial tail, query box tail, query box fuzzy, log-pane history, and log-pane tail/head dispatches to route through the conversion helper
-- [ ] Leave preview pane surrounding searches single-source scoped (unaffected by source-filter changes); rely on the existing `TuiEvent` selected-entry cascade to drive preview/info panes to empty when the log pane has no selection
-- [ ] Add tests proving tail, history, and fuzzy searches receive the intended source IDs; include a test for none-enabled → empty log pane path; include a test for "enabled ⊇ live with new arrival mid-session" → still emits explicit list, not `[]`
+- [x] Replace `LogPaneState::active_query: SearchKind` with a payload-bearing form (e.g. `active_query: Option<Query>` or a separate `last_dispatched: Option<Query>`) so source-filter redispatch can reconstruct tail / fuzzy term / history anchor without guessing. Update all `on_search_started` call sites
+- [x] Add a conversion helper `dispatch_log_pane_search(query)` that compares the persistent enabled set against **live** `producer_state.sources`: enabled empty → cancel in-flight query, no dispatch, render empty state; enabled ⊇ live → emit `sources: []` (wildcard); else → emit `(enabled & live).sorted_by_tree_order()`
+- [x] Apply debounce to source-filter redispatch using the same constant as the query-box debounce
+- [x] Redispatch the current log-pane query (reconstructed from the payload-bearing `active_query`) when the enabled source set changes
+- [x] Update initial tail, query box tail, query box fuzzy, log-pane history, and log-pane tail/head dispatches to route through the conversion helper
+- [x] Leave preview pane surrounding searches single-source scoped (unaffected by source-filter changes); rely on the existing `TuiEvent` selected-entry cascade to drive preview/info panes to empty when the log pane has no selection
+- [x] Add tests proving tail, history, and fuzzy searches receive the intended source IDs; include a test for none-enabled → empty log pane path; include a test for "enabled ⊇ live with new arrival mid-session" → still emits explicit list, not `[]`
 
 ### Deliverable 6. Documentation And Cleanup
 
@@ -281,10 +281,10 @@ This deliverable wires the enabled source set into every log-pane search dispatc
 
 This deliverable updates user-facing docs and removes temporary ambiguity introduced during the feature. It should leave TODO item 3 either checked off or with only explicitly deferred sub-items.
 
-- [ ] Document the `Producer -> Group -> Display Name` hierarchy as the long-term model
-- [ ] Document the source selector keybinding and the `ctrl+s`/XOFF terminal conflict, noting remapping is not yet user-configurable
-- [ ] Update README TODO item 3 checkboxes as implementation lands
-- [ ] Run focused unit, snapshot, and integration tests for popup and search filtering
+- [x] Document the `Producer -> Group -> Display Name` hierarchy as the long-term model
+- [x] Document the source selector keybinding and the `ctrl+s`/XOFF terminal conflict, noting remapping is not yet user-configurable
+- [x] Update README TODO item 3 checkboxes as implementation lands
+- [x] Run focused unit, snapshot, and integration tests for popup and search filtering
 
 ## Issues
 

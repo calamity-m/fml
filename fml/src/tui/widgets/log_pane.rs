@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use ratatui::{
+    layout::Alignment,
     text::{Line, Span},
     widgets::{
-        Block, List, ListItem, ListState, ScrollDirection, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, List, ListItem, ListState, Paragraph, ScrollDirection, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
 };
 use tracing::{debug, error};
 
 use crate::{
     config::tui::ThemeConfig,
-    event::{Match, Query, SearchEvent, SearchTarget, TuiEvent},
+    event::{Match, Query, TuiEvent},
     log::LogEntry,
     state::{
         events_bus::EventBus,
@@ -55,11 +56,10 @@ impl LogPane {
             return;
         };
 
-        if let Err(err) = events_bus.search_event_tx.try_send(SearchEvent::Search {
-            target: SearchTarget::LogPane,
-            query,
-            sources: Vec::new(),
-        }) {
+        if let Err(err) = events_bus
+            .tui_event_tx
+            .send(TuiEvent::DispatchLogPaneSearch(query))
+        {
             error!("failed to send search event from log pane - {}", err);
         }
     }
@@ -146,6 +146,18 @@ impl FmlWidget for LogPane {
         state
             .log_pane
             .set_height(inner_area.height as usize, &mut state.log_pane_cursor_row);
+
+        if state.log_pane.visible_items().is_empty()
+            && let Some(message) = state.log_pane.empty_message()
+        {
+            frame.render_widget(
+                Paragraph::new(message)
+                    .alignment(Alignment::Center)
+                    .style(state.selected_theme.surface_style()),
+                inner_area,
+            );
+            return;
+        }
 
         // Render whatever domain the state resolved for this mode: retained
         // sequence order for tail/history, rank order for search.
@@ -446,6 +458,13 @@ mod tests {
             &mut state,
             &mut events_bus,
         );
+
+        match events_bus.tui_event_rx.try_recv().expect("search event") {
+            TuiEvent::DispatchLogPaneSearch(Query::History { middle_seq_id, .. }) => {
+                assert_eq!(middle_seq_id, 4);
+            }
+            event => panic!("expected filtered search dispatch event, got {event:?}"),
+        }
 
         match events_bus
             .tui_event_rx

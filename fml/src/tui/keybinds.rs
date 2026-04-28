@@ -7,6 +7,8 @@ pub enum CustomizedKeyAction {
     // --- Configurable actions ---
     /// Open or close the help popup. Active in global scope.
     ToggleHelp,
+    /// Open or close the source selector popup. Active in global scope.
+    ToggleSourceSelector,
     /// Show the detail popup for the selected log entry.
     /// Active in global scope but only fires when the log pane is focused.
     ShowInfo,
@@ -43,6 +45,9 @@ pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedK
     };
 
     let custom_key = match (key.code, key.modifiers) {
+        (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
+            CustomizedKeyAction::ToggleSourceSelector
+        }
         (KeyCode::Char('g') | KeyCode::Home, _) => CustomizedKeyAction::ScrollHead,
         (KeyCode::Char('G') | KeyCode::End, _) => CustomizedKeyAction::ScrollTail,
         _ => CustomizedKeyAction::None,

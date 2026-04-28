@@ -34,6 +34,14 @@ hello
 - Rendered Tail -> Bottom of the vissible log lines
 - Retained Window -> Log lines the log pane has access to, which may extend past a Rendered Window, but not encompass a full ring buffer
 
+## Source Selector
+
+Press `ctrl+s` to open or close the source selector popup. The selector is currently hardcoded to `ctrl+s`; user-configurable remapping is deferred. Some terminals reserve `ctrl+s` for XOFF flow control, so disable terminal flow control or remap it at the terminal level if the popup does not open.
+
+Sources are organized as `Producer -> Group -> Display Name`. The `producer` field is the top-level row users recognize, such as `file`, `docker`, or a Kubernetes namespace. The optional `group` field is the second-level bucket, such as a Docker compose project, deployment group, path category, or `(ungrouped)` when no group exists. Display names are labels only; source IDs remain the identity used for filtering.
+
+Use `up`/`down` or `k`/`j` to move through rows. Press `space` to toggle the highlighted source, group, or producer. Press `a` to enable all sources in the open selector snapshot, `n` to disable them, and `esc` or `enter` to close. Tail, history, and fuzzy searches all use the enabled source set. Disabling every source is allowed and shows a `No sources selected` empty state in the log pane.
+
 ## TODOs
 
 ### 0. Source Producer Identity
@@ -74,14 +82,14 @@ The preview pane's first mode should show nearby logs from the selected log entr
 
 A source selector popup should allow enabling and disabling sources before real producers are hooked up.
 
-[] Add a configurable `ctrl+s` keybinding for opening the source selector
-[] Design the source tree hierarchy as Producer -> Group -> Display Name
-[] Validate and document the Producer -> Group -> Display Name hierarchy as the long-term source selector model
-[] Allow toggling an individual source
-[] Allow toggling a group and applying the state to all child sources
-[] Allow toggling a producer and applying the state to all child groups and sources
-[] Apply selected source filters to tail, history, and fuzzy searches
-[] Add tests for popup navigation, producer toggles, group toggles, source toggles, and search filtering
+[] Add a user-configurable source selector keybinding (deferred; the current key is hardcoded to `ctrl+s`)
+[x] Design the source tree hierarchy as Producer -> Group -> Display Name
+[x] Validate and document the Producer -> Group -> Display Name hierarchy as the long-term source selector model
+[x] Allow toggling an individual source
+[x] Allow toggling a group and applying the state to all child sources
+[x] Allow toggling a producer and applying the state to all child groups and sources
+[x] Apply selected source filters to tail, history, and fuzzy searches
+[x] Add tests for popup navigation, producer toggles, group toggles, source toggles, and search filtering
 
 ### 4. Refined Default Theme
 

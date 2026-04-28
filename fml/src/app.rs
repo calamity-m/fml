@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::{
     error::FmlError,
-    event::{Query, SearchEvent, SearchTarget, TuiEvent},
+    event::{Query, TuiEvent},
     log::Source,
     producer::{self, LogProducer, fake::FakeProducer},
     search,
@@ -90,13 +90,8 @@ impl<B: Backend> App<B> {
         if let Err(err) = self
             .state
             .event_bus
-            .search_event_tx
-            .send(SearchEvent::Search {
-                target: SearchTarget::LogPane,
-                query: Query::Tail,
-                sources: Vec::new(),
-            })
-            .await
+            .tui_event_tx
+            .send(TuiEvent::DispatchLogPaneSearch(Query::Tail))
         {
             tracing::warn!("failed to dispatch initial tail search: {err}");
         }
