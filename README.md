@@ -42,6 +42,14 @@ Sources are organized as `Producer -> Group -> Display Name`. The `producer` fie
 
 Use `up`/`down` or `k`/`j` to move through rows. Press `space` to toggle the highlighted source, group, or producer. Press `a` to enable all sources in the open selector snapshot, `n` to disable them, and `esc` or `enter` to close. Tail, history, and fuzzy searches all use the enabled source set. Disabling every source is allowed and shows a `No sources selected` empty state in the log pane.
 
+## Fuzzy Search
+
+Typing in the query box dispatches a debounced fuzzy search over the retained log store. The default matcher is `nucleo`; set `search.fuzzy_matcher = "frizbee"` to use the previous frizbee matcher. `search.fuzzy_max_typos` is only used by frizbee, and can be set to `0` for exact fuzzy-character matching or left unset for the library default.
+
+Nucleo queries use nucleo's parsed pattern syntax. Plain words are fuzzy positive terms, a leading apostrophe requires a contiguous substring match such as `'timeout`, and a leading `!` excludes entries matching that term, such as `error !debug`. Negative-only queries return retained entries that do not match the excluded term, newest first.
+
+Fuzzy searches scan a snapshot of the current retained bounds and emit partial ranked results while that snapshot is incomplete. If new logs arrive during a long scan, they do not appear in the in-flight snapshot; after the snapshot emits `complete = true`, the worker notices the changed retained bounds on the next tick and performs a fresh scan. Source filtering is applied when each scan snapshot is built, so partial progress totals, final results, and later re-scans all use the enabled source set.
+
 ## TODOs
 
 ### 0. Source Producer Identity
@@ -113,8 +121,8 @@ The TUI should expose useful capacity and progress information without adding no
 
 Fuzzy behavior should be validated and documented now that searches can run while logs continue arriving.
 
-[] Document nucleo query syntax and the frizbee fallback config
-[] Document what happens when new logs arrive while old retained chunks are still being scanned
-[] Validate partial emissions, completion emissions, and re-scans after retained bounds change
-[] Validate source filtering behavior during fuzzy search
-[] Add or update tests for live arrivals during long fuzzy scans
+[x] Document nucleo query syntax and the frizbee fallback config
+[x] Document what happens when new logs arrive while old retained chunks are still being scanned
+[x] Validate partial emissions, completion emissions, and re-scans after retained bounds change
+[x] Validate source filtering behavior during fuzzy search
+[x] Add or update tests for live arrivals during long fuzzy scans

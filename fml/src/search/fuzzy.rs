@@ -1176,6 +1176,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_arrivals_wait_for_snapshot_completion_then_rescan_with_source_filter() {
+        let store = RingBufferStore::new(store_config(20_000));
+        for i in 1..=5_000 {
+            store.insert(make_entry(
+                &format!("server error {i}"),
+                "s1",
+                Some(LogLevel::Info),
+            ));
+            store.insert(make_entry(
+                &format!("server error {i}"),
+                "s2",
+                Some(LogLevel::Info),
+            ));
+        }
+
+        let (tx, mut rx) = mpsc::channel(128);
+        let handle = start_test_fuzzy_search(
+            "error".to_string(),
+            vec!["s1".to_string()],
+            Duration::from_millis(1),
+            fuzzy_options(20_000, FuzzyMatcherKind::Frizbee, None),
+            store.clone(),
+            22,
+            tx,
+        );
+
+        let (_, rid, complete, progress) = recv_result_with_progress(&mut rx).await;
+        assert_eq!(rid, 22);
+        assert!(!complete, "expected the first emission to be partial");
+        assert_eq!(
+            progress.expect("partial should include progress").total,
+            5_000,
+            "progress total should count only the filtered snapshot"
+        );
+
+        store.insert(make_entry("late allowed error", "s1", Some(LogLevel::Info)));
+        let allowed_late_seq = store.bounds().1;
+        store.insert(make_entry("late blocked error", "s2", Some(LogLevel::Info)));
+        let blocked_late_seq = store.bounds().1;
+
+        let mut snapshot_complete = None;
+        for _ in 0..2_000 {
+            let (results, event_rid, event_complete) = recv_result(&mut rx).await;
+            assert_eq!(event_rid, 22);
+            if event_complete {
+                snapshot_complete = Some(results);
+                break;
+            }
+        }
+        let snapshot_complete = snapshot_complete.expect("expected old snapshot to complete");
+        assert!(
+            snapshot_complete
+                .iter()
+                .all(|hit| hit.seq_id != allowed_late_seq && hit.seq_id != blocked_late_seq),
+            "in-flight snapshot should not include logs appended after it started"
+        );
+
+        let mut rescan_complete = None;
+        for _ in 0..2_000 {
+            let (results, event_rid, event_complete) = recv_result(&mut rx).await;
+            assert_eq!(event_rid, 22);
+            if event_complete {
+                rescan_complete = Some(results);
+                break;
+            }
+        }
+        let rescan_complete = rescan_complete.expect("expected changed bounds to trigger rescan");
+        assert!(
+            rescan_complete
+                .iter()
+                .any(|hit| hit.seq_id == allowed_late_seq),
+            "rescan should include the new log from an enabled source"
+        );
+        assert!(
+            rescan_complete
+                .iter()
+                .all(|hit| hit.seq_id != blocked_late_seq),
+            "rescan should still exclude disabled sources"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn nucleo_parsed_apostrophe_query_requires_contiguous_substring() {
         let store = RingBufferStore::new(store_config(64));
         store.insert(make_entry("n e e d l e", "s1", Some(LogLevel::Info)));
