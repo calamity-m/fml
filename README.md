@@ -104,10 +104,10 @@ The default theme should be clearer and more cohesive before real producer outpu
 
 The TUI should expose useful capacity and progress information without adding noise.
 
-[] Show log store capacity and retained-buffer usage somewhere persistent, likely the status bar
-[] Show fuzzy search progress toward completion while a scan is incomplete
-[] Make the display distinguish retained buffer progress from fuzzy scan progress
-[] Add reducer and snapshot tests for capacity/progress states
+[x] Show log store capacity and retained-buffer usage in the log pane title
+[x] Show fuzzy search progress toward completion while a scan is incomplete
+[x] Make the display distinguish retained buffer progress from fuzzy scan progress
+[x] Add reducer and snapshot tests for capacity/progress states
 
 ### 6. Fuzzy Search Validation And Docs
 

@@ -75,6 +75,15 @@ pub struct SearchHit {
     pub matches: Vec<Match>,
 }
 
+/// Progress through a finite background search scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchProgress {
+    /// Number of candidate entries inspected so far.
+    pub scanned: usize,
+    /// Total candidate entries in the current scan snapshot.
+    pub total: usize,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Query {
     Tail,
@@ -124,6 +133,7 @@ pub enum SearchEvent {
         results: Vec<SearchHit>,
         request_id: u64,
         complete: bool,
+        progress: Option<SearchProgress>,
     },
     /// An error occurred while executing a search request.
     Error(String),

@@ -48,7 +48,24 @@ impl LogPane {
             ScrollMode::Search => "SEARCH",
         };
 
-        format!(" FML [{base}] ")
+        let mut title = format!(
+            " FML [{base}] | Store {}/{}",
+            format_count(state.store_stats.retained),
+            format_count(state.store_stats.capacity)
+        );
+        if let Some(progress) = state.fuzzy_scan_progress() {
+            if progress.scanned >= progress.total {
+                title.push_str(" | SCAN done");
+            } else {
+                title.push_str(&format!(
+                    " | SCAN {}/{}",
+                    format_count(progress.scanned),
+                    format_count(progress.total)
+                ));
+            }
+        }
+        title.push(' ');
+        title
     }
 
     fn dispatch_search(query: Option<Query>, events_bus: &mut EventBus) {
@@ -323,6 +340,24 @@ impl FmlWidget for LogPane {
     }
 }
 
+fn format_count(value: usize) -> String {
+    match value {
+        1_000_000.. => compact_count(value, 1_000_000, "M"),
+        1_000.. => compact_count(value, 1_000, "K"),
+        _ => value.to_string(),
+    }
+}
+
+fn compact_count(value: usize, unit: usize, suffix: &str) -> String {
+    let whole = value / unit;
+    let decimal = (value % unit) / (unit / 10);
+    if decimal == 0 || whole >= 10 {
+        format!("{whole}{suffix}")
+    } else {
+        format!("{whole}.{decimal}{suffix}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
@@ -434,6 +469,14 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    #[test]
+    fn format_count_compacts_large_values_for_titles() {
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1K");
+        assert_eq!(format_count(1_500), "1.5K");
+        assert_eq!(format_count(1_000_000), "1M");
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    event::{Match, Query, SelectedEntry},
+    event::{Match, Query, SearchProgress, SelectedEntry},
     log::LogEntry,
+    store::StoreStats,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,8 @@ pub struct LogPaneState {
     content: LogPaneContent,
     viewport: LogPaneViewport,
     pub retained_bounds: (u64, u64),
+    pub store_stats: StoreStats,
+    fuzzy_scan_progress: Option<SearchProgress>,
     pub active_query: Option<Query>,
     history_buffer_limit: usize,
 }
@@ -73,10 +76,21 @@ impl Default for LogPaneState {
             content: LogPaneContent::default(),
             viewport: LogPaneViewport::default(),
             retained_bounds: (0, 0),
+            store_stats: StoreStats::default(),
+            fuzzy_scan_progress: None,
             active_query: None,
             history_buffer_limit: 500,
         }
     }
+}
+
+fn retained_count(bounds: (u64, u64)) -> usize {
+    let (low, high) = bounds;
+    if low == 0 && high == 0 || high < low {
+        return 0;
+    }
+
+    usize::try_from(high.saturating_sub(low).saturating_add(1)).unwrap_or(usize::MAX)
 }
 
 impl LogPaneState {
@@ -99,11 +113,27 @@ impl LogPaneState {
     pub fn on_search_started(&mut self, query: &Query) {
         self.content.empty_message = None;
         self.active_query = Some(query.clone());
+        self.fuzzy_scan_progress = None;
         match Self::query_kind(query) {
-            SearchKind::Tail => self.mode = ScrollMode::Tail,
+            SearchKind::Tail => {
+                self.mode = ScrollMode::Tail;
+            }
             SearchKind::Fuzzy => self.mode = ScrollMode::Search,
             SearchKind::History => {}
         }
+    }
+
+    pub fn set_store_stats(&mut self, store_stats: StoreStats) {
+        self.retained_bounds = store_stats.bounds;
+        self.store_stats = store_stats;
+    }
+
+    pub fn set_fuzzy_scan_progress(&mut self, progress: Option<SearchProgress>) {
+        self.fuzzy_scan_progress = progress;
+    }
+
+    pub fn fuzzy_scan_progress(&self) -> Option<SearchProgress> {
+        self.fuzzy_scan_progress
     }
 
     /// Scrollbar metrics for the active scroll domain.
@@ -254,7 +284,8 @@ impl LogPaneState {
                 if self.mode != ScrollMode::Tail {
                     return;
                 }
-                self.retained_bounds = retained_bounds;
+                self.set_retained_bounds(retained_bounds);
+                self.fuzzy_scan_progress = None;
                 self.content.fuzzy_matches.clear();
                 self.content.items = entries;
                 self.viewport.selected_seq = self.content.items.last().map(|entry| entry.seq);
@@ -264,7 +295,8 @@ impl LogPaneState {
                 entries,
                 retained_bounds,
             } => {
-                self.retained_bounds = retained_bounds;
+                self.set_retained_bounds(retained_bounds);
+                self.fuzzy_scan_progress = None;
                 self.content.fuzzy_matches.clear();
                 self.mode = ScrollMode::History;
                 self.content.items = entries;
@@ -276,7 +308,7 @@ impl LogPaneState {
                 retained_bounds,
                 matches_by_seq,
             } => {
-                self.retained_bounds = retained_bounds;
+                self.set_retained_bounds(retained_bounds);
                 self.mode = ScrollMode::Search;
                 let previous_selected_seq = self.viewport.selected_seq;
                 let previous_selected_index = self.selected_index();
@@ -477,6 +509,12 @@ impl LogPaneState {
             .items
             .len()
             .saturating_sub(self.viewport.height)
+    }
+
+    fn set_retained_bounds(&mut self, retained_bounds: (u64, u64)) {
+        self.retained_bounds = retained_bounds;
+        self.store_stats.bounds = retained_bounds;
+        self.store_stats.retained = retained_count(retained_bounds);
     }
 
     fn selected_index(&self) -> Option<usize> {

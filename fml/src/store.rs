@@ -42,6 +42,20 @@ pub trait LogStore: Send + Sync {
 
     /// Retrieve the monotonic id bounds of the store, (low, high)
     fn bounds(&self) -> (u64, u64);
+
+    /// Retrieve retained-entry count, capacity, and sequence bounds.
+    fn stats(&self) -> StoreStats;
+}
+
+/// Point-in-time capacity and retention information for the log store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreStats {
+    /// Number of entries currently retained in the store.
+    pub retained: usize,
+    /// Maximum number of entries this store can retain.
+    pub capacity: usize,
+    /// Monotonic id bounds of retained entries, `(oldest, newest)`.
+    pub bounds: (u64, u64),
 }
 
 struct RingBuffer {
@@ -154,10 +168,20 @@ impl LogStore for RingBufferStore {
     }
 
     fn bounds(&self) -> (u64, u64) {
+        self.stats().bounds
+    }
+
+    fn stats(&self) -> StoreStats {
         let state = self.read_state();
-        match (state.entries.front(), state.entries.back()) {
+        let bounds = match (state.entries.front(), state.entries.back()) {
             (Some(first), Some(last)) => (first.seq, last.seq),
             _ => (0, 0),
+        };
+
+        StoreStats {
+            retained: state.entries.len(),
+            capacity: state.capacity,
+            bounds,
         }
     }
 
@@ -265,10 +289,39 @@ mod tests {
     }
 
     #[test]
+    fn empty_store_reports_stats() {
+        let store = RingBufferStore::new(test_config(8));
+
+        assert_eq!(
+            store.stats(),
+            StoreStats {
+                retained: 0,
+                capacity: 8,
+                bounds: (0, 0),
+            }
+        );
+    }
+
+    #[test]
     fn bounds_reflect_inserted_entries() {
         let store = RingBufferStore::new(test_config(8));
         populate(&store, &["a", "b", "c"]);
         assert_eq!(store.bounds(), (1, 3));
+    }
+
+    #[test]
+    fn partially_filled_store_reports_stats() {
+        let store = RingBufferStore::new(test_config(8));
+        populate(&store, &["a", "b", "c"]);
+
+        assert_eq!(
+            store.stats(),
+            StoreStats {
+                retained: 3,
+                capacity: 8,
+                bounds: (1, 3),
+            }
+        );
     }
 
     #[test]
@@ -280,6 +333,21 @@ mod tests {
         let (lo, hi) = store.bounds();
         assert_eq!(lo, 3);
         assert_eq!(hi, 5);
+    }
+
+    #[test]
+    fn full_store_reports_capacity_and_shifted_bounds() {
+        let store = RingBufferStore::new(test_config(3));
+        populate(&store, &["a", "b", "c", "d", "e"]);
+
+        assert_eq!(
+            store.stats(),
+            StoreStats {
+                retained: 3,
+                capacity: 3,
+                bounds: (3, 5),
+            }
+        );
     }
 
     // --- clear ---

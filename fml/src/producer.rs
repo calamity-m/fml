@@ -89,6 +89,7 @@ pub fn handle_producer_event(event: ProducerEvent, mut state: AppState) -> AppSt
         ProducerEvent::StoreEvent(entry) => {
             debug!("received new entry store event - {:?}", entry);
             state.store.insert(entry);
+            state.tui.log_pane.set_store_stats(state.store.stats());
         }
     }
 
@@ -295,6 +296,8 @@ mod tests {
         );
 
         assert_eq!(state.store.bounds(), (1, 1));
+        assert_eq!(state.tui.log_pane.store_stats.retained, 1);
+        assert_eq!(state.tui.log_pane.store_stats.bounds, (1, 1));
 
         let mut entries = Vec::new();
         state

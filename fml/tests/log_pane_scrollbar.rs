@@ -9,6 +9,7 @@ use chrono::Utc;
 use fml::{
     app::App,
     config::Config,
+    event::SearchProgress,
     log::{LogEntry, LogLevel, Source},
     state::tui_state::log_pane_state::{LogPaneUpdate, ScrollMode},
     tui,
@@ -89,6 +90,56 @@ fn search_scrollbar_hides_when_fuzzy_results_fit() {
     );
 
     assert!(log_pane_scrollbar_thumb_rows(&mut app).is_empty());
+}
+
+#[test]
+fn fuzzy_scan_progress_renders_in_log_pane_title() {
+    let config = Config::default();
+    let mut app = App::with_test_backend(config, 80, 24).expect("app construction");
+
+    app.state.tui.log_pane.mode = ScrollMode::Search;
+    app.state
+        .tui
+        .log_pane
+        .set_fuzzy_scan_progress(Some(SearchProgress {
+            scanned: 256,
+            total: 1000,
+        }));
+    app.state.tui.log_pane.apply_update(
+        LogPaneUpdate::Fuzzy {
+            best_first_entries: entries_from(&(1..=5).rev().collect::<Vec<_>>()),
+            retained_bounds: (1, 1000),
+            matches_by_seq: HashMap::new(),
+        },
+        &mut app.state.tui.log_pane_cursor_row,
+    );
+
+    insta::assert_snapshot!(render_app(&mut app));
+}
+
+#[test]
+fn fuzzy_scan_done_renders_in_log_pane_title() {
+    let config = Config::default();
+    let mut app = App::with_test_backend(config, 80, 24).expect("app construction");
+
+    app.state.tui.log_pane.mode = ScrollMode::Search;
+    app.state
+        .tui
+        .log_pane
+        .set_fuzzy_scan_progress(Some(SearchProgress {
+            scanned: 1000,
+            total: 1000,
+        }));
+    app.state.tui.log_pane.apply_update(
+        LogPaneUpdate::Fuzzy {
+            best_first_entries: entries_from(&(1..=5).rev().collect::<Vec<_>>()),
+            retained_bounds: (1, 1000),
+            matches_by_seq: HashMap::new(),
+        },
+        &mut app.state.tui.log_pane_cursor_row,
+    );
+
+    insta::assert_snapshot!(render_app(&mut app));
 }
 
 #[test]

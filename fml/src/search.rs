@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::{
-    event::{Query, SearchEvent, SearchHit, SearchTarget, TuiEvent},
+    event::{Query, SearchEvent, SearchHit, SearchProgress, SearchTarget, TuiEvent},
     log::{LogEntry, SourceId},
     state::{
         AppState,
@@ -80,6 +80,7 @@ pub(crate) async fn emit_results(
             results,
             request_id,
             complete,
+            progress: None,
         })
         .await
     {
@@ -100,6 +101,7 @@ pub(crate) async fn emit_hits(
     hits: Vec<SearchHit>,
     request_id: u64,
     complete: bool,
+    progress: Option<SearchProgress>,
     tx: &mpsc::Sender<SearchEvent>,
 ) -> EmitOutcome {
     match tx
@@ -109,6 +111,7 @@ pub(crate) async fn emit_hits(
             results: hits,
             request_id,
             complete,
+            progress,
         })
         .await
     {
@@ -168,15 +171,11 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             }
 
             let tick_rate = match &query {
-                Query::Tail => {
-                    Duration::from_millis(state.config.search.tail_poll_interval_ms)
-                }
+                Query::Tail => Duration::from_millis(state.config.search.tail_poll_interval_ms),
                 Query::History { .. } | Query::Surrounding { .. } => {
                     Duration::from_millis(state.config.search.history_poll_interval_ms)
                 }
-                Query::Fuzzy(_) => {
-                    Duration::from_millis(state.config.search.fuzzy_tick_rate_ms)
-                }
+                Query::Fuzzy(_) => Duration::from_millis(state.config.search.fuzzy_tick_rate_ms),
             };
             let ctx = SearchContext {
                 target,
@@ -223,10 +222,11 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             results,
             request_id,
             complete,
+            progress,
         } => {
             debug!(
-                "received search result - target: {:?}, query: {:?}, request_id: {}, complete: {}, results: {:?}",
-                target, query, request_id, complete, results
+                "received search result - target: {:?}, query: {:?}, request_id: {}, complete: {}, progress: {:?}, results: {:?}",
+                target, query, request_id, complete, progress, results
             );
 
             // Ignore stale request_id responses
@@ -240,7 +240,14 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             }
 
             let kind = LogPaneState::query_kind(&query);
-            let retained_bounds = state.store.bounds();
+            let store_stats = state.store.stats();
+            let retained_bounds = store_stats.bounds;
+            state.tui.log_pane.set_store_stats(store_stats);
+            if target == SearchTarget::LogPane {
+                state.tui.log_pane.set_fuzzy_scan_progress(
+                    (kind == SearchKind::Fuzzy).then_some(progress).flatten(),
+                );
+            }
             let matches_by_seq = (kind == SearchKind::Fuzzy).then(|| {
                 results
                     .iter()
@@ -307,7 +314,7 @@ mod tests {
     use super::*;
     use crate::{
         config::Config,
-        event::{Match, ProducerEvent},
+        event::{Match, ProducerEvent, SearchProgress},
         log::{LogLevel, NewLogEntry, Source},
         producer,
         state::AppState,
@@ -367,6 +374,7 @@ mod tests {
                     .collect(),
                 request_id: 1,
                 complete: true,
+                progress: None,
             },
             state,
         );
@@ -398,6 +406,7 @@ mod tests {
                 }],
                 request_id: 1,
                 complete: true,
+                progress: None,
             },
             state,
         );
@@ -406,6 +415,111 @@ mod tests {
 
         assert_eq!(selected.entry.seq, 2);
         assert_eq!(selected.matches[0].key, "msg");
+    }
+
+    #[test]
+    fn incomplete_fuzzy_result_records_scan_progress() {
+        let mut state = state_with_entries(3);
+        state
+            .tui
+            .log_pane
+            .on_search_started(&Query::Fuzzy("entry".to_string()));
+
+        let state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::LogPane,
+                query: Query::Fuzzy("entry".to_string()),
+                results: vec![SearchHit {
+                    seq_id: 2,
+                    matches: Vec::new(),
+                }],
+                request_id: 1,
+                complete: false,
+                progress: Some(SearchProgress {
+                    scanned: 1,
+                    total: 3,
+                }),
+            },
+            state,
+        );
+
+        assert_eq!(
+            state.tui.log_pane.fuzzy_scan_progress(),
+            Some(SearchProgress {
+                scanned: 1,
+                total: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn complete_fuzzy_result_records_done_scan_progress() {
+        let mut state = state_with_entries(3);
+        state
+            .tui
+            .log_pane
+            .set_fuzzy_scan_progress(Some(SearchProgress {
+                scanned: 1,
+                total: 3,
+            }));
+
+        let state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::LogPane,
+                query: Query::Fuzzy("entry".to_string()),
+                results: vec![SearchHit {
+                    seq_id: 2,
+                    matches: Vec::new(),
+                }],
+                request_id: 1,
+                complete: true,
+                progress: Some(SearchProgress {
+                    scanned: 3,
+                    total: 3,
+                }),
+            },
+            state,
+        );
+
+        assert_eq!(
+            state.tui.log_pane.fuzzy_scan_progress(),
+            Some(SearchProgress {
+                scanned: 3,
+                total: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn non_fuzzy_result_clears_scan_progress() {
+        let mut state = state_with_entries(3);
+        state
+            .tui
+            .log_pane
+            .set_fuzzy_scan_progress(Some(SearchProgress {
+                scanned: 1,
+                total: 3,
+            }));
+
+        let state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                results: vec![1, 2, 3]
+                    .into_iter()
+                    .map(|seq_id| SearchHit {
+                        seq_id,
+                        matches: Vec::new(),
+                    })
+                    .collect(),
+                request_id: 1,
+                complete: true,
+                progress: None,
+            },
+            state,
+        );
+
+        assert_eq!(state.tui.log_pane.fuzzy_scan_progress(), None);
     }
 
     #[test]
@@ -418,6 +532,7 @@ mod tests {
                 results: Vec::new(),
                 request_id: 1,
                 complete: true,
+                progress: None,
             },
             state,
         );
@@ -450,6 +565,7 @@ mod tests {
                     .collect(),
                 request_id: 1,
                 complete: true,
+                progress: None,
             },
             state,
         );
@@ -489,6 +605,7 @@ mod tests {
                 }],
                 request_id: 1,
                 complete: true,
+                progress: None,
             },
             state,
         );

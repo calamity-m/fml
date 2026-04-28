@@ -24,11 +24,7 @@ use crate::{
 /// or eviction will both trigger a fresh emission. Entering history mode
 /// before the buffer is saturated is therefore safe: subsequent inserts will
 /// flow through to the receiver instead of being lost when the worker exits.
-pub fn start_history_search(
-    ctx: SearchContext,
-    middle_seq_id: u64,
-    buffer: u64,
-) -> JoinHandle<()> {
+pub fn start_history_search(ctx: SearchContext, middle_seq_id: u64, buffer: u64) -> JoinHandle<()> {
     let SearchContext {
         target,
         query,
@@ -192,6 +188,7 @@ mod tests {
                 results,
                 request_id,
                 complete,
+                progress: _,
             } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),

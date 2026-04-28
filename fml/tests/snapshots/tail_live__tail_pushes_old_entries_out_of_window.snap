@@ -1,9 +1,8 @@
 ---
 source: fml/tests/tail_live.rs
-assertion_line: 60
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
-┌ FML [TAIL] ──────────────────────────────────────────┐┌ Info ────────────────┐
+┌ FML [TAIL] | Store 40/1M ────────────────────────────┐┌ Info ────────────────┐
 │  23 INFO src-b second 3                              ▲│seq: 40               │
 │  24 INFO src-b second 4                              ││timestamp: 2024-01-02T│
 │  25 INFO src-b second 5                              ││level: INFO           │

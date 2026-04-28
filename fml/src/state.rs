@@ -33,6 +33,8 @@ impl AppState {
     pub fn new(config: Config) -> Result<Self, FmlError> {
         let store = RingBufferStore::new(config.store.clone());
         let event_bus = EventBus::new();
+        let mut tui = TuiState::new(&config.tui, &config.search)?;
+        tui.log_pane.set_store_stats(store.stats());
 
         Ok(AppState {
             config: config.clone(),
@@ -45,7 +47,7 @@ impl AppState {
             ],
             event_bus,
             store,
-            tui: TuiState::new(&config.tui, &config.search)?,
+            tui,
             search: SearchState::new(),
             producer: ProducerState::new(),
         })

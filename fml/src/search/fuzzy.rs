@@ -44,7 +44,7 @@ use tracing::debug;
 
 use crate::{
     config::search::FuzzyMatcherKind,
-    event::{Match, Query, SearchHit},
+    event::{Match, Query, SearchHit, SearchProgress},
     log::LogEntry,
     search::{EmitOutcome, SearchContext, emit_error, emit_hits},
 };
@@ -113,7 +113,7 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
         // this request_id respond at least once, then exit — no point
         // holding a ticker open for something that can never produce hits.
         if term.is_empty() {
-            let _ = emit_hits(target, query, Vec::new(), request_id, true, &tx).await;
+            let _ = emit_hits(target, query, Vec::new(), request_id, true, None, &tx).await;
             return;
         }
 
@@ -139,8 +139,16 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
 
                 if high == 0 {
                     if last_complete_bounds != Some((low, high)) {
-                        match emit_hits(target, query.clone(), Vec::new(), request_id, true, &tx)
-                            .await
+                        match emit_hits(
+                            target,
+                            query.clone(),
+                            Vec::new(),
+                            request_id,
+                            true,
+                            None,
+                            &tx,
+                        )
+                        .await
                         {
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
@@ -172,7 +180,15 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
             tokio::select! {
                 _ = ticker.tick() => {
                     let hits = build_hits(&state.scored, options.result_limit);
-                    match emit_hits(target, query.clone(), hits, request_id, false, &tx).await {
+                    match emit_hits(
+                        target,
+                        query.clone(),
+                        hits,
+                        request_id,
+                        false,
+                        Some(state.progress()),
+                        &tx,
+                    ).await {
                         EmitOutcome::Sent => {}
                         EmitOutcome::ReceiverGone => return,
                     }
@@ -181,7 +197,17 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                     state.process_next_chunk(&term, &mut matcher);
                     if state.is_complete() {
                         let hits = build_hits(&state.scored, options.result_limit);
-                        match emit_hits(target, query.clone(), hits, request_id, true, &tx).await {
+                        match emit_hits(
+                            target,
+                            query.clone(),
+                            hits,
+                            request_id,
+                            true,
+                            Some(state.progress()),
+                            &tx,
+                        )
+                        .await
+                        {
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
                         }
@@ -222,6 +248,13 @@ impl ScanState {
         self.scored
             .extend(matcher.score_batch(needle, &self.entries[self.next_index..end]));
         self.next_index = end;
+    }
+
+    fn progress(&self) -> SearchProgress {
+        SearchProgress {
+            scanned: self.next_index,
+            total: self.entries.len(),
+        }
     }
 }
 
@@ -652,7 +685,31 @@ mod tests {
                 results,
                 request_id,
                 complete,
+                progress: _,
             } => (results, request_id, complete),
+            SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
+            SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
+            SearchEvent::Cancel { .. } => panic!("unexpected SearchEvent::Cancel"),
+        }
+    }
+
+    async fn recv_result_with_progress(
+        rx: &mut mpsc::Receiver<SearchEvent>,
+    ) -> (Vec<SearchHit>, u64, bool, Option<SearchProgress>) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let evt = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("timed out awaiting SearchEvent")
+            .expect("channel closed before delivering SearchEvent");
+        match evt {
+            SearchEvent::Result {
+                target: _,
+                query: _,
+                results,
+                request_id,
+                complete,
+                progress,
+            } => (results, request_id, complete, progress),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
             SearchEvent::Cancel { .. } => panic!("unexpected SearchEvent::Cancel"),
@@ -703,19 +760,16 @@ mod tests {
             String::new(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             99,
             tx,
         );
 
-        let (results, rid, complete) = recv_result(&mut rx).await;
+        let (results, rid, complete, progress) = recv_result_with_progress(&mut rx).await;
         assert_eq!(rid, 99);
         assert!(complete);
+        assert_eq!(progress, None);
         assert!(results.is_empty());
 
         handle.abort();
@@ -747,11 +801,7 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             1,
             tx,
@@ -785,11 +835,7 @@ mod tests {
             "error".to_string(),
             vec!["s1".to_string()],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             7,
             tx,
@@ -814,11 +860,7 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             3,
             tx,
@@ -849,11 +891,7 @@ mod tests {
             "er".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             1,
             tx,
@@ -886,11 +924,7 @@ mod tests {
             "WARN".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             1,
             tx,
@@ -929,11 +963,7 @@ mod tests {
             "payments".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Frizbee,
-                Some(0),
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, Some(0)),
             store.clone(),
             1,
             tx,
@@ -967,11 +997,7 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                5,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(5, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             1,
             tx,
@@ -995,11 +1021,7 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                10,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(10, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             11,
             tx,
@@ -1042,11 +1064,7 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                2,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(2, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             12,
             tx,
@@ -1088,19 +1106,17 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(1),
-            fuzzy_options(
-                20,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(20, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             13,
             tx,
         );
 
-        let (_, rid, complete) = recv_result(&mut rx).await;
+        let (_, rid, complete, progress) = recv_result_with_progress(&mut rx).await;
         assert_eq!(rid, 13);
         assert!(!complete, "expected an incomplete partial result");
+        let progress = progress.expect("partial fuzzy result should include scan progress");
+        assert!(progress.scanned < progress.total);
 
         handle.abort();
     }
@@ -1124,11 +1140,7 @@ mod tests {
             "error".to_string(),
             vec![],
             Duration::from_millis(1),
-            fuzzy_options(
-                20_000,
-                FuzzyMatcherKind::Frizbee,
-                None,
-            ),
+            fuzzy_options(20_000, FuzzyMatcherKind::Frizbee, None),
             store.clone(),
             21,
             tx,
@@ -1178,11 +1190,7 @@ mod tests {
             "'needle".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Nucleo,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Nucleo, None),
             store.clone(),
             31,
             tx,
@@ -1210,11 +1218,7 @@ mod tests {
             "error !beta".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Nucleo,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Nucleo, None),
             store.clone(),
             32,
             tx,
@@ -1243,11 +1247,7 @@ mod tests {
             "!beta".to_string(),
             vec![],
             Duration::from_millis(10),
-            fuzzy_options(
-                100,
-                FuzzyMatcherKind::Nucleo,
-                None,
-            ),
+            fuzzy_options(100, FuzzyMatcherKind::Nucleo, None),
             store.clone(),
             33,
             tx,

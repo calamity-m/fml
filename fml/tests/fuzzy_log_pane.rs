@@ -143,6 +143,7 @@ fn apply_fuzzy_emission(
             results: best_first.iter().copied().map(fuzzy_hit).collect(),
             request_id: 1,
             complete: true,
+            progress: None,
         },
         app.state,
     );

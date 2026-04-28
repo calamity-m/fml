@@ -123,6 +123,7 @@ mod tests {
                 results,
                 request_id,
                 complete,
+                progress: _,
             } => (results, request_id, complete),
             SearchEvent::Error(e) => panic!("unexpected SearchEvent::Error({e})"),
             SearchEvent::Search { .. } => panic!("unexpected SearchEvent::Search"),
