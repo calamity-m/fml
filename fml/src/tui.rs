@@ -22,7 +22,7 @@ use crate::{
     error::FmlError,
     event::{Query, QuitEvent, SearchEvent, SearchTarget, TuiEvent},
     log::SourceId,
-    state::AppState,
+    state::{AppState, tui_state::ActivePopup},
     tui::{
         keybinds::{CustomizedKeyAction, StaticKeyAction},
         layout::Slot,
@@ -147,6 +147,35 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
         }
         TuiEvent::Input(key) => {
             let mut state = state;
+            let (static_key, custom_key) = keybinds::match_key(&key, &state.tui.focused);
+
+            if static_key == StaticKeyAction::Quit {
+                if let Err(err) = state.event_bus.quit_tx.try_send(QuitEvent {}) {
+                    // We have failed to send out quit here, which to be frank
+                    // is pretty bad. So, what can we do? PANIC PANIC PANIC.
+                    panic!("failed to quit - {}", err);
+                }
+                return state;
+            }
+
+            if key.code == KeyCode::Esc && state.tui.active_popup().is_some() {
+                state.tui.close_popup();
+                return state;
+            }
+
+            if handle_popup_input(&key, custom_key, &mut state) {
+                return state;
+            }
+
+            if custom_key == CustomizedKeyAction::ToggleHelp {
+                state.tui.toggle_help();
+                return state;
+            }
+
+            if custom_key == CustomizedKeyAction::ToggleSourceSelector {
+                state.tui.toggle_source_selector(&state.producer.sources);
+                return state;
+            }
 
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
@@ -162,21 +191,6 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                     }
                     _ => {}
                 }
-            }
-
-            let (static_key, custom_key) = keybinds::match_key(&key, &state.tui.focused);
-
-            if static_key == StaticKeyAction::Quit {
-                if let Err(err) = state.event_bus.quit_tx.try_send(QuitEvent {}) {
-                    // We have failed to send out quit here, which to be frank
-                    // is pretty bad. So, what can we do? PANIC PANIC PANIC.
-                    panic!("failed to quit - {}", err);
-                }
-                return state;
-            }
-
-            if handle_source_selector_input(&key, custom_key, &mut state) {
-                return state;
             }
 
             if static_key == StaticKeyAction::FocusCycle {
@@ -210,22 +224,45 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
     new_state
 }
 
+fn handle_popup_input(
+    key: &crossterm::event::KeyEvent,
+    custom_key: CustomizedKeyAction,
+    state: &mut AppState,
+) -> bool {
+    match state.tui.active_popup() {
+        Some(ActivePopup::Help) => handle_help_popup_input(custom_key, state),
+        Some(ActivePopup::SourceSelector) => handle_source_selector_input(key, custom_key, state),
+        None => false,
+    }
+}
+
+fn handle_help_popup_input(custom_key: CustomizedKeyAction, state: &mut AppState) -> bool {
+    match custom_key {
+        CustomizedKeyAction::ToggleHelp => state.tui.close_popup(),
+        CustomizedKeyAction::ToggleSourceSelector => {
+            state.tui.open_source_selector(&state.producer.sources);
+        }
+        _ => {}
+    }
+    true
+}
+
 fn handle_source_selector_input(
     key: &crossterm::event::KeyEvent,
     custom_key: CustomizedKeyAction,
     state: &mut AppState,
 ) -> bool {
     if custom_key == CustomizedKeyAction::ToggleSourceSelector {
-        state.tui.toggle_source_selector(&state.producer.sources);
+        state.tui.close_source_selector();
+        return true;
+    }
+    if custom_key == CustomizedKeyAction::ToggleHelp {
+        state.tui.toggle_help();
         return true;
     }
 
-    if !state.tui.source_selector.open {
-        return false;
-    }
-
     match key.code {
-        KeyCode::Esc | KeyCode::Enter => state.tui.close_source_selector(),
+        KeyCode::Enter => state.tui.close_source_selector(),
         KeyCode::Up | KeyCode::Char('k') => {
             let row_count = widgets::source_selector::source_selector_row_count(&state.tui);
             state.tui.source_selector_cursor_up(row_count);
@@ -369,7 +406,9 @@ pub fn render<B: Backend>(state: &mut AppState, terminal: &mut Terminal<B>) {
         }
         // Reassign the areas to our state to cache them for next render
         state.tui.areas = areas;
-        widgets::source_selector::render_source_selector(frame, frame.area(), &mut state.tui);
+        for widget in state.popup_widgets.iter() {
+            widget.render(frame, frame.area(), &mut state.tui);
+        }
     });
 
     if let Err(err) = result
@@ -663,15 +702,89 @@ mod tests {
 
         let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
 
-        assert!(state.tui.source_selector.open);
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
         assert_eq!(state.tui.focused, Slot::QueryBox);
         assert_eq!(state.tui.source_selector.cursor, 0);
         assert_eq!(state.tui.source_selector.open_sources.len(), 2);
 
         let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
 
-        assert!(!state.tui.source_selector.open);
+        assert_eq!(state.tui.active_popup(), None);
         assert_eq!(state.tui.focused, Slot::QueryBox);
+    }
+
+    #[test]
+    fn question_mark_opens_and_closes_help_without_changing_focus() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        assert_eq!(state.tui.active_popup(), None);
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+    }
+
+    #[test]
+    fn opening_help_replaces_source_selector() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.producer.sources = vec![source("src-a")];
+        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
+
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
+    }
+
+    #[test]
+    fn opening_source_selector_replaces_help() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.producer.sources = vec![source("src-a")];
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
+        assert_eq!(state.tui.source_selector.open_sources.len(), 1);
+    }
+
+    #[test]
+    fn escape_closes_active_popup() {
+        let state = AppState::new(Config::default()).expect("app state");
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        let state = handle_tui_event(input(KeyCode::Esc), state);
+
+        assert_eq!(state.tui.active_popup(), None);
+    }
+
+    #[test]
+    fn help_swallows_tab_and_text_input() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        let state = handle_tui_event(input(KeyCode::Tab), state);
+        let state = handle_tui_event(input(KeyCode::Char('x')), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+        assert_eq!(state.tui.query_box_textarea.lines().join("\n").trim(), "");
+    }
+
+    #[test]
+    fn ctrl_c_still_quits_when_help_is_open() {
+        let state = AppState::new(Config::default()).expect("app state");
+        let mut state = handle_tui_event(input(KeyCode::Char('?')), state);
+
+        state = handle_tui_event(ctrl_input(KeyCode::Char('c')), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
+        assert!(state.event_bus.quit_rx.try_recv().is_ok());
     }
 
     #[test]
@@ -721,7 +834,7 @@ mod tests {
         let state = handle_tui_event(input(KeyCode::Tab), state);
         let state = handle_tui_event(input(KeyCode::Char('x')), state);
 
-        assert!(state.tui.source_selector.open);
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
         assert_eq!(state.tui.focused, Slot::QueryBox);
         assert_eq!(state.tui.query_box_textarea.lines().join("\n").trim(), "");
     }
@@ -732,12 +845,12 @@ mod tests {
         let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
         let state = handle_tui_event(input(KeyCode::Esc), state);
 
-        assert!(!state.tui.source_selector.open);
+        assert_eq!(state.tui.active_popup(), None);
 
         let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
         let state = handle_tui_event(input(KeyCode::Enter), state);
 
-        assert!(!state.tui.source_selector.open);
+        assert_eq!(state.tui.active_popup(), None);
     }
 
     #[test]
@@ -747,7 +860,7 @@ mod tests {
 
         state = handle_tui_event(ctrl_input(KeyCode::Char('c')), state);
 
-        assert!(state.tui.source_selector.open);
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
         assert!(state.event_bus.quit_rx.try_recv().is_ok());
     }
 

@@ -1,12 +1,21 @@
-use ratatui::{Frame, layout::Rect, style::{Modifier, Style}, widgets::BorderType};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    widgets::BorderType,
+};
 
 use crate::{
     config::tui::ThemeConfig,
     event::TuiEvent,
-    state::{events_bus::EventBus, tui_state::TuiState},
+    state::{
+        events_bus::EventBus,
+        tui_state::{ActivePopup, TuiState},
+    },
     tui::layout::Slot,
 };
 
+pub mod help;
 pub mod highlight;
 pub mod info_pane;
 pub mod log_pane;
@@ -45,4 +54,12 @@ pub trait FmlWidget {
             )
         }
     }
+}
+
+pub trait FmlPopupWidget {
+    /// The popup this widget renders.
+    fn popup(&self) -> ActivePopup;
+
+    /// Renders the popup over the full terminal area.
+    fn render(&self, frame: &mut Frame, area: Rect, state: &mut TuiState);
 }

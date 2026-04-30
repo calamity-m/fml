@@ -9,7 +9,7 @@ use tracing::trace;
 use crate::{
     event::TuiEvent,
     state::{events_bus::EventBus, tui_state::TuiState},
-    tui::{layout::Slot, widgets::FmlWidget},
+    tui::{keybinds, layout::Slot, widgets::FmlWidget},
 };
 
 pub struct StatusBar {}
@@ -34,11 +34,13 @@ impl StatusBar {
         vec![
             StatusBarHint {
                 title: "Quit",
-                label: "ctrl+c".to_string(),
+                label: keybinds::primary_label("Quit")
+                    .unwrap_or("ctrl+c")
+                    .to_string(),
             },
             StatusBarHint {
                 title: "Help",
-                label: "?".to_string(),
+                label: keybinds::primary_label("Help").unwrap_or("?").to_string(),
             },
         ]
     }

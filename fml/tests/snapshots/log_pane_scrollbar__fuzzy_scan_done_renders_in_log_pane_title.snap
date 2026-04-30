@@ -2,26 +2,26 @@
 source: fml/tests/log_pane_scrollbar.rs
 expression: render_app(&mut app)
 ---
-┌ FML [SEARCH] | Store 1K/1M | SCAN done ──────────────┐┌ Info ────────────────┐
-│  1 INFO src-a entry 1                                ││No log selected       │
-│  2 INFO src-a entry 2                                ││                      │
-│  3 INFO src-a entry 3                                ││                      │
-│  4 INFO src-a entry 4                                ││                      │
-│> 5 INFO src-a entry 5                                ││                      │
-│                                                      │└──────────────────────┘
-│                                                      │┌ Preview [ SURROUNDING┐
-│                                                      ││No log selected       │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-└──────────────────────────────────────────────────────┘│                      │
+┏ FML [SEARCH] | Store 1K/1M | SCAN done ━━━━━━━━━━━━━━┓┌ Info ────────────────┐
+┃  1 INFO src-a entry 1                                ┃│No log selected       │
+┃  2 INFO src-a entry 2                                ┃│                      │
+┃  3 INFO src-a entry 3                                ┃│                      │
+┃  4 INFO src-a entry 4                                ┃│                      │
+┃> 5 INFO src-a entry 5                                ┃│                      │
+┃                                                      ┃└──────────────────────┘
+┃                                                      ┃┌ Preview [ SURROUNDING┐
+┃                                                      ┃│No log selected       │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┃                                                      ┃│                      │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛│                      │
 ┌ Query ───────────────────────────────────────────────┐│                      │
 │>  Enter a query...                                   ││                      │
 └──────────────────────────────────────────────────────┘└──────────────────────┘

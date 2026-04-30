@@ -1,0 +1,28 @@
+---
+source: fml/tests/render_snapshot.rs
+expression: buffer_to_string(app.terminal.backend().buffer())
+---
+┏ FML [TAIL] | Store 3/1M ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓┌ Info ────────────────┐
+┃  1 INFO src-a entry 1                                ┃│seq: 3                │
+┃  2 INFO sr┌ Help ────────────────────────────────────────────────┐2024-01-02T│
+┃> 3 INFO sr│Global                                                │           │
+┃           │  ctrl+c        Quit                                  │ake        │
+┃           │  tab           Cycle focus                           │-a         │
+┃           │  ?             Help                                  │───────────┘
+┃           │  ctrl+s        Sources                               │SURROUNDING┐
+┃           │                                                      │           │
+┃           │Log pane                                              │           │
+┃           │  k / up        Move up                               │           │
+┃           │  j / down      Move down                             │           │
+┃           │  g / home      Jump head                             │           │
+┃           │  G / end       Jump tail                             │c-a entry 1│
+┃           │  enter         Entry detail                          │c-a entry 2│
+┃           │                                                      │c-a entry 3│
+┃           │Help popup                                            │           │
+┃           │  esc / ?       Close                                 │           │
+┃           │                                                      │           │
+┗━━━━━━━━━━━│                                                      │           │
+┌ Query ────│                                                      │           │
+│>  Enter a └──────────────────────────────────────────────────────┘           │
+└──────────────────────────────────────────────────────┘└──────────────────────┘
+ Quit <ctrl+c> | Help <?>                                                v0.0.1

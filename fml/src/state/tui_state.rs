@@ -21,8 +21,13 @@ use crate::{
     tui::{layout::Slot, widgets::query_box},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivePopup {
+    Help,
+    SourceSelector,
+}
+
 pub struct SourceSelectorState {
-    pub open: bool,
     pub cursor: usize,
     pub scroll_offset: usize,
     pub visible_row_count: usize,
@@ -33,7 +38,6 @@ pub struct SourceSelectorState {
 impl SourceSelectorState {
     fn new() -> Self {
         Self {
-            open: false,
             cursor: 0,
             scroll_offset: 0,
             visible_row_count: usize::MAX,
@@ -58,6 +62,7 @@ pub struct TuiState {
     pub info_pane_scroll_offset: usize,
     pub log_pane: LogPaneState,
     pub preview_pane: PreviewPaneState,
+    pub active_popup: Option<ActivePopup>,
     pub source_selector: SourceSelectorState,
 }
 
@@ -78,23 +83,50 @@ impl TuiState {
             info_pane_scroll_offset: 0,
             log_pane: LogPaneState::new(search_config.tail_size),
             preview_pane: PreviewPaneState::new(),
+            active_popup: None,
             source_selector: SourceSelectorState::new(),
         })
     }
 
+    pub fn active_popup(&self) -> Option<ActivePopup> {
+        self.active_popup
+    }
+
+    pub fn open_popup(&mut self, popup: ActivePopup) {
+        self.active_popup = Some(popup);
+    }
+
+    pub fn close_popup(&mut self) {
+        self.active_popup = None;
+    }
+
+    pub fn toggle_help(&mut self) {
+        if self.active_popup == Some(ActivePopup::Help) {
+            self.close_popup();
+        } else {
+            self.open_popup(ActivePopup::Help);
+        }
+    }
+
+    pub fn source_selector_is_open(&self) -> bool {
+        self.active_popup == Some(ActivePopup::SourceSelector)
+    }
+
     pub fn open_source_selector(&mut self, sources: &[Source]) {
-        self.source_selector.open = true;
+        self.open_popup(ActivePopup::SourceSelector);
         self.source_selector.cursor = 0;
         self.source_selector.scroll_offset = 0;
         self.source_selector.open_sources = sources.to_vec();
     }
 
     pub fn close_source_selector(&mut self) {
-        self.source_selector.open = false;
+        if self.source_selector_is_open() {
+            self.close_popup();
+        }
     }
 
     pub fn toggle_source_selector(&mut self, sources: &[Source]) {
-        if self.source_selector.open {
+        if self.source_selector_is_open() {
             self.close_source_selector();
         } else {
             self.open_source_selector(sources);

@@ -9,7 +9,8 @@ use ratatui::{
 
 use crate::{
     log::{Source, SourceId},
-    state::tui_state::TuiState,
+    state::tui_state::{ActivePopup, TuiState},
+    tui::widgets::FmlPopupWidget,
 };
 
 const UNGROUPED_LABEL: &str = "(ungrouped)";
@@ -46,6 +47,89 @@ pub struct SourceSelectorRow {
     pub checkbox: CheckboxState,
     pub enabled_count: usize,
     pub total_count: usize,
+}
+
+pub struct SourceSelector {}
+
+impl Default for SourceSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SourceSelector {
+    pub fn new() -> Self {
+        SourceSelector {}
+    }
+}
+
+impl FmlPopupWidget for SourceSelector {
+    fn popup(&self) -> ActivePopup {
+        ActivePopup::SourceSelector
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, state: &mut TuiState) {
+        if state.active_popup() != Some(self.popup()) {
+            return;
+        }
+
+        let rows = source_selector_rows(state);
+        let popup_area = popup_area(area);
+        let narrow = popup_area.width < 48;
+        let header_rows = if narrow { 0 } else { 2 };
+        let footer_rows = 2;
+        let inner_height = popup_area.height.saturating_sub(2) as usize;
+        let visible_rows = inner_height
+            .saturating_sub(header_rows + footer_rows)
+            .max(1);
+
+        state.set_source_selector_visible_row_count(rows.len(), visible_rows);
+
+        frame.render_widget(Clear, popup_area);
+
+        let base_style = state.selected_theme.surface_style();
+        let block = Block::bordered()
+            .title(" Sources ")
+            .title_alignment(Alignment::Left)
+            .border_style(base_style.fg(state.selected_theme.primary_accent_fg))
+            .style(base_style);
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let mut lines = Vec::new();
+        if !narrow {
+            lines.push(Line::from("Filter visible logs by source"));
+            lines.push(Line::from(""));
+        }
+
+        let selected = state.source_selector_selected_row();
+        let start = state.source_selector.scroll_offset;
+        let end = start.saturating_add(visible_rows).min(rows.len());
+        for (row_index, row) in rows[start..end].iter().enumerate() {
+            lines.push(render_row(
+                row,
+                start + row_index == selected,
+                inner.width as usize,
+                narrow,
+                base_style,
+                state.selected_theme.selected_style(),
+            ));
+        }
+
+        for _ in 0..visible_rows.saturating_sub(end.saturating_sub(start)) {
+            lines.push(Line::from(""));
+        }
+
+        lines.push(Line::from(""));
+        let footer = if narrow {
+            "space toggle   esc close"
+        } else {
+            "space toggle  a all  n none  esc close"
+        };
+        lines.push(Line::from(footer));
+
+        frame.render_widget(Paragraph::new(lines).style(base_style), inner);
+    }
 }
 
 pub fn source_selector_rows(state: &TuiState) -> Vec<SourceSelectorRow> {
@@ -102,69 +186,6 @@ pub fn disable_all_open_sources(state: &mut TuiState) {
         .map(|source| source.id.clone())
         .collect();
     set_source_ids_enabled(state, &source_ids, false);
-}
-
-pub fn render_source_selector(frame: &mut Frame, area: Rect, state: &mut TuiState) {
-    if !state.source_selector.open {
-        return;
-    }
-
-    let rows = source_selector_rows(state);
-    let popup_area = popup_area(area);
-    let narrow = popup_area.width < 48;
-    let header_rows = if narrow { 0 } else { 2 };
-    let footer_rows = 2;
-    let inner_height = popup_area.height.saturating_sub(2) as usize;
-    let visible_rows = inner_height
-        .saturating_sub(header_rows + footer_rows)
-        .max(1);
-
-    state.set_source_selector_visible_row_count(rows.len(), visible_rows);
-
-    frame.render_widget(Clear, popup_area);
-
-    let base_style = state.selected_theme.surface_style();
-    let block = Block::bordered()
-        .title(" Sources ")
-        .title_alignment(Alignment::Left)
-        .border_style(base_style.fg(state.selected_theme.primary_accent_fg))
-        .style(base_style);
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
-    let mut lines = Vec::new();
-    if !narrow {
-        lines.push(Line::from("Filter visible logs by source"));
-        lines.push(Line::from(""));
-    }
-
-    let selected = state.source_selector_selected_row();
-    let start = state.source_selector.scroll_offset;
-    let end = start.saturating_add(visible_rows).min(rows.len());
-    for (row_index, row) in rows[start..end].iter().enumerate() {
-        lines.push(render_row(
-            row,
-            start + row_index == selected,
-            inner.width as usize,
-            narrow,
-            base_style,
-            state.selected_theme.selected_style(),
-        ));
-    }
-
-    for _ in 0..visible_rows.saturating_sub(end.saturating_sub(start)) {
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(""));
-    let footer = if narrow {
-        "space toggle   esc close"
-    } else {
-        "space toggle  a all  n none  esc close"
-    };
-    lines.push(Line::from(footer));
-
-    frame.render_widget(Paragraph::new(lines).style(base_style), inner);
 }
 
 fn build_rows(sources: &[Source], enabled: &HashSet<SourceId>) -> Vec<SourceSelectorRow> {
@@ -363,8 +384,9 @@ mod tests {
 
     fn render(mut state: TuiState, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        let source_selector = SourceSelector::new();
         terminal
-            .draw(|frame| render_source_selector(frame, frame.area(), &mut state))
+            .draw(|frame| source_selector.render(frame, frame.area(), &mut state))
             .expect("draw");
         buffer_to_string(terminal.backend().buffer())
     }

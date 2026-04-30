@@ -372,7 +372,6 @@ impl Default for KeybindingsConfig {
     }
 }
 
-
 fn default_toggle_help() -> Vec<String> {
     vec!["?".into()]
 }
@@ -387,9 +386,6 @@ mod tests {
 
     #[test]
     fn default_theme_has_bold_selection_modifier() {
-        assert_eq!(
-            ThemeConfig::default().log_selected_modifier,
-            Modifier::BOLD
-        );
+        assert_eq!(ThemeConfig::default().log_selected_modifier, Modifier::BOLD);
     }
 }

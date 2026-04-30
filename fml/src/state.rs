@@ -9,8 +9,9 @@ use crate::{
     },
     store::{LogStore, RingBufferStore},
     tui::widgets::{
-        FmlWidget, info_pane::InfoPane, log_pane::LogPane, preview_pane::PreviewPane,
-        query_box::QueryBox, status_bar::StatusBar,
+        FmlPopupWidget, FmlWidget, help::Help, info_pane::InfoPane, log_pane::LogPane,
+        preview_pane::PreviewPane, query_box::QueryBox, source_selector::SourceSelector,
+        status_bar::StatusBar,
     },
 };
 
@@ -22,6 +23,7 @@ pub mod tui_state;
 pub struct AppState {
     pub config: Config,
     pub widgets: Vec<Box<dyn FmlWidget>>,
+    pub popup_widgets: Vec<Box<dyn FmlPopupWidget>>,
     pub event_bus: EventBus,
     pub store: Arc<dyn LogStore>,
     pub tui: TuiState,
@@ -45,6 +47,7 @@ impl AppState {
                 Box::new(InfoPane::new()),
                 Box::new(PreviewPane::new()),
             ],
+            popup_widgets: vec![Box::new(SourceSelector::new()), Box::new(Help::new())],
             event_bus,
             store,
             tui,
