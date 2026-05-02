@@ -200,29 +200,29 @@ tail_pod_container(api, (pod_name, cname), source, tx, cancel):
 
 Replace `Cli::demo: bool` with `Cli::producer: Vec<String>`. Parse each value into a `ProducerSpec` enum. Wire `App::new` to take the parsed specs and build the corresponding `Box<dyn LogProducer>` instances. Preserve the demo experience by routing `--producer demo` to a `FakeProducer` constructed with a unique synthetic source per occurrence. This deliverable also handles a few cross-cutting hygiene items so later deliverables don't have to revisit shared files (`error.rs`, `Cargo.toml`, `App::new` call sites). End-to-end demonstrable on the demo path alone — `fml --producer demo --producer demo` should show two demo sources in the selector.
 
-- [ ] Add `ProducerSpec` enum (`Demo`, `File(PathBuf)`, `Docker`, `Kubernetes(Option<String>)`) in `fml/src/producer.rs`.
-- [ ] Implement `ProducerSpec::parse(&str) -> Result<Self, ProducerError>` using `splitn(2, ':')` so paths containing `:` are preserved. Explicit error messages for unknown kinds and missing/extra args.
-- [ ] Add unit tests for the parser covering: each valid kind, kind with vs without arg, unknown kind, `file` without path, `docker:foo` (extra arg rejected), `demo:foo` (extra arg rejected), `kubernetes:` empty arg (rejected), and **`file:/var/log/2026-05-02:12:00.log` (path with embedded colons — full string after first `:` is the path)**.
-- [ ] Replace `Cli::demo: bool` with `#[arg(long = "producer")] pub producer: Vec<String>` in `main.rs`.
-- [ ] Replace `App::new(config, demo: bool)` with `App::new(config, specs: Vec<ProducerSpec>)`.
-- [ ] **Audit and update all `App::new` call sites and `Cli::demo` references** across `fml/src/**` and `fml/tests/**` (including any `with_test_backend` paths, integration test helpers, and example code). Verify `cargo build --workspace` and `cargo test --workspace` compile after the signature change.
-- [ ] **Audit `Config` struct** (`fml/src/config.rs` and submodules) for any existing producer/demo-related fields that this work would orphan; if any exist, list them and either migrate or document leaving them in place.
-- [ ] **Audit `ProducerError`** (`fml/src/error.rs`) against the planned variants for all deliverables: `Cli(String)`, `Io(std::io::Error)`, `Notify(notify::Error)`, plus the existing `Kubernetes(String)` and `Docker(...)`. Add the variants upfront with `#[from]` impls so later deliverables don't have to revisit.
-- [ ] In `App::new`, enumerate demo specs (`demo-1`, `demo-2`, …) and construct `FakeProducer` per occurrence. Stub-build (or skip with logged warning) other kinds for now — this deliverable exits at the demo wire-through.
-- [ ] Producer construction failures (e.g. docker daemon unreachable, kubeconfig missing) are logged at warn-level and skipped in `App::new`'s build loop, so a partial set of producers can still run.
-- [ ] Delete `fn demo_sources()` from `app.rs`.
+- [x] Add `ProducerSpec` enum (`Demo`, `File(PathBuf)`, `Docker`, `Kubernetes(Option<String>)`) in `fml/src/producer.rs`.
+- [x] Implement `ProducerSpec::parse(&str) -> Result<Self, ProducerError>` using `splitn(2, ':')` so paths containing `:` are preserved. Explicit error messages for unknown kinds and missing/extra args.
+- [x] Add unit tests for the parser covering: each valid kind, kind with vs without arg, unknown kind, `file` without path, `docker:foo` (extra arg rejected), `demo:foo` (extra arg rejected), `kubernetes:` empty arg (rejected), and **`file:/var/log/2026-05-02:12:00.log` (path with embedded colons — full string after first `:` is the path)**.
+- [x] Replace `Cli::demo: bool` with `#[arg(long = "producer")] pub producer: Vec<String>` in `main.rs`.
+- [x] Replace `App::new(config, demo: bool)` with `App::new(config, specs: Vec<ProducerSpec>)`.
+- [x] **Audit and update all `App::new` call sites and `Cli::demo` references** across `fml/src/**` and `fml/tests/**` (including any `with_test_backend` paths, integration test helpers, and example code). Verify `cargo build --workspace` and `cargo test --workspace` compile after the signature change.
+- [x] **Audit `Config` struct** (`fml/src/config.rs` and submodules) for any existing producer/demo-related fields that this work would orphan; if any exist, list them and either migrate or document leaving them in place.
+- [x] **Audit `ProducerError`** (`fml/src/error.rs`) against the planned variants for all deliverables: `Cli(String)`, `Io(std::io::Error)`, `Notify(notify::Error)`, plus the existing `Kubernetes(String)` and `Docker(...)`. Add the variants upfront with `#[from]` impls so later deliverables don't have to revisit.
+- [x] In `App::new`, enumerate demo specs (`demo-1`, `demo-2`, …) and construct `FakeProducer` per occurrence. Stub-build (or skip with logged warning) other kinds for now — this deliverable exits at the demo wire-through.
+- [x] Producer construction failures (e.g. docker daemon unreachable, kubeconfig missing) are logged at warn-level and skipped in `App::new`'s build loop, so a partial set of producers can still run.
+- [x] Delete `fn demo_sources()` from `app.rs`.
 - [ ] Manual smoke: `cargo run -- --producer demo --producer demo` shows two distinct demo sources in the selector tree.
 
 ### Deliverable 2. Normalizer fixes (json + pattern)
 
 Make `Normalizer::normalize()` non-panicking so real producers can pipe lines through it. Defer logfmt entirely. JSON extracts `msg` (or `message`) as the entry message, falling through to the raw line if neither is present. Pattern keeps the raw line as `msg` since unstructured logs *are* their message. The change is constrained to the `Some`-construction branches of both files; the `None`-return paths (parse failure / no level-or-timestamp detected) are preserved verbatim.
 
-- [ ] **Read `pattern.rs` and `json.rs` first** and confirm the `todo!()` in each sits inside a `Some(...)` construction reachable only after successful detection / parse. The `None`-return paths (`if level.is_none() && ts.is_none() { return None; }` in pattern.rs; `serde_json::from_str(raw).ok()?` in json.rs) must be preserved unchanged.
-- [ ] In `fml/src/producer/normalizer/json.rs`, replace the `msg: todo!(),` line with `obj.get("msg").or_else(|| obj.get("message")).and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| raw.to_string())`.
-- [ ] In `fml/src/producer/normalizer/pattern.rs`, replace the `msg: todo!(),` line with `raw.to_string()`.
-- [ ] Add unit tests in `json.rs` covering: line with `msg`, line with `message`, line with both (msg wins), line with neither (falls back to raw), malformed JSON (parser short-circuits via `?` — returns None, no construction).
-- [ ] Add unit tests in `pattern.rs` covering: line with detected level (msg = full raw line), line with detected timestamp (msg = full raw line), line with neither level nor timestamp (returns None — current behaviour preserved).
-- [ ] Verify `cargo test --workspace` passes.
+- [x] **Read `pattern.rs` and `json.rs` first** and confirm the `todo!()` in each sits inside a `Some(...)` construction reachable only after successful detection / parse. The `None`-return paths (`if level.is_none() && ts.is_none() { return None; }` in pattern.rs; `serde_json::from_str(raw).ok()?` in json.rs) must be preserved unchanged.
+- [x] In `fml/src/producer/normalizer/json.rs`, replace the `msg: todo!(),` line with `obj.get("msg").or_else(|| obj.get("message")).and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| raw.to_string())`.
+- [x] In `fml/src/producer/normalizer/pattern.rs`, replace the `msg: todo!(),` line with `raw.to_string()`.
+- [x] Add unit tests in `json.rs` covering: line with `msg`, line with `message`, line with both (msg wins), line with neither (falls back to raw), malformed JSON (parser short-circuits via `?` — returns None, no construction).
+- [x] Add unit tests in `pattern.rs` covering: line with detected level (msg = full raw line), line with detected timestamp (msg = full raw line), line with neither level nor timestamp (returns None — current behaviour preserved).
+- [x] Verify `cargo test --workspace` passes.
 
 ### Deliverable 3. File producer
 
