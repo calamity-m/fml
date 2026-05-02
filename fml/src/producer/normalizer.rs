@@ -8,11 +8,12 @@ mod json;
 mod logfmt;
 mod pattern;
 
-pub struct Normalizer {}
+#[derive(Clone, Copy)]
+pub struct Normalizer;
 
 impl Normalizer {
     pub fn new() -> Self {
-        Normalizer {}
+        Normalizer
     }
 
     pub fn normalize(&self, raw: &str, source: Source) -> NewLogEntry {

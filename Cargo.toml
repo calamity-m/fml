@@ -64,6 +64,7 @@ tui-popup = "0.7.2"
 tui-scrollview = "0.6.2"
 
 insta = "1"
+testcontainers = "0.27.3"
 
 fml-core = { path = "fml-core" }
 fml-logs = { path = "fml-logs" }

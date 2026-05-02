@@ -46,6 +46,7 @@ integration = []
 insta.workspace = true
 serial_test = "3.4.0"
 tempfile = "3.27.0"
+testcontainers.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true

@@ -9,7 +9,6 @@
 use std::{
     io::{Read as _, Seek as _, SeekFrom},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -29,7 +28,7 @@ const TRUNCATED_MARKER: &str = "... [truncated]";
 /// Tails one log file and emits normalized entries for appended lines.
 pub struct FileProducer {
     path: PathBuf,
-    normalizer: Arc<Normalizer>,
+    normalizer: Normalizer,
     cancel: CancellationToken,
 }
 
@@ -37,7 +36,7 @@ impl FileProducer {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
-            normalizer: Arc::new(Normalizer::new()),
+            normalizer: Normalizer::new(),
             cancel: CancellationToken::new(),
         }
     }
@@ -63,7 +62,7 @@ impl LogProducer for FileProducer {
 
 async fn run_file_producer(
     path: PathBuf,
-    normalizer: Arc<Normalizer>,
+    normalizer: Normalizer,
     tx: mpsc::Sender<ProducerEvent>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
@@ -187,7 +186,7 @@ fn stable_absolute_path(path: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-fn decode_line(bytes: &[u8]) -> String {
+pub(super) fn decode_line(bytes: &[u8]) -> String {
     let (bytes, truncated) = if bytes.len() > MAX_LINE_BYTES {
         (&bytes[..MAX_LINE_BYTES], true)
     } else {
@@ -202,12 +201,12 @@ fn decode_line(bytes: &[u8]) -> String {
 }
 
 #[derive(Default)]
-struct LineBuffer {
+pub(super) struct LineBuffer {
     bytes: Vec<u8>,
 }
 
 impl LineBuffer {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         self.bytes.extend_from_slice(bytes);
         let mut lines = Vec::new();
 
