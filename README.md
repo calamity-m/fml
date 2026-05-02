@@ -65,7 +65,7 @@ Supported kinds:
 If a producer cannot be constructed, fml logs a warning and continues with the other producers.
 Repeated identical real producers are allowed but may duplicate log entries.
 
-For a local Docker showcase stack, see `examples/docker`.
+For local showcase setups, see `examples/file` and `examples/docker`.
 
 ## Source Selector
 
