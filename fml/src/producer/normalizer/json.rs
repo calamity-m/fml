@@ -51,12 +51,18 @@ pub fn try_parse_json(raw: &str, source: &Source) -> Option<NewLogEntry> {
         fields.insert(lower_key, value.clone());
     }
 
+    let msg = MESSAGE_KEYS
+        .iter()
+        .find_map(|k| obj.get(*k)?.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| raw.to_string());
+
     Some(NewLogEntry {
-        msg: todo!(), // TOOD - assign to "msg" or "message" field, whichever is present
+        msg,
         ts,
         level,
         source: source.clone(),
-        fields: fields,
+        fields,
     })
 }
 
@@ -84,4 +90,53 @@ pub fn try_parse_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source() -> Source {
+        Source {
+            producer: "test".to_string(),
+            id: "test-id".to_string(),
+            display_name: "Test".to_string(),
+            group: None,
+        }
+    }
+
+    #[test]
+    fn msg_field_used_as_msg() {
+        let entry = try_parse_json(r#"{"level":"info","msg":"hello world"}"#, &source()).unwrap();
+        assert_eq!(entry.msg, "hello world");
+    }
+
+    #[test]
+    fn message_field_used_as_msg() {
+        let entry =
+            try_parse_json(r#"{"level":"info","message":"hello world"}"#, &source()).unwrap();
+        assert_eq!(entry.msg, "hello world");
+    }
+
+    #[test]
+    fn msg_wins_over_message() {
+        let entry = try_parse_json(
+            r#"{"msg":"from msg","message":"from message"}"#,
+            &source(),
+        )
+        .unwrap();
+        assert_eq!(entry.msg, "from msg");
+    }
+
+    #[test]
+    fn falls_back_to_raw_when_no_msg_key() {
+        let raw = r#"{"level":"info","data":"no message key here"}"#;
+        let entry = try_parse_json(raw, &source()).unwrap();
+        assert_eq!(entry.msg, raw);
+    }
+
+    #[test]
+    fn malformed_json_returns_none() {
+        assert!(try_parse_json("not json at all", &source()).is_none());
+    }
 }

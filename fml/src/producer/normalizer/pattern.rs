@@ -65,10 +65,43 @@ pub fn try_parse_patterns(raw: &str, source: &Source) -> Option<NewLogEntry> {
     }
 
     Some(NewLogEntry {
-        msg: todo!(),
+        msg: raw.to_string(),
         ts: ts.unwrap_or_else(chrono::Utc::now),
         level,
         source: source.clone(),
         fields,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source() -> Source {
+        Source {
+            producer: "test".to_string(),
+            id: "test-id".to_string(),
+            display_name: "Test".to_string(),
+            group: None,
+        }
+    }
+
+    #[test]
+    fn line_with_level_returns_full_raw_as_msg() {
+        let raw = "2024-01-01T00:00:00Z INFO starting service";
+        let entry = try_parse_patterns(raw, &source()).unwrap();
+        assert_eq!(entry.msg, raw);
+    }
+
+    #[test]
+    fn line_with_timestamp_returns_full_raw_as_msg() {
+        let raw = "2024-01-01T00:00:00Z starting service";
+        let entry = try_parse_patterns(raw, &source()).unwrap();
+        assert_eq!(entry.msg, raw);
+    }
+
+    #[test]
+    fn line_with_no_level_or_timestamp_returns_none() {
+        assert!(try_parse_patterns("just a plain message with nothing parseable", &source()).is_none());
+    }
 }
