@@ -12,7 +12,7 @@ use crate::{
     error::FmlError,
     event::{Query, TuiEvent},
     log::Source,
-    producer::{self, LogProducer, ProducerSpec, fake::FakeProducer},
+    producer::{self, LogProducer, ProducerSpec, fake::FakeProducer, file::FileProducer},
     search,
     state::AppState,
     tui,
@@ -46,7 +46,7 @@ impl App<CrosstermBackend<Stdout>> {
                     app.register_producer(Box::new(FakeProducer::new(source)));
                 }
                 ProducerSpec::File(path) => {
-                    tracing::warn!("file producer not yet implemented, skipping {:?}", path);
+                    app.register_producer(Box::new(FileProducer::new(path)));
                 }
                 ProducerSpec::Docker => {
                     tracing::warn!("docker producer not yet implemented, skipping");
@@ -186,4 +186,3 @@ impl App<CrosstermBackend<Stdout>> {
         Ok(())
     }
 }
-

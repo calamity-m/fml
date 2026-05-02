@@ -10,11 +10,11 @@
 //!
 //! Both `start` and `stop` take `&self`, so a producer that spawns a
 //! background task in `start` cannot move owned cancellation state into
-//! the task and then mutate it from `stop`. Implementations must keep
-//! cancellation state behind a shared handle (e.g. `Arc<AtomicBool>` or a
-//! `tokio_util::sync::CancellationToken`) cloned into the spawned task;
-//! `stop` flips/triggers the handle and the task observes it on its next
-//! iteration and exits.
+//! the task and then mutate it from `stop`. New producers should hold a
+//! `tokio_util::sync::CancellationToken`, clone it into the root spawned
+//! task, create child tokens with `token.child_token()` for any per-source
+//! subtasks, and have `stop` cancel only the parent token. The task that
+//! owns a source lifecycle emits `SourceLost`; `stop` only requests exit.
 //!
 //! [`App`]: crate::app::App
 
