@@ -1,52 +1,678 @@
-use std::{collections::HashMap, sync::Arc};
+//! Kubernetes-backed log producer.
+//!
+//! `KubernetesProducer` watches pods in one namespace and tails each running
+//! regular or init container as its own source. It reads kubeconfig from the
+//! standard local locations; in-cluster service-account configs, explicit
+//! `--context` overrides, and multi-cluster federation are out of scope for
+//! this producer.
 
-use futures_util::{AsyncBufReadExt, TryStreamExt};
-use k8s_openapi::api::core::v1::Pod;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
+
+use futures_util::{AsyncBufReadExt as _, StreamExt as _, TryStreamExt as _};
+use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use kube::{
     Api, Client, ResourceExt,
-    api::{ListParams, LogParams},
+    api::LogParams,
+    config::Kubeconfig,
+    runtime::watcher::{self, Event},
 };
-use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tokio::{sync::mpsc, time::sleep};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
 use crate::{
-    error::{FmlError, ProducerError},
+    error::ProducerError,
+    event::ProducerEvent,
     log::{Source, SourceId},
-    producer::{LogProducer, normalizer::Normalizer},
+    producer::{LogProducer, file::decode_line, normalizer::Normalizer},
 };
 
+type ContainerKey = (String, String);
+
+/// Discovers and tails running containers in one Kubernetes namespace.
 pub struct KubernetesProducer {
     client: Arc<Client>,
     namespace: String,
-    sources: HashMap<SourceId, Source>,
-
     normalizer: Normalizer,
+    cancel: CancellationToken,
 }
 
 impl KubernetesProducer {
+    /// Create a producer using the local kubeconfig and the supplied namespace.
     pub fn new(namespace: String) -> Result<Self, ProducerError> {
-        let kubeconfig = kube::config::Kubeconfig::read()?;
+        let kubeconfig = Kubeconfig::read()?;
         let client = Client::try_from(kubeconfig)?;
 
         Ok(KubernetesProducer::new_seeded(namespace, client))
     }
 
+    /// Create a producer from an already-constructed Kubernetes client.
     pub fn new_seeded(namespace: String, client: Client) -> KubernetesProducer {
         KubernetesProducer {
             client: Arc::new(client),
             namespace,
-            sources: HashMap::new(),
             normalizer: Normalizer::new(),
+            cancel: CancellationToken::new(),
         }
+    }
+
+    /// Resolve the active kubeconfig context namespace.
+    pub fn resolve_namespace() -> Result<String, ProducerError> {
+        resolve_namespace_from_kubeconfig(&Kubeconfig::read()?)
     }
 }
 
 impl LogProducer for KubernetesProducer {
-    fn start(&self, tx: mpsc::Sender<crate::event::ProducerEvent>) {
-        todo!()
+    fn start(&self, tx: mpsc::Sender<ProducerEvent>) {
+        let client = self.client.clone();
+        let namespace = self.namespace.clone();
+        let normalizer = self.normalizer.clone();
+        let cancel = self.cancel.clone();
+
+        tokio::spawn(async move {
+            if let Err(err) =
+                run_kubernetes_producer(client, namespace, normalizer, tx, cancel).await
+            {
+                warn!("kubernetes producer exited with error: {err}");
+            }
+        });
     }
 
     fn stop(&self) {
-        todo!()
+        self.cancel.cancel();
+    }
+}
+
+async fn run_kubernetes_producer(
+    client: Arc<Client>,
+    namespace: String,
+    normalizer: Normalizer,
+    tx: mpsc::Sender<ProducerEvent>,
+    cancel: CancellationToken,
+) -> Result<(), ProducerError> {
+    let pods: Api<Pod> = Api::namespaced((*client).clone(), &namespace);
+    let mut events = watcher::watcher(pods.clone(), watcher::Config::default()).boxed();
+    let mut tracked: HashMap<ContainerKey, CancellationToken> = HashMap::new();
+    let mut init_buffer: Vec<Pod> = Vec::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            event = events.next() => {
+                let Some(event) = event else { break };
+                match event {
+                    Ok(Event::Apply(pod)) => {
+                        track_running_containers(&pod, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked).await;
+                    }
+                    Ok(Event::Delete(pod)) => {
+                        untrack_pod(&pod.name_any(), &namespace, &tx, &mut tracked).await;
+                    }
+                    Ok(Event::Init) => init_buffer.clear(),
+                    Ok(Event::InitApply(pod)) => init_buffer.push(pod),
+                    Ok(Event::InitDone) => {
+                        let (additions, removals) = reconcile_restarted(&init_buffer, &mut tracked);
+                        for (key, child) in removals {
+                            child.cancel();
+                            let _ = tx.send(ProducerEvent::SourceLost(source_id_for_key(&namespace, &key))).await;
+                        }
+                        for running in additions {
+                            track_container(running, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked).await;
+                        }
+                    }
+                    Err(err) => warn!("kubernetes watcher error in namespace {namespace}: {err}"),
+                }
+            }
+        }
+    }
+
+    for (key, child) in tracked {
+        child.cancel();
+        let _ = tx
+            .send(ProducerEvent::SourceLost(source_id_for_key(
+                &namespace, &key,
+            )))
+            .await;
+    }
+
+    Ok(())
+}
+
+async fn track_running_containers(
+    pod: &Pod,
+    namespace: &str,
+    api: &Api<Pod>,
+    normalizer: &Normalizer,
+    tx: &mpsc::Sender<ProducerEvent>,
+    parent_cancel: &CancellationToken,
+    tracked: &mut HashMap<ContainerKey, CancellationToken>,
+) {
+    let pod_name = pod.name_any();
+    let running = running_containers(pod);
+    let running_keys = running
+        .iter()
+        .map(RunningContainer::key)
+        .collect::<HashSet<_>>();
+    let stopped_keys = tracked
+        .keys()
+        .filter(|(tracked_pod, _)| tracked_pod == &pod_name)
+        .filter(|key| !running_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for key in stopped_keys {
+        if let Some(child) = tracked.remove(&key) {
+            child.cancel();
+            let _ = tx
+                .send(ProducerEvent::SourceLost(source_id_for_key(
+                    namespace, &key,
+                )))
+                .await;
+        }
+    }
+
+    for running in running {
+        track_container(
+            running,
+            namespace,
+            api,
+            normalizer,
+            tx,
+            parent_cancel,
+            tracked,
+        )
+        .await;
+    }
+}
+
+async fn track_container(
+    running: RunningContainer,
+    namespace: &str,
+    api: &Api<Pod>,
+    normalizer: &Normalizer,
+    tx: &mpsc::Sender<ProducerEvent>,
+    parent_cancel: &CancellationToken,
+    tracked: &mut HashMap<ContainerKey, CancellationToken>,
+) {
+    let key = running.key();
+    if tracked.contains_key(&key) {
+        return;
+    }
+
+    let source = pod_container_to_source(&running.pod_name, &running.container_name, namespace);
+    if tx
+        .send(ProducerEvent::SourceFound(source.clone()))
+        .await
+        .is_err()
+    {
+        debug!(
+            "kubernetes producer {} aborting: event channel closed",
+            source.id
+        );
+        return;
+    }
+
+    let child = parent_cancel.child_token();
+    tokio::spawn(tail_pod_container(
+        api.clone(),
+        key.clone(),
+        source,
+        tx.clone(),
+        *normalizer,
+        child.clone(),
+    ));
+    tracked.insert(key, child);
+}
+
+async fn untrack_pod(
+    pod_name: &str,
+    namespace: &str,
+    tx: &mpsc::Sender<ProducerEvent>,
+    tracked: &mut HashMap<ContainerKey, CancellationToken>,
+) {
+    let removed = tracked
+        .keys()
+        .filter(|(tracked_pod, _)| tracked_pod == pod_name)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for key in removed {
+        if let Some(child) = tracked.remove(&key) {
+            child.cancel();
+            let _ = tx
+                .send(ProducerEvent::SourceLost(source_id_for_key(
+                    namespace, &key,
+                )))
+                .await;
+        }
+    }
+}
+
+async fn tail_pod_container(
+    api: Api<Pod>,
+    key: ContainerKey,
+    source: Source,
+    tx: mpsc::Sender<ProducerEvent>,
+    normalizer: Normalizer,
+    cancel: CancellationToken,
+) {
+    let mut backoff = ReconnectBackoff::new();
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let params = LogParams {
+            container: Some(key.1.clone()),
+            follow: true,
+            tail_lines: Some(0),
+            ..LogParams::default()
+        };
+
+        match api.log_stream(&key.0, &params).await {
+            Ok(stream) => {
+                let mut lines = stream.lines();
+                let mut read_any = false;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        line = lines.try_next() => {
+                            match line {
+                                Ok(Some(line)) => {
+                                    if !read_any {
+                                        backoff.reset();
+                                    }
+                                    read_any = true;
+                                    let line = decode_line(line.as_bytes());
+                                    let entry = normalizer.normalize(&line, source.clone());
+                                    if tx.send(ProducerEvent::StoreEvent(entry)).await.is_err() {
+                                        debug!("kubernetes tail {} aborting: event channel closed", source.id);
+                                        return;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(err) => {
+                                    warn!("kubernetes log stream errored for {}: {err}", source.id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(err) => warn!("kubernetes log_stream open failed for {}: {err}", source.id),
+        }
+
+        let delay = backoff.delay();
+        warn!(
+            "kubernetes tail for {} will reconnect in {:?}; catch-up across the disconnected window is not guaranteed",
+            source.id, delay
+        );
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = sleep(delay) => backoff.advance(),
+        }
+    }
+}
+
+fn reconcile_restarted(
+    observed: &[Pod],
+    tracked: &mut HashMap<ContainerKey, CancellationToken>,
+) -> (
+    Vec<RunningContainer>,
+    Vec<(ContainerKey, CancellationToken)>,
+) {
+    let observed = observed
+        .iter()
+        .flat_map(running_containers)
+        .collect::<Vec<_>>();
+    let observed_keys = observed
+        .iter()
+        .map(RunningContainer::key)
+        .collect::<HashSet<_>>();
+
+    let removed_keys = tracked
+        .keys()
+        .filter(|key| !observed_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let removals = removed_keys
+        .into_iter()
+        .filter_map(|key| tracked.remove(&key).map(|token| (key, token)))
+        .collect::<Vec<_>>();
+
+    let additions = observed
+        .into_iter()
+        .filter(|running| !tracked.contains_key(&running.key()))
+        .collect();
+
+    (additions, removals)
+}
+
+fn running_containers(pod: &Pod) -> Vec<RunningContainer> {
+    let pod_name = pod.name_any();
+    let mut containers = Vec::new();
+    if let Some(status) = &pod.status {
+        collect_running(
+            &pod_name,
+            status.container_statuses.as_deref(),
+            &mut containers,
+        );
+        collect_running(
+            &pod_name,
+            status.init_container_statuses.as_deref(),
+            &mut containers,
+        );
+    }
+    containers
+}
+
+fn collect_running(
+    pod_name: &str,
+    statuses: Option<&[ContainerStatus]>,
+    containers: &mut Vec<RunningContainer>,
+) {
+    for status in statuses.unwrap_or_default() {
+        if status
+            .state
+            .as_ref()
+            .and_then(|state| state.running.as_ref())
+            .is_some()
+        {
+            containers.push(RunningContainer {
+                pod_name: pod_name.to_string(),
+                container_name: status.name.clone(),
+            });
+        }
+    }
+}
+
+fn pod_container_to_source(pod_name: &str, container_name: &str, namespace: &str) -> Source {
+    Source {
+        producer: namespace.to_string(),
+        id: format!("{namespace}/{pod_name}/{container_name}"),
+        display_name: container_name.to_string(),
+        group: Some(pod_name.to_string()),
+    }
+}
+
+fn source_id_for_key(namespace: &str, key: &ContainerKey) -> SourceId {
+    format!("{namespace}/{}/{}", key.0, key.1)
+}
+
+fn resolve_namespace_from_kubeconfig(kubeconfig: &Kubeconfig) -> Result<String, ProducerError> {
+    let active = kubeconfig
+        .current_context
+        .as_deref()
+        .ok_or_else(|| ProducerError::Kubernetes("kubeconfig has no active context".to_string()))?;
+    let context = kubeconfig
+        .contexts
+        .iter()
+        .find(|context| context.name == active)
+        .ok_or_else(|| {
+            ProducerError::Kubernetes(format!(
+                "kubeconfig active context `{active}` was not found"
+            ))
+        })?;
+
+    Ok(context
+        .context
+        .as_ref()
+        .and_then(|context| context.namespace.clone())
+        .unwrap_or_else(|| "default".to_string()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunningContainer {
+    pod_name: String,
+    container_name: String,
+}
+
+impl RunningContainer {
+    fn key(&self) -> ContainerKey {
+        (self.pod_name.clone(), self.container_name.clone())
+    }
+}
+
+#[derive(Debug)]
+struct ReconnectBackoff {
+    current: Duration,
+}
+
+impl ReconnectBackoff {
+    fn new() -> Self {
+        Self {
+            current: Duration::from_millis(100),
+        }
+    }
+
+    fn delay(&self) -> Duration {
+        self.current
+    }
+
+    fn advance(&mut self) {
+        self.current = (self.current * 10).min(Duration::from_secs(10));
+    }
+
+    fn reset(&mut self) {
+        self.current = Duration::from_millis(100);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use k8s_openapi::api::core::v1::{ContainerState, ContainerStateRunning, PodStatus};
+    use kube::{
+        Config,
+        config::{Context, NamedContext},
+    };
+
+    use super::*;
+
+    fn pod(name: &str, regular: &[&str], init: &[&str]) -> Pod {
+        Pod {
+            metadata: kube::core::ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            status: Some(PodStatus {
+                container_statuses: Some(regular.iter().map(|name| status(name, true)).collect()),
+                init_container_statuses: Some(init.iter().map(|name| status(name, true)).collect()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn status(name: &str, running: bool) -> ContainerStatus {
+        ContainerStatus {
+            name: name.to_string(),
+            state: Some(ContainerState {
+                running: running.then(ContainerStateRunning::default),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn token_map(keys: &[(&str, &str)]) -> HashMap<ContainerKey, CancellationToken> {
+        keys.iter()
+            .map(|(pod, container)| {
+                (
+                    ((*pod).to_string(), (*container).to_string()),
+                    CancellationToken::new(),
+                )
+            })
+            .collect()
+    }
+
+    fn kubeconfig(active: Option<&str>, contexts: Vec<NamedContext>) -> Kubeconfig {
+        Kubeconfig {
+            current_context: active.map(str::to_string),
+            contexts,
+            ..Default::default()
+        }
+    }
+
+    fn context(name: &str, namespace: Option<&str>) -> NamedContext {
+        NamedContext {
+            name: name.to_string(),
+            context: Some(Context {
+                cluster: "cluster".to_string(),
+                namespace: namespace.map(str::to_string),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn pod_container_source_uses_namespace_pod_and_container() {
+        let source = pod_container_to_source("web-123", "nginx", "prod");
+
+        assert_eq!(source.producer, "prod");
+        assert_eq!(source.id, "prod/web-123/nginx");
+        assert_eq!(source.display_name, "nginx");
+        assert_eq!(source.group, Some("web-123".to_string()));
+    }
+
+    #[test]
+    fn resolve_namespace_uses_active_context_namespace() {
+        let namespace = resolve_namespace_from_kubeconfig(&kubeconfig(
+            Some("ctx"),
+            vec![context("ctx", Some("apps"))],
+        ))
+        .unwrap();
+
+        assert_eq!(namespace, "apps");
+    }
+
+    #[test]
+    fn resolve_namespace_defaults_when_context_has_no_namespace() {
+        let namespace =
+            resolve_namespace_from_kubeconfig(&kubeconfig(Some("ctx"), vec![context("ctx", None)]))
+                .unwrap();
+
+        assert_eq!(namespace, "default");
+    }
+
+    #[test]
+    fn resolve_namespace_errors_when_active_context_is_missing() {
+        let err = resolve_namespace_from_kubeconfig(&kubeconfig(
+            Some("missing"),
+            vec![context("ctx", None)],
+        ))
+        .unwrap_err();
+
+        assert!(matches!(err, ProducerError::Kubernetes(_)));
+    }
+
+    #[test]
+    fn reconcile_empty_observed_removes_everything() {
+        let mut tracked = token_map(&[("pod-a", "web"), ("pod-b", "api")]);
+
+        let (additions, removals) = reconcile_restarted(&[], &mut tracked);
+
+        assert!(additions.is_empty());
+        assert_eq!(removals.len(), 2);
+        assert!(tracked.is_empty());
+    }
+
+    #[test]
+    fn reconcile_partial_overlap_adds_and_removes() {
+        let mut tracked = token_map(&[("pod-a", "web"), ("pod-b", "api")]);
+
+        let (additions, removals) =
+            reconcile_restarted(&[pod("pod-a", &["web", "sidecar"], &[])], &mut tracked);
+
+        assert_eq!(
+            additions,
+            vec![RunningContainer {
+                pod_name: "pod-a".to_string(),
+                container_name: "sidecar".to_string()
+            }]
+        );
+        assert_eq!(removals.len(), 1);
+        assert_eq!(removals[0].0, ("pod-b".to_string(), "api".to_string()));
+        assert!(tracked.contains_key(&("pod-a".to_string(), "web".to_string())));
+    }
+
+    #[test]
+    fn reconcile_full_overlap_has_no_changes() {
+        let mut tracked = token_map(&[("pod-a", "web")]);
+
+        let (additions, removals) =
+            reconcile_restarted(&[pod("pod-a", &["web"], &[])], &mut tracked);
+
+        assert!(additions.is_empty());
+        assert!(removals.is_empty());
+        assert_eq!(tracked.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_all_new_returns_additions() {
+        let mut tracked = HashMap::new();
+
+        let (additions, removals) =
+            reconcile_restarted(&[pod("pod-a", &["web"], &["init"])], &mut tracked);
+
+        assert_eq!(additions.len(), 2);
+        assert!(removals.is_empty());
+    }
+
+    #[test]
+    fn reconcile_mix_of_additions_and_removals() {
+        let mut tracked = token_map(&[("pod-a", "old"), ("pod-b", "api")]);
+
+        let (additions, removals) = reconcile_restarted(
+            &[pod("pod-a", &["web"], &[]), pod("pod-b", &["api"], &[])],
+            &mut tracked,
+        );
+
+        assert_eq!(
+            additions,
+            vec![RunningContainer {
+                pod_name: "pod-a".to_string(),
+                container_name: "web".to_string()
+            }]
+        );
+        assert_eq!(removals.len(), 1);
+        assert_eq!(removals[0].0, ("pod-a".to_string(), "old".to_string()));
+    }
+
+    #[test]
+    fn backoff_advances_caps_and_resets() {
+        let mut backoff = ReconnectBackoff::new();
+
+        assert_eq!(backoff.delay(), Duration::from_millis(100));
+        backoff.advance();
+        assert_eq!(backoff.delay(), Duration::from_secs(1));
+        backoff.advance();
+        assert_eq!(backoff.delay(), Duration::from_secs(10));
+        backoff.advance();
+        assert_eq!(backoff.delay(), Duration::from_secs(10));
+        backoff.reset();
+        assert_eq!(backoff.delay(), Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn start_returns_promptly_when_kube_api_is_unreachable() {
+        let config = Config::new("http://127.0.0.1:9".parse().unwrap());
+        let client = Client::try_from(config).expect("test kube client");
+        let producer = KubernetesProducer::new_seeded("default".to_string(), client);
+        let (tx, _rx) = mpsc::channel(8);
+
+        let start = Instant::now();
+        producer.start(tx);
+
+        assert!(start.elapsed() < Duration::from_millis(50));
+        producer.stop();
     }
 }

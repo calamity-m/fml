@@ -14,7 +14,7 @@ use crate::{
     log::Source,
     producer::{
         self, LogProducer, ProducerSpec, docker::DockerProducer, fake::FakeProducer,
-        file::FileProducer,
+        file::FileProducer, kubernetes::KubernetesProducer,
     },
     search,
     state::AppState,
@@ -51,17 +51,21 @@ impl App<CrosstermBackend<Stdout>> {
                 ProducerSpec::File(path) => {
                     app.register_producer(Box::new(FileProducer::new(path)));
                 }
-                ProducerSpec::Docker => {
-                    match DockerProducer::new() {
-                        Ok(producer) => app.register_producer(Box::new(producer)),
-                        Err(err) => tracing::warn!("failed to construct docker producer: {err}"),
-                    }
-                }
+                ProducerSpec::Docker => match DockerProducer::new() {
+                    Ok(producer) => app.register_producer(Box::new(producer)),
+                    Err(err) => tracing::warn!("failed to construct docker producer: {err}"),
+                },
                 ProducerSpec::Kubernetes(ns) => {
-                    tracing::warn!(
-                        "kubernetes producer not yet implemented, skipping (namespace: {:?})",
-                        ns
-                    );
+                    match ns
+                        .map(Ok)
+                        .unwrap_or_else(KubernetesProducer::resolve_namespace)
+                        .and_then(KubernetesProducer::new)
+                    {
+                        Ok(producer) => app.register_producer(Box::new(producer)),
+                        Err(err) => {
+                            tracing::warn!("failed to construct kubernetes producer: {err}")
+                        }
+                    }
                 }
             }
         }
