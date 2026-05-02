@@ -8,27 +8,27 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+#[cfg(test)]
+use bollard::API_DEFAULT_VERSION;
 use bollard::{
     Docker,
     container::LogOutput,
     plugin::{ContainerSummary, EventMessage},
     query_parameters::{EventsOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
-#[cfg(test)]
-use bollard::API_DEFAULT_VERSION;
 use futures_util::StreamExt as _;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+#[cfg(test)]
+use crate::producer::file::decode_line;
 use crate::{
-    event::ProducerEvent,
     error::ProducerError,
+    event::ProducerEvent,
     log::{Source, SourceId},
     producer::{LogProducer, file::LineBuffer, normalizer::Normalizer},
 };
-#[cfg(test)]
-use crate::producer::file::decode_line;
 
 pub struct DockerProducer {
     docker: Arc<Docker>,
@@ -84,11 +84,7 @@ async fn run_docker_producer(
     cancel: CancellationToken,
 ) -> Result<(), ProducerError> {
     let (event_tx, mut event_rx) = mpsc::channel(64);
-    tokio::spawn(pump_docker_events(
-        docker.clone(),
-        event_tx,
-        cancel.clone(),
-    ));
+    tokio::spawn(pump_docker_events(docker.clone(), event_tx, cancel.clone()));
 
     let containers = list_running_containers(&docker).await?;
     let mut tracked: HashMap<SourceId, CancellationToken> = HashMap::new();
@@ -183,7 +179,11 @@ fn events_options() -> bollard::query_parameters::EventsOptions {
     filters.insert("type".to_string(), vec!["container".to_string()]);
     filters.insert(
         "event".to_string(),
-        vec!["start".to_string(), "die".to_string(), "destroy".to_string()],
+        vec![
+            "start".to_string(),
+            "die".to_string(),
+            "destroy".to_string(),
+        ],
     );
 
     EventsOptionsBuilder::default().filters(&filters).build()
@@ -245,7 +245,10 @@ async fn track_container(
         .await
         .is_err()
     {
-        debug!("docker producer {} aborting: event channel closed", source.id);
+        debug!(
+            "docker producer {} aborting: event channel closed",
+            source.id
+        );
         return;
     }
 
@@ -432,12 +435,8 @@ mod tests {
 
     #[test]
     fn source_falls_back_to_short_id_without_names() {
-        let source = container_summary_to_source(&summary(
-            "0123456789abcdef",
-            None,
-            None,
-            HashMap::new(),
-        ));
+        let source =
+            container_summary_to_source(&summary("0123456789abcdef", None, None, HashMap::new()));
 
         assert_eq!(source.display_name, "0123456789ab");
     }

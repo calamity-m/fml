@@ -157,7 +157,8 @@ mod tests {
 
     #[test]
     fn typical_line_parsed() {
-        let raw = "level=info msg=\"starting server\" host=0.0.0.0 port=8080 ts=2024-01-01T00:00:00Z";
+        let raw =
+            "level=info msg=\"starting server\" host=0.0.0.0 port=8080 ts=2024-01-01T00:00:00Z";
         let entry = try_parse_logfmt(raw, &source()).unwrap();
         assert_eq!(entry.msg, "starting server");
         assert_eq!(entry.level, Some(LogLevel::Info));
