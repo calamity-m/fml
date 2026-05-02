@@ -34,6 +34,39 @@ hello
 - Rendered Tail -> Bottom of the vissible log lines
 - Retained Window -> Log lines the log pane has access to, which may extend past a Rendered Window, but not encompass a full ring buffer
 
+## Log Producers
+
+Attach log sources with the repeatable `--producer KIND[:ARG]` flag:
+
+```sh
+cargo run -p fml -- --producer demo
+cargo run -p fml -- --producer file:/var/log/app.log
+cargo run -p fml -- --producer docker
+cargo run -p fml -- --producer kubernetes
+cargo run -p fml -- --producer kubernetes:my-namespace
+```
+
+Multiple producers can run together:
+
+```sh
+cargo run -p fml -- \
+  --producer file:/var/log/app.log \
+  --producer docker \
+  --producer kubernetes:my-namespace
+```
+
+Supported kinds:
+
+- `demo` starts a synthetic demo source. Repeat it to create multiple demo sources.
+- `file:<path>` tails one file from EOF and follows common rotation patterns.
+- `docker` discovers currently running containers, tails stdout/stderr, and tracks container start/stop events. Requires access to the local Docker daemon.
+- `kubernetes[:namespace]` watches running pod containers in one namespace and tails each container. Without `:namespace`, fml uses the active kubeconfig context namespace, falling back to `default`. Requires a working local kubeconfig; in-cluster service-account config and explicit context selection are not currently supported.
+
+If a producer cannot be constructed, fml logs a warning and continues with the other producers.
+Repeated identical real producers are allowed but may duplicate log entries.
+
+For a local Docker showcase stack, see `examples/docker`.
+
 ## Source Selector
 
 Press `ctrl+s` to open or close the source selector popup. The selector is currently hardcoded to `ctrl+s`; user-configurable remapping is deferred. Some terminals reserve `ctrl+s` for XOFF flow control, so disable terminal flow control or remap it at the terminal level if the popup does not open.

@@ -113,7 +113,7 @@ fml/tests/               -> integration and snapshot-style tests
 ### Entry points
 
 ```text
-fml/src/main.rs  -> `cargo run -p fml -- --demo` (interactive demo TUI)
+fml/src/main.rs  -> `cargo run -p fml -- --producer demo` (interactive demo TUI)
 fml/src/lib.rs   -> `cargo test -p fml` (library and integration tests)
 ```
 

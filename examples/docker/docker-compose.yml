@@ -1,0 +1,28 @@
+name: fml-demo
+
+x-demo-service: &demo-service
+  image: alpine:3.20
+  volumes:
+    - ./scripts:/scripts:ro
+
+services:
+  api-json:
+    <<: *demo-service
+    command: ["sh", "/scripts/api-json.sh"]
+
+  worker-logfmt:
+    <<: *demo-service
+    command: ["sh", "/scripts/worker-logfmt.sh"]
+
+  web-access:
+    <<: *demo-service
+    command: ["sh", "/scripts/web-access.sh"]
+
+  stderr-noisy:
+    <<: *demo-service
+    command: ["sh", "/scripts/stderr-noisy.sh"]
+
+  lifecycle:
+    <<: *demo-service
+    restart: always
+    command: ["sh", "/scripts/lifecycle.sh"]
