@@ -18,10 +18,60 @@
 //!
 //! [`App`]: crate::app::App
 
+use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{event::ProducerEvent, state::AppState};
+use crate::{error::ProducerError, event::ProducerEvent, state::AppState};
+
+/// Parsed form of a `--producer KIND[:ARG]` CLI value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProducerSpec {
+    Demo,
+    File(PathBuf),
+    Docker,
+    Kubernetes(Option<String>),
+}
+
+impl ProducerSpec {
+    /// Parse a `--producer` CLI string into a [`ProducerSpec`].
+    ///
+    /// Uses `splitn(2, ':')` so paths containing `:` are passed through
+    /// whole as the file argument (e.g. `file:/var/log/2026-05-02:00:00.log`).
+    pub fn parse(s: &str) -> Result<Self, ProducerError> {
+        let parts: Vec<&str> = s.splitn(2, ':').collect();
+        let (kind, arg) = match parts.as_slice() {
+            [k] => (*k, None),
+            [k, a] => (*k, Some(*a)),
+            _ => unreachable!(),
+        };
+        match (kind, arg) {
+            ("demo", None) => Ok(ProducerSpec::Demo),
+            ("demo", Some(_)) => Err(ProducerError::Cli(
+                "`demo` takes no argument".to_string(),
+            )),
+            ("file", Some(path)) if !path.is_empty() => {
+                Ok(ProducerSpec::File(PathBuf::from(path)))
+            }
+            ("file", _) => Err(ProducerError::Cli(
+                "`file` requires a path argument: `file:<path>`".to_string(),
+            )),
+            ("docker", None) => Ok(ProducerSpec::Docker),
+            ("docker", Some(_)) => Err(ProducerError::Cli(
+                "`docker` takes no argument".to_string(),
+            )),
+            ("kubernetes", None) => Ok(ProducerSpec::Kubernetes(None)),
+            ("kubernetes", Some("")) => Err(ProducerError::Cli(
+                "`kubernetes` namespace cannot be empty; omit the colon to use the active context namespace".to_string(),
+            )),
+            ("kubernetes", Some(ns)) => Ok(ProducerSpec::Kubernetes(Some(ns.to_string()))),
+            (kind, _) => Err(ProducerError::Cli(format!(
+                "unknown producer kind `{kind}`; expected: demo, file:<path>, docker, kubernetes[:<namespace>]"
+            ))),
+        }
+    }
+}
 
 pub mod docker;
 pub mod fake;
@@ -306,5 +356,79 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].msg, "hello from producer");
         assert_eq!(entries[0].source.id, "src-a");
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use std::path::PathBuf;
+
+    use super::ProducerSpec;
+
+    #[test]
+    fn parse_demo() {
+        assert_eq!(ProducerSpec::parse("demo").unwrap(), ProducerSpec::Demo);
+    }
+
+    #[test]
+    fn parse_file() {
+        assert_eq!(
+            ProducerSpec::parse("file:/var/log/app.log").unwrap(),
+            ProducerSpec::File(PathBuf::from("/var/log/app.log")),
+        );
+    }
+
+    #[test]
+    fn parse_file_path_with_colons() {
+        assert_eq!(
+            ProducerSpec::parse("file:/var/log/2026-05-02:12:00.log").unwrap(),
+            ProducerSpec::File(PathBuf::from("/var/log/2026-05-02:12:00.log")),
+        );
+    }
+
+    #[test]
+    fn parse_docker() {
+        assert_eq!(ProducerSpec::parse("docker").unwrap(), ProducerSpec::Docker);
+    }
+
+    #[test]
+    fn parse_kubernetes_bare() {
+        assert_eq!(
+            ProducerSpec::parse("kubernetes").unwrap(),
+            ProducerSpec::Kubernetes(None),
+        );
+    }
+
+    #[test]
+    fn parse_kubernetes_with_namespace() {
+        assert_eq!(
+            ProducerSpec::parse("kubernetes:my-ns").unwrap(),
+            ProducerSpec::Kubernetes(Some("my-ns".to_string())),
+        );
+    }
+
+    #[test]
+    fn parse_demo_with_arg_is_error() {
+        assert!(ProducerSpec::parse("demo:foo").is_err());
+    }
+
+    #[test]
+    fn parse_file_without_path_is_error() {
+        assert!(ProducerSpec::parse("file").is_err());
+    }
+
+    #[test]
+    fn parse_docker_with_arg_is_error() {
+        assert!(ProducerSpec::parse("docker:foo").is_err());
+    }
+
+    #[test]
+    fn parse_kubernetes_empty_namespace_is_error() {
+        assert!(ProducerSpec::parse("kubernetes:").is_err());
+    }
+
+    #[test]
+    fn parse_unknown_kind_is_error() {
+        assert!(ProducerSpec::parse("syslog").is_err());
     }
 }

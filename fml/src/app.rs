@@ -12,7 +12,7 @@ use crate::{
     error::FmlError,
     event::{Query, TuiEvent},
     log::Source,
-    producer::{self, LogProducer, fake::FakeProducer},
+    producer::{self, LogProducer, ProducerSpec, fake::FakeProducer},
     search,
     state::AppState,
     tui,
@@ -25,16 +25,38 @@ pub struct App<B: Backend = CrosstermBackend<Stdout>> {
 }
 
 impl App<CrosstermBackend<Stdout>> {
-    pub fn new(config: crate::config::Config, demo: bool) -> Result<Self, FmlError> {
+    pub fn new(config: crate::config::Config, specs: Vec<ProducerSpec>) -> Result<Self, FmlError> {
         let mut app = Self {
             state: AppState::new(config)?,
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
             producers: Vec::new(),
         };
 
-        if demo {
-            for source in demo_sources() {
-                app.register_producer(Box::new(FakeProducer::new(source)));
+        let mut demo_count: u32 = 0;
+        for spec in specs {
+            match spec {
+                ProducerSpec::Demo => {
+                    demo_count += 1;
+                    let source = Source {
+                        producer: "fake".to_string(),
+                        id: format!("demo-{demo_count}"),
+                        display_name: format!("Demo {demo_count}"),
+                        group: None,
+                    };
+                    app.register_producer(Box::new(FakeProducer::new(source)));
+                }
+                ProducerSpec::File(path) => {
+                    tracing::warn!("file producer not yet implemented, skipping {:?}", path);
+                }
+                ProducerSpec::Docker => {
+                    tracing::warn!("docker producer not yet implemented, skipping");
+                }
+                ProducerSpec::Kubernetes(ns) => {
+                    tracing::warn!(
+                        "kubernetes producer not yet implemented, skipping (namespace: {:?})",
+                        ns
+                    );
+                }
             }
         }
 
@@ -165,27 +187,3 @@ impl App<CrosstermBackend<Stdout>> {
     }
 }
 
-/// Synthetic sources used to back the `--demo` flag. Spread across two
-/// groups so the upcoming source-grouping UI has something to display.
-fn demo_sources() -> Vec<Source> {
-    vec![
-        Source {
-            producer: "fake".to_string(),
-            id: "src-a".to_string(),
-            display_name: "Service A".to_string(),
-            group: Some("backend".to_string()),
-        },
-        Source {
-            producer: "fake".to_string(),
-            id: "src-b".to_string(),
-            display_name: "Service B".to_string(),
-            group: Some("backend".to_string()),
-        },
-        Source {
-            producer: "fake".to_string(),
-            id: "src-c".to_string(),
-            display_name: "Service C".to_string(),
-            group: Some("frontend".to_string()),
-        },
-    ]
-}

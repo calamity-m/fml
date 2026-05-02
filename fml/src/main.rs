@@ -5,7 +5,7 @@ use tracing::info;
 
 use tracing_subscriber::EnvFilter;
 
-use fml::{app::App, config::Config};
+use fml::{app::App, config::Config, producer::ProducerSpec};
 
 #[derive(Parser, Debug)]
 #[command(author, version = version(), about)]
@@ -22,9 +22,11 @@ pub struct Cli {
     #[arg(short, long)]
     pub debug: bool,
 
-    /// Start the app with a synthetic demo log source
-    #[arg(long)]
-    pub demo: bool,
+    /// Log producer to attach. Repeatable. Examples: --producer demo,
+    /// --producer file:/var/log/app.log, --producer docker,
+    /// --producer kubernetes:my-namespace
+    #[arg(long = "producer")]
+    pub producer: Vec<String>,
 
     /// Override the configured TUI theme name
     #[arg(long)]
@@ -106,8 +108,16 @@ async fn main() -> Result<()> {
     let (config, _guard) = cli.init()?;
     info!("config and logging intialized");
 
+    // Parse --producer flags into specs before constructing the app so
+    // invalid kinds fail with a clear error before any state is allocated.
+    let specs: Vec<ProducerSpec> = cli
+        .producer
+        .iter()
+        .map(|s| ProducerSpec::parse(s))
+        .collect::<Result<_, _>>()?;
+
     // Create the app and run it
-    let app = App::new(config, cli.demo)?;
+    let app = App::new(config, specs)?;
     app.run().await?;
     info!("exiting");
 

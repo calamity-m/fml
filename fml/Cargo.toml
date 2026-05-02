@@ -13,6 +13,7 @@ ratatui-textarea.workspace = true
 tui-scrollview.workspace = true
 tui-popup.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 bytes.workspace = true
 notify.workspace = true
 regex.workspace = true

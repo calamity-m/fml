@@ -35,6 +35,15 @@ pub enum FmlError {
 
 #[derive(Error, Debug)]
 pub enum ProducerError {
+    #[error("cli error: {0}")]
+    Cli(String),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("file watcher error: {0}")]
+    Notify(#[from] notify::Error),
+
     #[error("kubernetes error occurred: {0}")]
     Kubernetes(String),
 
