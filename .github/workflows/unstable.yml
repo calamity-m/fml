@@ -1,0 +1,71 @@
+name: Unstable
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: fml
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+
+  release:
+    permissions:
+      contents: write
+    needs: ci
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build release
+        run: cargo build --release -p fml --target ${{ matrix.target }}
+      - name: Package release artifact
+        run: |
+          mkdir -p dist
+          tar -czf "dist/${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" "${{ env.BINARY_NAME }}"
+      - name: Update unstable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: unstable
+          name: "Unstable (main)"
+          prerelease: true
+          make_latest: false
+          files: dist/${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz
+          body: |
+            Automated build from `main` at ${{ github.sha }}.
+
+            This is a rolling pre-release — artifacts are overwritten on every push to main.
+            For stable releases, see the [releases page](../../releases) for versioned tags.
