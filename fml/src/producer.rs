@@ -27,7 +27,10 @@ use crate::{
     state::AppState,
 };
 
+pub mod docker;
 pub mod fake;
+pub mod file;
+pub mod kubernetes;
 
 /// A log source ingester.
 ///
