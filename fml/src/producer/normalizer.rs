@@ -5,6 +5,7 @@ use tracing::trace;
 use crate::log::{NewLogEntry, Source};
 
 mod json;
+mod logfmt;
 mod pattern;
 
 pub struct Normalizer {}
