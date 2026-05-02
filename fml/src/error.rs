@@ -28,4 +28,28 @@ pub enum FmlError {
 
     #[error("keybinding error: {0}")]
     Keybinding(String),
+
+    #[error("producer error: {0}")]
+    Producer(#[from] crate::error::ProducerError),
+}
+
+#[derive(Error, Debug)]
+pub enum ProducerError {
+    #[error("kubernetes error occurred: {0}")]
+    Kubernetes(String),
+
+    #[error("docker error occurred: {0}")]
+    Docker(#[from] bollard::errors::Error),
+}
+
+impl From<kube::Error> for ProducerError {
+    fn from(value: kube::Error) -> Self {
+        ProducerError::Kubernetes(value.to_string())
+    }
+}
+
+impl From<kube::config::KubeconfigError> for ProducerError {
+    fn from(value: kube::config::KubeconfigError) -> Self {
+        ProducerError::Kubernetes(value.to_string())
+    }
 }

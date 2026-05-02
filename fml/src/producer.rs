@@ -21,40 +21,35 @@
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{
-    event::ProducerEvent,
-    log::{ProducerId, SourceId},
-    state::AppState,
-};
+use crate::{event::ProducerEvent, state::AppState};
 
 pub mod docker;
 pub mod fake;
 pub mod file;
 pub mod kubernetes;
+pub mod normalizer;
 
 /// A log source ingester.
+///
+/// A producer may back one or many [`Source`]s — e.g. a docker or kubernetes
+/// producer discovers sources at runtime as containers/pods come and go.
+/// Sources are announced by emitting [`ProducerEvent::SourceFound`] before
+/// any [`ProducerEvent::StoreEvent`] referencing them, and retired with
+/// [`ProducerEvent::SourceLost`]. The `source.id` and `source.producer`
+/// fields on every emitted entry must be stable across the producer's
+/// lifetime so multi-source filters in tail/history/fuzzy stay meaningful.
 ///
 /// Implementations are required to be `Send + Sync` because `start` and
 /// `stop` are invoked from the main async event loop while the producer's
 /// spawned task may run on any executor thread.
 ///
 /// See the [module docs](self) for the cancellation contract.
+///
+/// [`Source`]: crate::log::Source
 pub trait LogProducer: Send + Sync {
-    /// Stable id identifying this producer's source. Must match the
-    /// `source.id` of every [`NewLogEntry`] the producer emits so multi-source
-    /// filters in tail/history/fuzzy stay meaningful.
-    ///
-    /// [`NewLogEntry`]: crate::log::NewLogEntry
-    fn source_id(&self) -> SourceId;
-
-    /// Stable id identifying the producer itself. Used as the top-level
-    /// grouping key in the source selector tree (Producer -> Group ->
-    /// Display Name); must match `source.producer` of every emitted source.
-    fn producer_id(&self) -> ProducerId;
-
     /// Begin producing events on `tx`. Implementations should emit a
-    /// [`ProducerEvent::SourceFound`] before any
-    /// [`ProducerEvent::StoreEvent`] so the app can register the source.
+    /// [`ProducerEvent::SourceFound`] for each source before any
+    /// [`ProducerEvent::StoreEvent`] referencing it.
     ///
     /// `start` is expected to return promptly — long-running work belongs
     /// inside a task spawned from `start`, not inside `start` itself.
