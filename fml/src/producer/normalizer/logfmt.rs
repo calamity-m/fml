@@ -27,6 +27,10 @@ pub fn try_parse_logfmt(raw: &str, source: &Source) -> Option<NewLogEntry> {
 
         match value {
             None => {
+                // Bare level word (e.g. "INFO" at the start of the line)
+                if level.is_none() {
+                    level = LogLevel::parse_level(key);
+                }
                 fields.insert(lower_key, serde_json::Value::Bool(true));
             }
             Some(v) => {
@@ -252,5 +256,19 @@ mod tests {
         assert!(entry.fields.contains_key("msg"));
         assert_eq!(entry.level, Some(LogLevel::Info));
         assert_eq!(entry.msg, "hello");
+    }
+
+    #[test]
+    fn bare_level_prefix_detected() {
+        let raw = "WARN cache stale key=session-0 age_ms=9000";
+        let entry = try_parse_logfmt(raw, &source()).unwrap();
+        assert_eq!(entry.level, Some(LogLevel::Warn));
+    }
+
+    #[test]
+    fn bare_error_level_detected() {
+        let raw = "ERROR upstream timeout peer=payments timeout_ms=2500";
+        let entry = try_parse_logfmt(raw, &source()).unwrap();
+        assert_eq!(entry.level, Some(LogLevel::Error));
     }
 }
