@@ -2,7 +2,7 @@
 //!
 //! Attempts to parse the raw line as a JSON object.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use crate::log::{LogLevel, NewLogEntry, Source};
 

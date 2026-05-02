@@ -7,7 +7,6 @@
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::{collections::BTreeMap, hash::Hash};
 
 use crate::log::{LogLevel, NewLogEntry, Source};
 
