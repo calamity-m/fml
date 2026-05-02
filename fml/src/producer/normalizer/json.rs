@@ -120,11 +120,8 @@ mod tests {
 
     #[test]
     fn msg_wins_over_message() {
-        let entry = try_parse_json(
-            r#"{"msg":"from msg","message":"from message"}"#,
-            &source(),
-        )
-        .unwrap();
+        let entry =
+            try_parse_json(r#"{"msg":"from msg","message":"from message"}"#, &source()).unwrap();
         assert_eq!(entry.msg, "from msg");
     }
 

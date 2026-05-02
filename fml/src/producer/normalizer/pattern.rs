@@ -102,6 +102,8 @@ mod tests {
 
     #[test]
     fn line_with_no_level_or_timestamp_returns_none() {
-        assert!(try_parse_patterns("just a plain message with nothing parseable", &source()).is_none());
+        assert!(
+            try_parse_patterns("just a plain message with nothing parseable", &source()).is_none()
+        );
     }
 }
