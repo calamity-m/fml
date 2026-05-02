@@ -18,6 +18,7 @@ impl Normalizer {
 
     pub fn normalize(&self, raw: &str, source: Source) -> NewLogEntry {
         let parsed = json::try_parse_json(&raw, &source)
+            .or_else(|| logfmt::try_parse_logfmt(&raw, &source))
             .or_else(|| pattern::try_parse_patterns(&raw, &source))
             .unwrap_or_else(|| NewLogEntry {
                 msg: raw.to_string(),
