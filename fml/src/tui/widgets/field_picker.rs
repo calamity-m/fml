@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     state::tui_state::{ActivePopup, TuiState},
-    tui::widgets::FmlPopupWidget,
+    tui::widgets::{FmlPopupWidget, PopupSize, header_style, popup_area, render_footer_hints},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,10 +43,34 @@ impl FmlPopupWidget for FieldPicker {
         }
 
         let rows = field_picker_rows(state);
-        let popup_area = popup_area(area);
+
+        let approx_width = if area.width < 44 {
+            area.width.saturating_sub(2).max(40u16.min(area.width))
+        } else {
+            area.width.saturating_sub(4).clamp(40, 72)
+        };
+        let narrow = approx_width < 48;
+        let header_rows: u16 = if narrow { 0 } else { 2 };
+        let footer_rows: u16 = 2; // 1 blank spacer + 1 hint line
+        let content_rows: u16 = rows.len().max(1) as u16;
+
+        let desired_height = header_rows
+            .saturating_add(content_rows)
+            .saturating_add(footer_rows)
+            .saturating_add(2); // borders
+
+        let popup_area = popup_area(
+            area,
+            PopupSize {
+                min_width: 40,
+                max_width: 72,
+                desired_height,
+                min_height: 8,
+            },
+        );
         let narrow = popup_area.width < 48;
-        let header_rows = if narrow { 0 } else { 2 };
-        let footer_rows = 3;
+        let header_rows: usize = if narrow { 0 } else { 2 };
+        let footer_rows: usize = 2;
         let inner_height = popup_area.height.saturating_sub(2) as usize;
         let visible_rows = inner_height
             .saturating_sub(header_rows + footer_rows)
@@ -67,12 +91,18 @@ impl FmlPopupWidget for FieldPicker {
 
         let mut lines = Vec::new();
         if !narrow {
-            lines.push(Line::from("Choose fields from the selected entry"));
+            lines.push(Line::styled(
+                "Choose fields from the selected entry",
+                header_style(&state.selected_theme),
+            ));
             lines.push(Line::from(""));
         }
 
         if rows.is_empty() {
-            lines.push(Line::from("Selected entry has no fields"));
+            lines.push(Line::styled(
+                "Selected entry has no fields",
+                header_style(&state.selected_theme),
+            ));
             for _ in 1..visible_rows {
                 lines.push(Line::from(""));
             }
@@ -96,13 +126,17 @@ impl FmlPopupWidget for FieldPicker {
         }
 
         lines.push(Line::from(""));
-        let footer_lines = if rows.is_empty() {
-            ["esc close", "ctrl+p skip"]
+        let footer_hints: &[(&str, &str)] = if rows.is_empty() {
+            &[("esc", "close"), ("ctrl+p", "skip")]
         } else {
-            ["space toggle  enter apply", "esc cancel  ctrl+p skip"]
+            &[
+                ("space", "toggle"),
+                ("enter", "apply"),
+                ("esc", "cancel"),
+                ("ctrl+p", "skip"),
+            ]
         };
-        lines.push(Line::from(footer_lines[0]));
-        lines.push(Line::from(footer_lines[1]));
+        lines.push(render_footer_hints(footer_hints, &state.selected_theme));
 
         frame.render_widget(Paragraph::new(lines).style(base_style), inner);
     }
@@ -166,22 +200,6 @@ fn compact_value(value: &Value) -> String {
 
 fn fit_to_width(value: &str, width: usize) -> String {
     value.chars().take(width).collect()
-}
-
-fn popup_area(area: Rect) -> Rect {
-    let width = if area.width < 48 {
-        area.width.saturating_sub(2).max(24).min(area.width)
-    } else {
-        area.width.saturating_sub(4).clamp(40, 72)
-    };
-    let max_height = ((area.height as f32) * 0.8).round() as u16;
-    let height = max_height.max(8).min(area.height.saturating_sub(2).max(1));
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
 }
 
 #[cfg(test)]

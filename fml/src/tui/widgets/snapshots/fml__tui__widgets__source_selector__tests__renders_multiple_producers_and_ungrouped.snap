@@ -1,7 +1,9 @@
 ---
 source: fml/src/tui/widgets/source_selector.rs
+assertion_line: 477
 expression: "render(state(sources, &[\"api\", \"syslog\", \"web\"]), 88, 26)"
 ---
+                                                                                        
                                                                                         
                                                                                         
             ┌ Sources ─────────────────────────────────────────────────────┐            
@@ -21,7 +23,6 @@ expression: "render(state(sources, &[\"api\", \"syslog\", \"web\"]), 88, 26)"
             │  [ ] namespace2                                           0/1│            
             │    [ ] deployments                                        0/1│            
             │      [ ] worker                                              │            
-            │                                                              │            
             │                                                              │            
             │space toggle  a all  n none  esc close                        │            
             └──────────────────────────────────────────────────────────────┘

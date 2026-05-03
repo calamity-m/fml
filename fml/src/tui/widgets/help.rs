@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
@@ -11,7 +11,7 @@ use crate::{
     tui::{
         keybinds::{self, HelpSection, KeyActionHint},
         layout::Slot,
-        widgets::FmlPopupWidget,
+        widgets::{FmlPopupWidget, PopupSize, header_style, popup_area},
     },
 };
 
@@ -39,7 +39,17 @@ impl FmlPopupWidget for Help {
             return;
         }
 
-        let popup_area = popup_area(area);
+        let lines = help_lines(state);
+        let desired_height = (lines.len() as u16).saturating_add(2);
+        let popup_area = popup_area(
+            area,
+            PopupSize {
+                min_width: 20,
+                max_width: 56,
+                desired_height,
+                min_height: 8,
+            },
+        );
         frame.render_widget(Clear, popup_area);
 
         let base_style = state.selected_theme.surface_style();
@@ -51,7 +61,7 @@ impl FmlPopupWidget for Help {
         let inner = block.inner(popup_area);
         frame.render_widget(block, popup_area);
 
-        frame.render_widget(Paragraph::new(help_lines(state)).style(base_style), inner);
+        frame.render_widget(Paragraph::new(lines).style(base_style), inner);
     }
 }
 
@@ -88,14 +98,7 @@ fn push_section(
     if !lines.is_empty() {
         lines.push(Line::from(""));
     }
-    lines.push(Line::styled(
-        title,
-        state
-            .selected_theme
-            .surface_style()
-            .fg(state.selected_theme.primary_accent_fg)
-            .add_modifier(Modifier::BOLD),
-    ));
+    lines.push(Line::styled(title, header_style(&state.selected_theme)));
 
     for hint in keybinds::hints_for_section(section) {
         lines.push(render_hint(hint, state));
@@ -117,24 +120,4 @@ fn render_hint(hint: &KeyActionHint, state: &TuiState) -> Line<'static> {
         Span::styled(format!("  {:<14}", hint.label), key_style),
         Span::styled(hint.title, dim_style),
     ])
-}
-
-fn popup_area(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).clamp(20, 56);
-    let height = area.height.saturating_sub(4).clamp(8, 22);
-
-    let vertical = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(height),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-    let horizontal = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(width),
-        Constraint::Fill(1),
-    ])
-    .split(vertical[1]);
-
-    horizontal[1]
 }

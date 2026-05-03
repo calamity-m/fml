@@ -10,7 +10,7 @@ use ratatui::{
 use crate::{
     log::{Source, SourceId},
     state::tui_state::{ActivePopup, TuiState},
-    tui::widgets::FmlPopupWidget,
+    tui::widgets::{FmlPopupWidget, PopupSize, header_style, popup_area, render_footer_hints},
 };
 
 const UNGROUPED_LABEL: &str = "(ungrouped)";
@@ -74,10 +74,35 @@ impl FmlPopupWidget for SourceSelector {
         }
 
         let rows = source_selector_rows(state);
-        let popup_area = popup_area(area);
+
+        // Estimate width to decide narrow mode for header/footer accounting before
+        // we know the final popup_area. Match the shared helper's clamp logic.
+        let approx_width = if area.width < 44 {
+            area.width.saturating_sub(2).max(40u16.min(area.width))
+        } else {
+            area.width.saturating_sub(4).clamp(40, 64)
+        };
+        let narrow = approx_width < 48;
+        let header_rows: u16 = if narrow { 0 } else { 2 };
+        let footer_rows: u16 = 2; // 1 blank spacer + 1 hint line
+
+        let desired_height = header_rows
+            .saturating_add(rows.len() as u16)
+            .saturating_add(footer_rows)
+            .saturating_add(2); // borders
+
+        let popup_area = popup_area(
+            area,
+            PopupSize {
+                min_width: 40,
+                max_width: 64,
+                desired_height,
+                min_height: 8,
+            },
+        );
         let narrow = popup_area.width < 48;
-        let header_rows = if narrow { 0 } else { 2 };
-        let footer_rows = 2;
+        let header_rows: usize = if narrow { 0 } else { 2 };
+        let footer_rows: usize = 2;
         let inner_height = popup_area.height.saturating_sub(2) as usize;
         let visible_rows = inner_height
             .saturating_sub(header_rows + footer_rows)
@@ -98,7 +123,10 @@ impl FmlPopupWidget for SourceSelector {
 
         let mut lines = Vec::new();
         if !narrow {
-            lines.push(Line::from("Filter visible logs by source"));
+            lines.push(Line::styled(
+                "Filter visible logs by source",
+                header_style(&state.selected_theme),
+            ));
             lines.push(Line::from(""));
         }
 
@@ -121,12 +149,17 @@ impl FmlPopupWidget for SourceSelector {
         }
 
         lines.push(Line::from(""));
-        let footer = if narrow {
-            "space toggle   esc close"
+        let footer_hints: &[(&str, &str)] = if narrow {
+            &[("space", "toggle"), ("esc", "close")]
         } else {
-            "space toggle  a all  n none  esc close"
+            &[
+                ("space", "toggle"),
+                ("a", "all"),
+                ("n", "none"),
+                ("esc", "close"),
+            ]
         };
-        lines.push(Line::from(footer));
+        lines.push(render_footer_hints(footer_hints, &state.selected_theme));
 
         frame.render_widget(Paragraph::new(lines).style(base_style), inner);
     }
@@ -333,22 +366,6 @@ fn pad_with_right_count(label: &str, count: &str, width: usize) -> String {
 
 fn fit_to_width(value: &str, width: usize) -> String {
     value.chars().take(width).collect()
-}
-
-fn popup_area(area: Rect) -> Rect {
-    let width = if area.width < 48 {
-        area.width.saturating_sub(2).max(24).min(area.width)
-    } else {
-        area.width.saturating_sub(4).clamp(40, 64)
-    };
-    let max_height = ((area.height as f32) * 0.8).round() as u16;
-    let height = max_height.max(8).min(area.height.saturating_sub(2).max(1));
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
 }
 
 #[cfg(test)]

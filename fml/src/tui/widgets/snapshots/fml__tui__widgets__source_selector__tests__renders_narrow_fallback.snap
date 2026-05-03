@@ -1,7 +1,9 @@
 ---
 source: fml/src/tui/widgets/source_selector.rs
+assertion_line: 488
 expression: "render(state(sources, &[\"src-b\", \"src-c\"]), 36, 14)"
 ---
+                                    
                                     
  ┌ Sources ───────────────────────┐ 
  │> [-] fake                      │ 
@@ -11,6 +13,5 @@ expression: "render(state(sources, &[\"src-b\", \"src-c\"]), 36, 14)"
  │    [x] frontend                │ 
  │      [x] Service C             │ 
  │                                │ 
- │                                │ 
- │space toggle   esc close        │ 
+ │space toggle  esc close         │ 
  └────────────────────────────────┘
