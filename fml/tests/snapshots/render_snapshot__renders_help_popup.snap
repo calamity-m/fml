@@ -10,17 +10,17 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┃           │  tab           Cycle focus                           │-a         │
 ┃           │  ?             Help                                  │───────────┘
 ┃           │  ctrl+s        Sources                               │SURROUNDING┐
+┃           │  ctrl+p        Preview mode                          │           │
 ┃           │                                                      │           │
 ┃           │Log pane                                              │           │
 ┃           │  k / up        Move up                               │           │
 ┃           │  j / down      Move down                             │           │
-┃           │  g / home      Jump head                             │           │
-┃           │  G / end       Jump tail                             │c-a entry 1│
-┃           │  enter         Entry detail                          │c-a entry 2│
-┃           │                                                      │c-a entry 3│
+┃           │  g / home      Jump head                             │c-a entry 1│
+┃           │  G / end       Jump tail                             │c-a entry 2│
+┃           │  enter         Entry detail                          │c-a entry 3│
+┃           │                                                      │           │
 ┃           │Help popup                                            │           │
 ┃           │  esc / ?       Close                                 │           │
-┃           │                                                      │           │
 ┗━━━━━━━━━━━│                                                      │           │
 ┌ Query ────│                                                      │           │
 │>  Enter a └──────────────────────────────────────────────────────┘           │

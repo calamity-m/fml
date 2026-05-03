@@ -24,6 +24,7 @@ use crate::{
     store::LogStore,
 };
 
+pub mod field_matched;
 pub mod fuzzy;
 pub mod history;
 pub mod tail;
@@ -172,7 +173,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
 
             let tick_rate = match &query {
                 Query::Tail => Duration::from_millis(state.config.search.tail_poll_interval_ms),
-                Query::History { .. } | Query::Surrounding { .. } => {
+                Query::History { .. } | Query::Surrounding { .. } | Query::FieldMatched { .. } => {
                     Duration::from_millis(state.config.search.history_poll_interval_ms)
                 }
                 Query::Fuzzy(_) => Duration::from_millis(state.config.search.fuzzy_tick_rate_ms),
@@ -197,6 +198,16 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     middle_seq_id,
                     buffer,
                 } => history::start_history_search(ctx, *middle_seq_id, *buffer),
+                Query::FieldMatched {
+                    anchor_seq_id,
+                    buffer,
+                    predicates,
+                } => field_matched::start_field_matched_search(
+                    ctx,
+                    *anchor_seq_id,
+                    *buffer,
+                    predicates.clone(),
+                ),
                 Query::Fuzzy(_) => fuzzy::start_fuzzy_search(
                     ctx,
                     fuzzy::FuzzySearchOptions {
@@ -260,11 +271,21 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 warn!("failed to fetch search result entries from store: {err}");
             }
             if target == SearchTarget::PreviewPane {
-                if let Query::Surrounding { middle_seq_id, .. } = query {
-                    state
-                        .tui
-                        .preview_pane
-                        .apply_surrounding(middle_seq_id, entries);
+                match query {
+                    Query::Surrounding { middle_seq_id, .. } => {
+                        state
+                            .tui
+                            .preview_pane
+                            .apply_surrounding(middle_seq_id, entries);
+                    }
+                    Query::FieldMatched { anchor_seq_id, .. } => {
+                        state.tui.preview_pane.apply_field_matched(
+                            anchor_seq_id,
+                            entries,
+                            retained_bounds,
+                        );
+                    }
+                    _ => {}
                 }
                 return state;
             }
@@ -307,17 +328,18 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use chrono::Utc;
+    use serde_json::json;
 
     use super::*;
     use crate::{
         config::Config,
-        event::{Match, ProducerEvent, SearchProgress},
+        event::{FieldPredicate, Match, ProducerEvent, SearchProgress},
         log::{LogLevel, NewLogEntry, Source},
         producer,
-        state::AppState,
+        state::{AppState, tui_state::preview_pane_state::PreviewStatus},
     };
 
     fn state_with_entries(count: u64) -> AppState {
@@ -355,6 +377,13 @@ mod tests {
         {
             TuiEvent::NewSelectedEntry(selected_entry) => selected_entry,
             event => panic!("expected selected entry event, got {event:?}"),
+        }
+    }
+
+    fn hit(seq_id: u64) -> SearchHit {
+        SearchHit {
+            seq_id,
+            matches: Vec::new(),
         }
     }
 
@@ -581,6 +610,169 @@ mod tests {
             vec![2, 3, 4]
         );
         assert!(state.event_bus.tui_event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn preview_field_matched_result_updates_preview_state_only() {
+        let mut state = state_with_entries(5);
+        state.tui.preview_pane.start_active_mode(3);
+        state
+            .search
+            .client_mut(SearchTarget::PreviewPane)
+            .latest_request_id = 1;
+
+        let mut state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::PreviewPane,
+                query: Query::FieldMatched {
+                    anchor_seq_id: 3,
+                    buffer: 2,
+                    predicates: vec![FieldPredicate {
+                        key: "request_id".to_string(),
+                        value: json!("abc"),
+                    }],
+                },
+                results: vec![hit(2), hit(3), hit(5)],
+                request_id: 1,
+                complete: true,
+                progress: None,
+            },
+            state,
+        );
+
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::Ready);
+        assert_eq!(
+            state
+                .tui
+                .preview_pane
+                .items()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 5]
+        );
+        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn preview_field_matched_result_reports_no_matches() {
+        let mut state = state_with_entries(5);
+        state.tui.preview_pane.start_active_mode(3);
+        state
+            .search
+            .client_mut(SearchTarget::PreviewPane)
+            .latest_request_id = 1;
+
+        let state = handle_search_event(
+            SearchEvent::Result {
+                target: SearchTarget::PreviewPane,
+                query: Query::FieldMatched {
+                    anchor_seq_id: 3,
+                    buffer: 2,
+                    predicates: vec![FieldPredicate {
+                        key: "request_id".to_string(),
+                        value: json!("abc"),
+                    }],
+                },
+                results: Vec::new(),
+                request_id: 1,
+                complete: true,
+                progress: None,
+            },
+            state,
+        );
+
+        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoMatches);
+    }
+
+    #[tokio::test]
+    async fn field_matched_search_event_routes_to_worker_with_preview_request_id() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        for (seq, source_id, fields) in [
+            (
+                1,
+                "src-a",
+                HashMap::from([("trace_id".to_string(), json!("t1"))]),
+            ),
+            (2, "src-a", HashMap::new()),
+            (
+                3,
+                "src-b",
+                HashMap::from([("trace_id".to_string(), json!("t1"))]),
+            ),
+        ] {
+            state = producer::handle_producer_event(
+                ProducerEvent::StoreEvent(NewLogEntry {
+                    msg: format!("entry {seq}"),
+                    ts: Utc::now(),
+                    level: Some(LogLevel::Info),
+                    source: Source {
+                        producer: "fake".to_string(),
+                        id: source_id.to_string(),
+                        display_name: source_id.to_string(),
+                        group: None,
+                    },
+                    fields,
+                }),
+                state,
+            );
+        }
+
+        let mut state = handle_search_event(
+            SearchEvent::Search {
+                target: SearchTarget::PreviewPane,
+                query: Query::FieldMatched {
+                    anchor_seq_id: 3,
+                    buffer: 4,
+                    predicates: vec![FieldPredicate {
+                        key: "trace_id".to_string(),
+                        value: json!("t1"),
+                    }],
+                },
+                sources: vec!["ignored".to_string()],
+            },
+            state,
+        );
+
+        let event = tokio::time::timeout(
+            Duration::from_secs(2),
+            state.event_bus.search_event_rx.recv(),
+        )
+        .await
+        .expect("timed out awaiting field-matched result")
+        .expect("search event");
+        state.search.cancel(SearchTarget::PreviewPane);
+
+        match event {
+            SearchEvent::Result {
+                target,
+                query,
+                results,
+                request_id,
+                complete,
+                progress,
+            } => {
+                assert_eq!(target, SearchTarget::PreviewPane);
+                assert!(matches!(
+                    query,
+                    Query::FieldMatched {
+                        anchor_seq_id: 3,
+                        ..
+                    }
+                ));
+                assert_eq!(request_id, 1);
+                assert!(complete);
+                assert_eq!(progress, None);
+                assert_eq!(
+                    results
+                        .into_iter()
+                        .map(|result| result.seq_id)
+                        .collect::<Vec<_>>(),
+                    vec![1, 3]
+                );
+            }
+            event => panic!("expected field-matched result, got {event:?}"),
+        }
     }
 
     #[test]

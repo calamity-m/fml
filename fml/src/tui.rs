@@ -22,7 +22,10 @@ use crate::{
     error::FmlError,
     event::{Query, QuitEvent, SearchEvent, SearchTarget, TuiEvent},
     log::SourceId,
-    state::{AppState, tui_state::ActivePopup},
+    state::{
+        AppState,
+        tui_state::{ActivePopup, preview_pane_state::PreviewModeCycle},
+    },
     tui::{
         keybinds::{CustomizedKeyAction, StaticKeyAction},
         layout::Slot,
@@ -116,6 +119,9 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
             let mut state = state;
             state.tui.selected_entry = selected_entry.clone();
             state.tui.info_pane_scroll_offset = 0;
+            if state.tui.field_picker_is_open() {
+                state.tui.prune_field_picker_selection_to_selected_entry();
+            }
             state.tui.preview_pane.selected_entry_changed(
                 selected_entry.as_ref(),
                 state.config.search.tail_size as u64,
@@ -155,6 +161,17 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                     // is pretty bad. So, what can we do? PANIC PANIC PANIC.
                     panic!("failed to quit - {}", err);
                 }
+                return state;
+            }
+
+            if custom_key == CustomizedKeyAction::TogglePreviewMode {
+                handle_preview_mode_toggle(&mut state);
+                return state;
+            }
+
+            if key.code == KeyCode::Esc && state.tui.field_picker_is_open() {
+                state.tui.preview_pane.cancel_field_selection();
+                state.tui.close_field_picker();
                 return state;
             }
 
@@ -230,10 +247,60 @@ fn handle_popup_input(
     state: &mut AppState,
 ) -> bool {
     match state.tui.active_popup() {
+        Some(ActivePopup::FieldPicker) => handle_field_picker_input(key, custom_key, state),
         Some(ActivePopup::Help) => handle_help_popup_input(custom_key, state),
         Some(ActivePopup::SourceSelector) => handle_source_selector_input(key, custom_key, state),
         None => false,
     }
+}
+
+fn handle_field_picker_input(
+    key: &crossterm::event::KeyEvent,
+    custom_key: CustomizedKeyAction,
+    state: &mut AppState,
+) -> bool {
+    if custom_key == CustomizedKeyAction::ToggleHelp {
+        state.tui.preview_pane.cancel_field_selection();
+        state.tui.toggle_help();
+        return true;
+    }
+    if custom_key == CustomizedKeyAction::ToggleSourceSelector {
+        state.tui.preview_pane.cancel_field_selection();
+        state.tui.open_source_selector(&state.producer.sources);
+        return true;
+    }
+
+    match key.code {
+        KeyCode::Enter => {
+            let selected_keys = state.tui.selected_field_picker_keys();
+            if selected_keys.is_empty() {
+                return true;
+            }
+            if let Some(selected_entry) = state.tui.selected_entry.clone() {
+                state.tui.preview_pane.apply_field_selection(
+                    &selected_entry,
+                    &selected_keys,
+                    state.config.search.tail_size as u64,
+                    &state.event_bus.search_event_tx,
+                );
+                state.tui.close_field_picker();
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let row_count = widgets::field_picker::field_picker_row_count(&state.tui);
+            state.tui.field_picker_cursor_up(row_count);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let row_count = widgets::field_picker::field_picker_row_count(&state.tui);
+            state.tui.field_picker_cursor_down(row_count);
+        }
+        KeyCode::Char(' ') => {
+            widgets::field_picker::toggle_selected_row(&mut state.tui);
+        }
+        _ => {}
+    }
+
+    true
 }
 
 fn handle_help_popup_input(custom_key: CustomizedKeyAction, state: &mut AppState) -> bool {
@@ -287,6 +354,32 @@ fn handle_source_selector_input(
     }
 
     true
+}
+
+fn handle_preview_mode_toggle(state: &mut AppState) {
+    if state.tui.field_picker_is_open() {
+        state.tui.preview_pane.skip_field_selection_cycle();
+        state.tui.close_field_picker();
+        if let Some(selected_entry) = state.tui.selected_entry.as_ref() {
+            state.tui.preview_pane.selected_entry_changed(
+                Some(selected_entry),
+                state.config.search.tail_size as u64,
+                &state.event_bus.search_event_tx,
+            );
+        }
+        return;
+    } else if state.tui.active_popup().is_some() {
+        state.tui.close_popup();
+    }
+
+    let result = state.tui.preview_pane.cycle_mode(
+        state.tui.selected_entry.as_ref(),
+        state.config.search.tail_size as u64,
+        &state.event_bus.search_event_tx,
+    );
+    if result == PreviewModeCycle::NeedsFieldSelection {
+        state.tui.open_field_picker();
+    }
 }
 
 fn handle_source_selection_changed(state: &mut AppState) {
@@ -434,16 +527,21 @@ mod tests {
     use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::widgets::ScrollDirection;
+    use serde_json::json;
 
     use super::*;
     use crate::{
         config::Config,
-        event::{SelectedEntry, TuiEvent},
+        event::{FieldPredicate, SelectedEntry, TuiEvent},
         log::{LogEntry, LogLevel, Source},
-        state::tui_state::preview_pane_state::PreviewStatus,
+        state::tui_state::preview_pane_state::{PreviewMode, PreviewStatus},
     };
 
     fn entry(seq: u64) -> Arc<LogEntry> {
+        entry_with_fields(seq, HashMap::new())
+    }
+
+    fn entry_with_fields(seq: u64, fields: HashMap<String, serde_json::Value>) -> Arc<LogEntry> {
         Arc::new(LogEntry {
             seq,
             msg: format!("entry {seq}"),
@@ -455,7 +553,7 @@ mod tests {
                 display_name: "src-a".to_string(),
                 group: None,
             },
-            fields: HashMap::new(),
+            fields,
         })
     }
 
@@ -1163,5 +1261,227 @@ mod tests {
                 target: SearchTarget::LogPane
             })
         ));
+    }
+
+    #[test]
+    fn field_picker_enter_applies_selected_fields_and_closes() {
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry_with_fields(
+                    7,
+                    HashMap::from([
+                        ("status".to_string(), json!(500)),
+                        ("trace".to_string(), json!("abc")),
+                    ]),
+                ),
+                matches: Vec::new(),
+            })),
+            AppState::new(Config::default()).expect("app state"),
+        );
+        let _ = recv_search_event(&mut state);
+        state.tui.preview_pane.mode = PreviewMode::Expanded;
+        state.tui.preview_pane.open_field_selection();
+        state.tui.open_field_picker();
+        state.tui.toggle_field_picker_key("trace");
+
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.tui.active_popup(), None);
+        assert_eq!(
+            state.tui.preview_pane.mode,
+            PreviewMode::FieldMatched {
+                predicates: vec![FieldPredicate {
+                    key: "trace".to_string(),
+                    value: json!("abc"),
+                }],
+            }
+        );
+        match recv_search_event(&mut state) {
+            SearchEvent::Search {
+                target,
+                query:
+                    Query::FieldMatched {
+                        anchor_seq_id,
+                        predicates,
+                        ..
+                    },
+                sources,
+            } => {
+                assert_eq!(target, SearchTarget::PreviewPane);
+                assert_eq!(anchor_seq_id, 7);
+                assert_eq!(
+                    predicates,
+                    vec![FieldPredicate {
+                        key: "trace".to_string(),
+                        value: json!("abc"),
+                    }]
+                );
+                assert!(sources.is_empty());
+            }
+            event => panic!("expected field-matched preview search, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn field_picker_escape_cancels_without_losing_previous_mode() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.preview_pane.mode = PreviewMode::Expanded;
+        state.tui.preview_pane.open_field_selection();
+        state.tui.open_field_picker();
+
+        let state = handle_tui_event(input(KeyCode::Esc), state);
+
+        assert_eq!(state.tui.active_popup(), None);
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+    }
+
+    #[test]
+    fn field_picker_enter_with_no_selection_keeps_previous_mode() {
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry_with_fields(7, HashMap::from([("trace".to_string(), json!("abc"))])),
+                matches: Vec::new(),
+            })),
+            AppState::new(Config::default()).expect("app state"),
+        );
+        let _ = recv_search_event(&mut state);
+        state.tui.preview_pane.mode = PreviewMode::Expanded;
+        state.tui.preview_pane.open_field_selection();
+        state.tui.open_field_picker();
+
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+        assert!(state.event_bus.search_event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn selected_entry_change_rebuilds_open_field_picker_selection() {
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry_with_fields(
+                    7,
+                    HashMap::from([
+                        ("status".to_string(), json!(500)),
+                        ("trace".to_string(), json!("abc")),
+                    ]),
+                ),
+                matches: Vec::new(),
+            })),
+            AppState::new(Config::default()).expect("app state"),
+        );
+        let _ = recv_search_event(&mut state);
+        state.tui.preview_pane.open_field_selection();
+        state.tui.open_field_picker();
+        state.tui.toggle_field_picker_key("status");
+        state.tui.toggle_field_picker_key("trace");
+
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry_with_fields(
+                    8,
+                    HashMap::from([
+                        ("trace".to_string(), json!("abc")),
+                        ("user".to_string(), json!("calam")),
+                    ]),
+                ),
+                matches: Vec::new(),
+            })),
+            state,
+        );
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
+        assert_eq!(
+            state.tui.selected_field_picker_keys(),
+            vec!["trace".to_string()]
+        );
+        match recv_search_event(&mut state) {
+            SearchEvent::Search {
+                query:
+                    Query::Surrounding {
+                        middle_seq_id: 8, ..
+                    },
+                ..
+            } => {}
+            event => panic!("expected surrounding preview redispatch, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_p_cycles_preview_modes_and_opens_field_picker() {
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry_with_fields(7, HashMap::from([("trace".to_string(), json!("abc"))])),
+                matches: Vec::new(),
+            })),
+            AppState::new(Config::default()).expect("app state"),
+        );
+        let _ = recv_search_event(&mut state);
+
+        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
+
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+        match recv_search_event(&mut state) {
+            SearchEvent::Search {
+                target,
+                query:
+                    Query::Surrounding {
+                        middle_seq_id: 7, ..
+                    },
+                ..
+            } => assert_eq!(target, SearchTarget::PreviewPane),
+            event => panic!("expected expanded surrounding preview search, got {event:?}"),
+        }
+
+        state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
+
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+
+        state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
+
+        assert_eq!(state.tui.active_popup(), None);
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
+        match recv_search_event(&mut state) {
+            SearchEvent::Search {
+                target,
+                query:
+                    Query::Surrounding {
+                        middle_seq_id: 7, ..
+                    },
+                ..
+            } => assert_eq!(target, SearchTarget::PreviewPane),
+            event => panic!("expected surrounding preview search after picker skip, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_p_closes_existing_popup_then_switches_preview_mode() {
+        let mut state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry(7),
+                matches: Vec::new(),
+            })),
+            AppState::new(Config::default()).expect("app state"),
+        );
+        let _ = recv_search_event(&mut state);
+        state.producer.sources = vec![source("src-a")];
+        state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
+
+        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
+
+        assert_eq!(state.tui.active_popup(), None);
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+        match recv_search_event(&mut state) {
+            SearchEvent::Search {
+                query:
+                    Query::Surrounding {
+                        middle_seq_id: 7, ..
+                    },
+                ..
+            } => {}
+            event => panic!("expected preview mode redispatch, got {event:?}"),
+        }
     }
 }

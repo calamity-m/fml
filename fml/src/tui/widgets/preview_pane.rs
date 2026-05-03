@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ratatui::{
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, List, ListItem, ListState},
+    widgets::{Block, List, ListItem, ListState, Paragraph},
 };
 
 use crate::{
@@ -28,20 +28,50 @@ impl PreviewPane {
         PreviewPane {}
     }
 
-    fn title(mode: PreviewMode) -> &'static str {
+    fn title(mode: &PreviewMode) -> &'static str {
         match mode {
             PreviewMode::Surrounding => " Preview [ SURROUNDING ] ",
+            PreviewMode::Expanded => " Preview [ EXPANDED ] ",
+            PreviewMode::FieldMatched { .. } => " Preview [ FIELD MATCHED ] ",
         }
     }
 
-    fn render_line(entry: &Arc<LogEntry>, state: &TuiState, is_anchor: bool) -> Line<'static> {
-        let mut base_style = state
-            .selected_theme
-            .surface_style()
-            .fg(state.selected_theme.log_row_fg(entry.level));
-        if !is_anchor {
-            base_style = base_style.add_modifier(Modifier::DIM);
+    fn status_message(status: PreviewStatus, mode: &PreviewMode) -> Option<&'static str> {
+        match status {
+            PreviewStatus::NoSelection => Some("No log selected"),
+            PreviewStatus::Loading => match mode {
+                PreviewMode::Expanded => Some("Loading expanded preview..."),
+                PreviewMode::Surrounding | PreviewMode::FieldMatched { .. } => {
+                    Some("Loading surrounding logs...")
+                }
+            },
+            PreviewStatus::AnchorEvicted => Some("Selected log anchor no longer retained"),
+            PreviewStatus::NoMatches => Some("No matching retained logs"),
+            PreviewStatus::Ready => None,
         }
+    }
+
+    fn entry_style(
+        entry: &Arc<LogEntry>,
+        state: &TuiState,
+        is_anchor: bool,
+    ) -> ratatui::style::Style {
+        let mut style = if is_anchor {
+            state.selected_theme.selected_style()
+        } else {
+            state.selected_theme.surface_style()
+        }
+        .fg(state.selected_theme.log_row_fg(entry.level));
+
+        if !is_anchor {
+            style = style.add_modifier(Modifier::DIM);
+        }
+
+        style
+    }
+
+    fn render_line(entry: &Arc<LogEntry>, state: &TuiState, is_anchor: bool) -> Line<'static> {
+        let base_style = Self::entry_style(entry, state, is_anchor);
         let level = entry
             .level
             .map(|level| level.to_string())
@@ -93,6 +123,158 @@ impl PreviewPane {
 
         (items, anchor_index.map(|_| anchor_row))
     }
+
+    fn expanded_items(state: &TuiState, width: u16, height: usize) -> Vec<Line<'static>> {
+        let anchor_seq = state.tui_preview_anchor_seq();
+        let anchor_index = anchor_seq.and_then(|seq| {
+            state
+                .preview_pane
+                .items()
+                .iter()
+                .position(|entry| entry.seq == seq)
+        });
+
+        let Some(anchor_index) = anchor_index else {
+            return Vec::new();
+        };
+
+        let entry_lines = state
+            .preview_pane
+            .items()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                Self::expanded_entry_lines(entry, state, width, index == anchor_index)
+            })
+            .collect::<Vec<_>>();
+
+        let anchor_row = height / 2;
+        let mut before = entry_lines[..anchor_index]
+            .iter()
+            .flat_map(|lines| lines.iter().cloned())
+            .collect::<Vec<_>>();
+        if before.len() > anchor_row {
+            before = before.split_off(before.len() - anchor_row);
+        }
+
+        let mut lines = Vec::with_capacity(height);
+        lines.extend(std::iter::repeat_with(Line::default).take(anchor_row - before.len()));
+        lines.extend(before);
+        lines.extend(entry_lines[anchor_index].iter().cloned());
+
+        for line in entry_lines[anchor_index + 1..]
+            .iter()
+            .flat_map(|lines| lines.iter().cloned())
+        {
+            if lines.len() >= height {
+                break;
+            }
+            lines.push(line);
+        }
+
+        lines.truncate(height);
+        lines
+    }
+
+    fn expanded_entry_lines(
+        entry: &Arc<LogEntry>,
+        state: &TuiState,
+        width: u16,
+        is_anchor: bool,
+    ) -> Vec<Line<'static>> {
+        let style = Self::entry_style(entry, state, is_anchor);
+        let level = entry
+            .level
+            .map(|level| level.to_string())
+            .unwrap_or_else(|| "----".to_string());
+        let marker = if is_anchor { "> " } else { "  " };
+        let prefix = format!(
+            "{marker}{} {level} {} ",
+            entry.seq, entry.source.display_name
+        );
+        let continuation_prefix = " ".repeat(prefix.chars().count());
+
+        Self::wrap_entry_text(&prefix, &continuation_prefix, &entry.msg, width)
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, style)))
+            .collect()
+    }
+
+    fn wrap_entry_text(
+        prefix: &str,
+        continuation_prefix: &str,
+        message: &str,
+        width: u16,
+    ) -> Vec<String> {
+        let width = usize::from(width).max(1);
+        let prefix_width = prefix.chars().count();
+
+        if prefix_width >= width {
+            return Self::wrap_words(&format!("{prefix}{message}"), width, width);
+        }
+
+        let first_width = width.saturating_sub(prefix_width).max(1);
+        let continuation_width = width
+            .saturating_sub(continuation_prefix.chars().count())
+            .max(1);
+        let message_lines = Self::wrap_words(message, first_width, continuation_width);
+
+        message_lines
+            .into_iter()
+            .enumerate()
+            .map(|(index, line)| {
+                if index == 0 {
+                    format!("{prefix}{line}")
+                } else {
+                    format!("{continuation_prefix}{line}")
+                }
+            })
+            .collect()
+    }
+
+    fn wrap_words(text: &str, first_width: usize, continuation_width: usize) -> Vec<String> {
+        let chars = text.chars().collect::<Vec<_>>();
+        if chars.is_empty() {
+            return vec![String::new()];
+        }
+
+        let mut lines = Vec::new();
+        let mut start = 0;
+        while start < chars.len() {
+            while chars.get(start).is_some_and(|ch| ch.is_whitespace()) {
+                start += 1;
+            }
+
+            if start >= chars.len() {
+                break;
+            }
+
+            let width = if lines.is_empty() {
+                first_width
+            } else {
+                continuation_width
+            };
+            let hard_end = start.saturating_add(width).min(chars.len());
+            let end = if hard_end < chars.len() {
+                chars[start..hard_end]
+                    .iter()
+                    .rposition(|ch| ch.is_whitespace())
+                    .filter(|idx| *idx > 0)
+                    .map(|idx| start + idx)
+                    .unwrap_or(hard_end)
+            } else {
+                hard_end
+            };
+
+            lines.push(chars[start..end].iter().collect());
+            start = end;
+        }
+
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
 }
 
 trait PreviewAnchor {
@@ -117,7 +299,7 @@ impl FmlWidget for PreviewPane {
         state: &mut TuiState,
     ) {
         let block = Block::bordered()
-            .title(Self::title(state.preview_pane.mode))
+            .title(Self::title(&state.preview_pane.mode))
             .border_style(
                 state
                     .selected_theme
@@ -129,29 +311,26 @@ impl FmlWidget for PreviewPane {
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
 
-        match state.preview_pane.status {
-            PreviewStatus::NoSelection => {
+        if let Some(message) =
+            Self::status_message(state.preview_pane.status, &state.preview_pane.mode)
+        {
+            frame.render_widget(
+                Paragraph::new(message).style(state.selected_theme.surface_style()),
+                inner_area,
+            );
+            return;
+        }
+
+        match state.preview_pane.mode {
+            PreviewMode::Expanded => {
+                let lines =
+                    Self::expanded_items(state, inner_area.width, inner_area.height as usize);
                 frame.render_widget(
-                    ratatui::widgets::Paragraph::new("No log selected")
-                        .style(state.selected_theme.surface_style()),
+                    Paragraph::new(lines).style(state.selected_theme.surface_style()),
                     inner_area,
                 );
             }
-            PreviewStatus::Loading => {
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new("Loading surrounding logs...")
-                        .style(state.selected_theme.surface_style()),
-                    inner_area,
-                );
-            }
-            PreviewStatus::AnchorEvicted => {
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new("Selected log is no longer retained")
-                        .style(state.selected_theme.surface_style()),
-                    inner_area,
-                );
-            }
-            PreviewStatus::Ready => {
+            PreviewMode::Surrounding | PreviewMode::FieldMatched { .. } => {
                 let (items, selected) = Self::centered_items(state, inner_area.height as usize);
                 let list = List::new(items)
                     .style(state.selected_theme.surface_style())
@@ -186,9 +365,13 @@ mod tests {
     };
 
     fn entry(seq: u64) -> Arc<LogEntry> {
+        entry_with_msg(seq, &format!("entry {seq}"))
+    }
+
+    fn entry_with_msg(seq: u64, msg: &str) -> Arc<LogEntry> {
         Arc::new(LogEntry {
             seq,
-            msg: format!("entry {seq}"),
+            msg: msg.to_string(),
             ts: Utc::now(),
             level: Some(LogLevel::Info),
             source: Source {
@@ -259,5 +442,139 @@ mod tests {
         assert!(lines[3].contains("> 1 INFO src-a entry 1"));
         assert!(lines[4].contains("2 INFO src-a entry 2"));
         assert!(lines[5].contains("3 INFO src-a entry 3"));
+    }
+
+    #[test]
+    fn expanded_preview_wraps_long_anchor_snapshot() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 10)).expect("terminal");
+        let mut state =
+            TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
+        state.preview_pane.mode = PreviewMode::Expanded;
+        state.preview_pane.start_active_mode(2);
+        state.preview_pane.apply_surrounding(
+            2,
+            vec![
+                entry_with_msg(1, "short before"),
+                entry_with_msg(
+                    2,
+                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
+                ),
+                entry_with_msg(3, "short after"),
+            ],
+        );
+
+        terminal
+            .draw(|frame| PreviewPane::new().render(frame, Rect::new(0, 0, 48, 10), &mut state))
+            .expect("draw");
+
+        insta::assert_snapshot!(buffer_to_string(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn expanded_preview_clips_overflow_lines_snapshot() {
+        let mut terminal = Terminal::new(TestBackend::new(44, 8)).expect("terminal");
+        let mut state =
+            TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
+        state.preview_pane.mode = PreviewMode::Expanded;
+        state.preview_pane.start_active_mode(3);
+        state.preview_pane.apply_surrounding(
+            3,
+            vec![
+                entry_with_msg(1, "old context alpha beta gamma delta epsilon"),
+                entry_with_msg(2, "near context zeta eta theta iota kappa lambda mu"),
+                entry_with_msg(3, "anchor message nu xi omicron pi rho sigma tau"),
+                entry_with_msg(4, "future context upsilon phi chi psi omega"),
+                entry_with_msg(5, "hidden future line"),
+            ],
+        );
+
+        terminal
+            .draw(|frame| PreviewPane::new().render(frame, Rect::new(0, 0, 44, 8), &mut state))
+            .expect("draw");
+
+        insta::assert_snapshot!(buffer_to_string(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn expanded_anchor_rows_use_selected_style() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 10)).expect("terminal");
+        let mut state =
+            TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
+        state.preview_pane.mode = PreviewMode::Expanded;
+        state.preview_pane.start_active_mode(2);
+        state.preview_pane.apply_surrounding(
+            2,
+            vec![
+                entry(1),
+                entry_with_msg(2, "alpha beta gamma delta epsilon zeta eta theta"),
+                entry(3),
+            ],
+        );
+
+        terminal
+            .draw(|frame| PreviewPane::new().render(frame, Rect::new(0, 0, 48, 10), &mut state))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let selected_bg = state
+            .selected_theme
+            .selected_style()
+            .bg
+            .expect("selected style has a background");
+        let anchor_rows = (0..buffer.area().height)
+            .filter(|y| {
+                let row = (0..buffer.area().width)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>();
+                row.contains("> 2 INFO") || row.contains("zeta eta")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(anchor_rows.len() >= 2);
+        for row in anchor_rows {
+            assert_eq!(buffer[(1, row)].bg, selected_bg);
+        }
+    }
+
+    #[test]
+    fn expanded_preview_wraps_in_narrow_pane() {
+        let mut terminal = Terminal::new(TestBackend::new(26, 8)).expect("terminal");
+        let mut state =
+            TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
+        state.preview_pane.mode = PreviewMode::Expanded;
+        state.preview_pane.start_active_mode(1);
+        state
+            .preview_pane
+            .apply_surrounding(1, vec![entry_with_msg(1, "alpha beta gamma delta")]);
+
+        terminal
+            .draw(|frame| PreviewPane::new().render(frame, Rect::new(0, 0, 26, 8), &mut state))
+            .expect("draw");
+
+        let rendered = buffer_to_string(terminal.backend().buffer());
+
+        assert!(rendered.contains("> 1 INFO"));
+        assert!(rendered.contains("alpha"));
+        assert!(rendered.contains("beta"));
+    }
+
+    #[test]
+    fn expanded_anchor_evicted_renders_status_message() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 5)).expect("terminal");
+        let mut state =
+            TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
+        state.preview_pane.mode = PreviewMode::Expanded;
+        state.preview_pane.start_active_mode(2);
+        state
+            .preview_pane
+            .apply_surrounding(2, vec![entry(1), entry(3)]);
+
+        terminal
+            .draw(|frame| PreviewPane::new().render(frame, Rect::new(0, 0, 48, 5), &mut state))
+            .expect("draw");
+
+        let rendered = buffer_to_string(terminal.backend().buffer());
+
+        assert!(rendered.contains("Selected log anchor no longer retained"));
     }
 }

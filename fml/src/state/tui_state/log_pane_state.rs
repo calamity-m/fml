@@ -106,6 +106,7 @@ impl LogPaneState {
             Query::Tail => SearchKind::Tail,
             Query::History { .. } => SearchKind::History,
             Query::Surrounding { .. } => SearchKind::History,
+            Query::FieldMatched { .. } => SearchKind::History,
             Query::Fuzzy(_) => SearchKind::Fuzzy,
         }
     }

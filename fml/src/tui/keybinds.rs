@@ -25,6 +25,8 @@ pub enum CustomizedKeyAction {
     ToggleHelp,
     /// Open or close the source selector popup. Active in global scope.
     ToggleSourceSelector,
+    /// Cycle the preview pane mode. Active in global scope.
+    TogglePreviewMode,
     /// Show the detail popup for the selected log entry.
     /// Active in global scope but only fires when the log pane is focused.
     ShowInfo,
@@ -69,6 +71,11 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
     KeyActionHint {
         title: "Sources",
         label: "ctrl+s",
+        section: HelpSection::Global,
+    },
+    KeyActionHint {
+        title: "Preview mode",
+        label: "ctrl+p",
         section: HelpSection::Global,
     },
     KeyActionHint {
@@ -160,6 +167,9 @@ pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedK
         (KeyCode::Char('?'), _) => CustomizedKeyAction::ToggleHelp,
         (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
             CustomizedKeyAction::ToggleSourceSelector
+        }
+        (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
+            CustomizedKeyAction::TogglePreviewMode
         }
         (KeyCode::Char('g') | KeyCode::Home, _) => CustomizedKeyAction::ScrollHead,
         (KeyCode::Char('G') | KeyCode::End, _) => CustomizedKeyAction::ScrollTail,

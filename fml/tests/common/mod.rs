@@ -17,6 +17,23 @@ pub fn make_entry_with_source_display(
     source_id: &str,
     display_name: &str,
 ) -> NewLogEntry {
+    make_entry_with_source_display_and_fields(msg, source_id, display_name, HashMap::new())
+}
+
+pub fn make_entry_with_fields(
+    msg: &str,
+    source_id: &str,
+    fields: HashMap<String, serde_json::Value>,
+) -> NewLogEntry {
+    make_entry_with_source_display_and_fields(msg, source_id, source_id, fields)
+}
+
+pub fn make_entry_with_source_display_and_fields(
+    msg: &str,
+    source_id: &str,
+    display_name: &str,
+    fields: HashMap<String, serde_json::Value>,
+) -> NewLogEntry {
     NewLogEntry {
         msg: msg.to_string(),
         ts: Utc
@@ -30,7 +47,7 @@ pub fn make_entry_with_source_display(
             display_name: display_name.to_string(),
             group: None,
         },
-        fields: HashMap::new(),
+        fields,
     }
 }
 

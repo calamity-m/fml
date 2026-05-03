@@ -15,6 +15,7 @@ use crate::{
     tui::layout::Slot,
 };
 
+pub mod field_picker;
 pub mod help;
 pub mod highlight;
 pub mod info_pane;

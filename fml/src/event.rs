@@ -84,11 +84,32 @@ pub struct SearchProgress {
     pub total: usize,
 }
 
+/// Exact key/value predicate used by field-matched preview searches.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct FieldPredicate {
+    /// Field key to compare.
+    pub key: String,
+    /// JSON value that must match exactly.
+    pub value: serde_json::Value,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Query {
     Tail,
-    History { middle_seq_id: u64, buffer: u64 },
-    Surrounding { middle_seq_id: u64, buffer: u64 },
+    History {
+        middle_seq_id: u64,
+        buffer: u64,
+    },
+    Surrounding {
+        middle_seq_id: u64,
+        buffer: u64,
+    },
+    /// Preview query for entries whose fields exactly match all predicates.
+    FieldMatched {
+        anchor_seq_id: u64,
+        buffer: u64,
+        predicates: Vec<FieldPredicate>,
+    },
     Fuzzy(String),
 }
 

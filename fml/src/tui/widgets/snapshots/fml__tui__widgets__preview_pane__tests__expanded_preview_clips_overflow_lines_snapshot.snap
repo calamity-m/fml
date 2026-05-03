@@ -1,0 +1,12 @@
+---
+source: fml/src/tui/widgets/preview_pane.rs
+expression: buffer_to_string(terminal.backend().buffer())
+---
+┌ Preview [ EXPANDED ] ────────────────────┐
+│               gamma delta epsilon        │
+│  2 INFO src-a near context zeta eta      │
+│               theta iota kappa lambda mu │
+│> 3 INFO src-a anchor message nu xi       │
+│               omicron pi rho sigma tau   │
+│  4 INFO src-a future context upsilon phi │
+└──────────────────────────────────────────┘

@@ -1,0 +1,14 @@
+---
+source: fml/src/tui/widgets/preview_pane.rs
+expression: buffer_to_string(terminal.backend().buffer())
+---
+┌ Preview [ EXPANDED ] ────────────────────────┐
+│                                              │
+│                                              │
+│                                              │
+│  1 INFO src-a short before                   │
+│> 2 INFO src-a alpha beta gamma delta epsilon │
+│               zeta eta theta iota kappa      │
+│               lambda                         │
+│  3 INFO src-a short after                    │
+└──────────────────────────────────────────────┘
