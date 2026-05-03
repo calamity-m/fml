@@ -125,7 +125,9 @@ pub fn header_style(theme: &ThemeConfig) -> Style {
 /// pairs.
 pub fn render_footer_hints(hints: &[(&str, &str)], theme: &ThemeConfig) -> Line<'static> {
     let base = theme.surface_style();
-    let key_style = base.fg(theme.primary_accent_fg).add_modifier(Modifier::BOLD);
+    let key_style = base
+        .fg(theme.primary_accent_fg)
+        .add_modifier(Modifier::BOLD);
     let desc_style = if theme.status_dim {
         base.add_modifier(Modifier::DIM)
     } else {
