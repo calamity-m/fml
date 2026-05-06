@@ -164,10 +164,19 @@ impl LogPaneState {
 
         let content_length = usize::try_from(retained_count).unwrap_or(usize::MAX);
         let viewport_content_length = self.viewport.height.min(content_length);
-        let clamped_selected = selected_seq.clamp(low, high);
-        let position = usize::try_from(clamped_selected.saturating_sub(low))
-            .unwrap_or(usize::MAX)
-            .min(content_length.saturating_sub(1));
+        // In tail mode the user is always viewing the bottom of the retained
+        // range. `selected_seq` is updated only when a tail worker emission
+        // arrives (every ~150ms) while `retained_bounds.high` advances on every
+        // ingested entry, so deriving the thumb from `selected_seq` makes it
+        // visibly drift upward at high ingest rates. Pin to the bottom instead.
+        let position = if self.mode == ScrollMode::Tail {
+            content_length.saturating_sub(viewport_content_length)
+        } else {
+            let clamped_selected = selected_seq.clamp(low, high);
+            usize::try_from(clamped_selected.saturating_sub(low))
+                .unwrap_or(usize::MAX)
+                .min(content_length.saturating_sub(1))
+        };
 
         Some(ScrollbarMetrics {
             content_length,
@@ -488,8 +497,13 @@ impl LogPaneState {
         let high = self.retained_bounds.1;
         self.mode = ScrollMode::Tail;
         self.viewport.selected_seq = (high != 0).then_some(high);
-        self.viewport.view_start = self.tail_view_start();
-        *cursor = self.visible_items().len().saturating_sub(1);
+        // Do not recompute view_start/cursor from `items` here. When End is
+        // pressed after navigating to a small history window, `items` holds
+        // stale content with fewer than `viewport.height` entries, which would
+        // produce a partial pane until the new tail worker emits (0–150ms).
+        // Spamming End restarts the worker and persists the partial view for
+        // the entire spam duration. Leave the view unchanged; `apply_update`
+        // (Tail) will reconcile when the worker responds.
         Some(Query::Tail)
     }
 
@@ -760,6 +774,7 @@ mod tests {
     #[test]
     fn scrollbar_metrics_clamp_selection_within_retained_bounds() {
         let mut state = LogPaneState::new(500);
+        state.mode = ScrollMode::History;
         state.viewport.height = 4;
         state.retained_bounds = (10, 20);
 
@@ -797,6 +812,7 @@ mod tests {
     #[test]
     fn scrollbar_metrics_saturate_extreme_ranges_without_panicking() {
         let mut state = LogPaneState::new(500);
+        state.mode = ScrollMode::History;
         state.viewport.height = 2;
         state.viewport.selected_seq = Some(u64::MAX);
         state.retained_bounds = (0, u64::MAX);
@@ -809,6 +825,55 @@ mod tests {
                 position: usize::MAX - 1,
             })
         );
+    }
+
+    #[test]
+    fn tail_scrollbar_metrics_pin_to_bottom_regardless_of_selected_seq_lag() {
+        // High ingest rate scenario: retained_bounds advance per entry, but
+        // selected_seq only updates on tail worker emissions (~150ms ticks).
+        // The thumb must remain pinned at the bottom even while selected_seq
+        // lags behind retained_bounds.high.
+        let mut state = LogPaneState::new(500);
+        state.mode = ScrollMode::Tail;
+        state.viewport.height = 21;
+        state.retained_bounds = (1, 8994);
+        state.viewport.selected_seq = Some(8939);
+
+        assert_eq!(
+            state.scrollbar_metrics(),
+            Some(ScrollbarMetrics {
+                content_length: 8994,
+                viewport_content_length: 21,
+                position: 8973,
+            })
+        );
+    }
+
+    #[test]
+    fn jump_tail_does_not_clobber_view_with_stale_items() {
+        // After navigating to a small history window, `items` may contain
+        // fewer entries than viewport.height. End must not recompute view from
+        // those stale items — it should leave the view alone and let the next
+        // tail emission reconcile.
+        let mut state = LogPaneState::new(500);
+        let mut cursor = 0;
+        state.set_height(10, &mut cursor);
+        state.mode = ScrollMode::History;
+        state.retained_bounds = (1, 1000);
+        state.content.items = entries(1, 3);
+        state.viewport.view_start = 0;
+        state.viewport.selected_seq = Some(2);
+        cursor = 1;
+
+        let query = state.jump_tail(&mut cursor);
+
+        assert_eq!(query, Some(Query::Tail));
+        assert_eq!(state.mode, ScrollMode::Tail);
+        assert_eq!(state.viewport.selected_seq, Some(1000));
+        // view_start/cursor untouched — apply_update(Tail) will fix them when
+        // the worker emits.
+        assert_eq!(state.viewport.view_start, 0);
+        assert_eq!(cursor, 1);
     }
 
     #[test]
