@@ -28,7 +28,7 @@ use crate::{
     error::ProducerError,
     event::ProducerEvent,
     log::{Source, SourceId},
-    producer::{LogProducer, file::decode_line, normalizer::Normalizer},
+    producer::{LogProducer, SourceBlock, file::decode_line, normalizer::Normalizer},
 };
 
 type ContainerKey = (String, String);
@@ -39,24 +39,34 @@ pub struct KubernetesProducer {
     namespace: String,
     normalizer: Normalizer,
     cancel: CancellationToken,
+    source_block: Arc<SourceBlock>,
 }
 
 impl KubernetesProducer {
     /// Create a producer using the local kubeconfig and the supplied namespace.
-    pub fn new(namespace: String) -> Result<Self, ProducerError> {
+    pub fn new(namespace: String, source_block: SourceBlock) -> Result<Self, ProducerError> {
         let kubeconfig = Kubeconfig::read()?;
         let client = Client::try_from(kubeconfig)?;
 
-        Ok(KubernetesProducer::new_seeded(namespace, client))
+        Ok(KubernetesProducer::new_seeded(
+            namespace,
+            client,
+            source_block,
+        ))
     }
 
     /// Create a producer from an already-constructed Kubernetes client.
-    pub fn new_seeded(namespace: String, client: Client) -> KubernetesProducer {
+    pub fn new_seeded(
+        namespace: String,
+        client: Client,
+        source_block: SourceBlock,
+    ) -> KubernetesProducer {
         KubernetesProducer {
             client: Arc::new(client),
             namespace,
             normalizer: Normalizer::new(),
             cancel: CancellationToken::new(),
+            source_block: Arc::new(source_block),
         }
     }
 
@@ -72,10 +82,12 @@ impl LogProducer for KubernetesProducer {
         let namespace = self.namespace.clone();
         let normalizer = self.normalizer.clone();
         let cancel = self.cancel.clone();
+        let source_block = self.source_block.clone();
 
         tokio::spawn(async move {
             if let Err(err) =
-                run_kubernetes_producer(client, namespace, normalizer, tx, cancel).await
+                run_kubernetes_producer(client, namespace, normalizer, tx, cancel, source_block)
+                    .await
             {
                 warn!("kubernetes producer exited with error: {err}");
             }
@@ -93,6 +105,7 @@ async fn run_kubernetes_producer(
     normalizer: Normalizer,
     tx: mpsc::Sender<ProducerEvent>,
     cancel: CancellationToken,
+    source_block: Arc<SourceBlock>,
 ) -> Result<(), ProducerError> {
     let pods: Api<Pod> = Api::namespaced((*client).clone(), &namespace);
     let mut events = watcher::watcher(pods.clone(), watcher::Config::default()).boxed();
@@ -107,7 +120,7 @@ async fn run_kubernetes_producer(
                 let Some(event) = event else { break };
                 match event {
                     Ok(Event::Apply(pod)) => {
-                        track_running_containers(&pod, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked).await;
+                        track_running_containers(&pod, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked, &source_block).await;
                     }
                     Ok(Event::Delete(pod)) => {
                         untrack_pod(&pod.name_any(), &namespace, &tx, &mut tracked).await;
@@ -121,7 +134,7 @@ async fn run_kubernetes_producer(
                             let _ = tx.send(ProducerEvent::SourceLost(source_id_for_key(&namespace, &key))).await;
                         }
                         for running in additions {
-                            track_container(running, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked).await;
+                            track_container(running, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked, &source_block).await;
                         }
                     }
                     Err(err) => warn!("kubernetes watcher error in namespace {namespace}: {err}"),
@@ -142,6 +155,7 @@ async fn run_kubernetes_producer(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn track_running_containers(
     pod: &Pod,
     namespace: &str,
@@ -150,6 +164,7 @@ async fn track_running_containers(
     tx: &mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
     tracked: &mut HashMap<ContainerKey, CancellationToken>,
+    source_block: &SourceBlock,
 ) {
     let pod_name = pod.name_any();
     let running = running_containers(pod);
@@ -184,11 +199,13 @@ async fn track_running_containers(
             tx,
             parent_cancel,
             tracked,
+            source_block,
         )
         .await;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn track_container(
     running: RunningContainer,
     namespace: &str,
@@ -197,6 +214,7 @@ async fn track_container(
     tx: &mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
     tracked: &mut HashMap<ContainerKey, CancellationToken>,
+    source_block: &SourceBlock,
 ) {
     let key = running.key();
     if tracked.contains_key(&key) {
@@ -204,6 +222,19 @@ async fn track_container(
     }
 
     let source = pod_container_to_source(&running.pod_name, &running.container_name, namespace);
+
+    // Single source-emission gate. The kubernetes producer has exactly one
+    // SourceFound emission site (this function); blocked sources are dropped
+    // here, so the per-pod log-tail task is never spawned and no
+    // StoreEvent is ever forwarded for them.
+    if source_block.is_source_blocked(&source) {
+        debug!(
+            "kubernetes producer source `{}` blocked by SourceBlock; skipping",
+            source.id
+        );
+        return;
+    }
+
     if tx
         .send(ProducerEvent::SourceFound(source.clone()))
         .await
@@ -476,6 +507,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::config::SourceBlockConfig;
 
     fn pod(name: &str, regular: &[&str], init: &[&str]) -> Pod {
         Pod {
@@ -662,11 +694,135 @@ mod tests {
         assert_eq!(backoff.delay(), Duration::from_millis(100));
     }
 
+    fn unreachable_api() -> Api<Pod> {
+        let config = Config::new("http://127.0.0.1:9".parse().unwrap());
+        let client = Client::try_from(config).expect("test kube client");
+        Api::namespaced(client, "default")
+    }
+
+    #[tokio::test]
+    async fn track_container_skips_blocked_source_by_display_name() {
+        let api = unreachable_api();
+        let cancel = CancellationToken::new();
+        let normalizer = Normalizer::new();
+        let block = SourceBlock::from_config(
+            &SourceBlockConfig {
+                blocked: Some("^istio".to_string()),
+                skip_istio: false,
+            },
+            false,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tracked: HashMap<ContainerKey, CancellationToken> = HashMap::new();
+
+        track_container(
+            RunningContainer {
+                pod_name: "productpage".to_string(),
+                container_name: "istio-proxy".to_string(),
+            },
+            "default",
+            &api,
+            &normalizer,
+            &tx,
+            &cancel,
+            &mut tracked,
+            &block,
+        )
+        .await;
+
+        cancel.cancel();
+        assert!(tracked.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn track_container_skips_blocked_source_via_skip_istio() {
+        let api = unreachable_api();
+        let cancel = CancellationToken::new();
+        let normalizer = Normalizer::new();
+        let block = SourceBlock::from_config(
+            &SourceBlockConfig {
+                blocked: None,
+                skip_istio: true,
+            },
+            false,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tracked: HashMap<ContainerKey, CancellationToken> = HashMap::new();
+
+        // Display name is the container name, e.g. `istio-proxy`.
+        track_container(
+            RunningContainer {
+                pod_name: "productpage".to_string(),
+                container_name: "istio-proxy".to_string(),
+            },
+            "default",
+            &api,
+            &normalizer,
+            &tx,
+            &cancel,
+            &mut tracked,
+            &block,
+        )
+        .await;
+
+        cancel.cancel();
+        assert!(tracked.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn track_container_does_not_skip_unrelated_source() {
+        // Sanity: with a matching block, a non-matching pod still announces.
+        let api = unreachable_api();
+        let cancel = CancellationToken::new();
+        let normalizer = Normalizer::new();
+        let block = SourceBlock::from_config(
+            &SourceBlockConfig {
+                blocked: Some("^istio".to_string()),
+                skip_istio: false,
+            },
+            false,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tracked: HashMap<ContainerKey, CancellationToken> = HashMap::new();
+
+        track_container(
+            RunningContainer {
+                pod_name: "api".to_string(),
+                container_name: "web".to_string(),
+            },
+            "default",
+            &api,
+            &normalizer,
+            &tx,
+            &cancel,
+            &mut tracked,
+            &block,
+        )
+        .await;
+
+        // SourceFound was emitted; cancel before the spawned tail can do work.
+        cancel.cancel();
+        let evt = rx.try_recv().expect("expected SourceFound");
+        match evt {
+            ProducerEvent::SourceFound(s) => {
+                assert_eq!(s.display_name, "web");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(tracked.len(), 1);
+    }
+
     #[tokio::test]
     async fn start_returns_promptly_when_kube_api_is_unreachable() {
         let config = Config::new("http://127.0.0.1:9".parse().unwrap());
         let client = Client::try_from(config).expect("test kube client");
-        let producer = KubernetesProducer::new_seeded("default".to_string(), client);
+        let producer =
+            KubernetesProducer::new_seeded("default".to_string(), client, SourceBlock::none());
         let (tx, _rx) = mpsc::channel(8);
 
         let start = Instant::now();

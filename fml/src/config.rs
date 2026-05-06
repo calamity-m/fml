@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 
 use config::{Environment, File};
@@ -5,10 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::FmlError;
 
+pub mod producer;
 pub mod search;
 pub mod store;
 pub mod themes;
 pub mod tui;
+
+pub use producer::{ProducerConfig, ProfileConfig, SourceBlockConfig};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Config {
@@ -51,6 +55,17 @@ pub struct Config {
     /// Search config and settings
     #[serde(default)]
     pub search: search::SearchConfig,
+
+    /// Name of the profile to activate at startup. May be overridden by the
+    /// `--profile` CLI flag. When `None`, no profile is applied.
+    #[serde(default)]
+    pub profile: Option<String>,
+
+    /// Named startup bundles of producers, keyed by profile name. Empty when
+    /// no profiles are defined; unused unless `profile` (or `--profile`)
+    /// names one of them.
+    #[serde(default)]
+    pub profiles: BTreeMap<String, ProfileConfig>,
 }
 
 impl Default for Config {
@@ -63,6 +78,8 @@ impl Default for Config {
             tui: tui::TuiConfig::default(),
             store: store::StoreConfig::default(),
             search: search::SearchConfig::default(),
+            profile: None,
+            profiles: BTreeMap::new(),
         }
     }
 }
@@ -102,6 +119,33 @@ impl Config {
         }
 
         Self::load_with_config_dir(&config.config_dir)
+    }
+
+    /// Look up a profile by name, returning a hard error if the name is set
+    /// but no matching `[profiles.<name>]` table exists. `name` is the active
+    /// profile, derived from CLI override falling back to `self.profile`.
+    ///
+    /// Validates the resolved profile (e.g. at most one docker producer)
+    /// before returning it.
+    pub fn resolve_profile(&self, name: Option<&str>) -> Result<Option<&ProfileConfig>, FmlError> {
+        let Some(name) = name else {
+            return Ok(None);
+        };
+        let Some(profile) = self.profiles.get(name) else {
+            let mut available: Vec<&str> = self.profiles.keys().map(|s| s.as_str()).collect();
+            available.sort();
+            let msg = if available.is_empty() {
+                format!("profile `{name}` not found; no profiles are defined in config")
+            } else {
+                format!(
+                    "profile `{name}` not found; available profiles: {}",
+                    available.join(", ")
+                )
+            };
+            return Err(FmlError::Profile(msg));
+        };
+        profile.validate(name)?;
+        Ok(Some(profile))
     }
 
     fn load_with_config_dir(config_dir: &str) -> Result<Self, FmlError> {
@@ -329,6 +373,134 @@ mod tests {
         }
 
         assert!(config.enable_logging);
+    }
+
+    // --- profiles ---
+
+    #[test]
+    #[serial]
+    fn config_without_profile_keys_loads_to_default_equivalent() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            enable_logging = false
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+        assert!(config.profile.is_none());
+        assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn config_loads_single_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            profile = "dev"
+
+            [[profiles.dev.producers]]
+            type = "demo"
+
+            [[profiles.dev.producers]]
+            type = "kubernetes"
+            namespace = "team-a"
+            blocked = "^istio"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.profile.as_deref(), Some("dev"));
+        let profile = config.resolve_profile(Some("dev")).unwrap().unwrap();
+        assert_eq!(profile.producers.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn config_loads_multiple_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            [[profiles.dev.producers]]
+            type = "demo"
+
+            [[profiles.prod.producers]]
+            type = "kubernetes"
+            namespace = "prod"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.profiles.len(), 2);
+        assert!(config.profiles.contains_key("dev"));
+        assert!(config.profiles.contains_key("prod"));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_unknown_profile_lists_available_names() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            [[profiles.dev.producers]]
+            type = "demo"
+
+            [[profiles.prod.producers]]
+            type = "demo"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+        let err = config.resolve_profile(Some("missing")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing"));
+        assert!(msg.contains("dev"));
+        assert!(msg.contains("prod"));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_unknown_profile_when_none_defined() {
+        let config = Config::default();
+        let err = config.resolve_profile(Some("anything")).unwrap_err();
+        assert!(err.to_string().contains("no profiles"));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_no_profile_returns_none() {
+        let config = Config::default();
+        assert!(config.resolve_profile(None).unwrap().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_profile_rejects_multiple_docker_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            [[profiles.dev.producers]]
+            type = "docker"
+
+            [[profiles.dev.producers]]
+            type = "docker"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+        let err = config.resolve_profile(Some("dev")).unwrap_err();
+        assert!(err.to_string().contains("docker"));
     }
 
     #[test]

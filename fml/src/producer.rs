@@ -78,6 +78,9 @@ pub mod fake;
 pub mod file;
 pub mod kubernetes;
 pub mod normalizer;
+pub mod source_block;
+
+pub use source_block::{ResolvedProducer, SourceBlock};
 
 /// A log source ingester.
 ///

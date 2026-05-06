@@ -31,6 +31,9 @@ pub enum FmlError {
 
     #[error("producer error: {0}")]
     Producer(#[from] crate::error::ProducerError),
+
+    #[error("profile error: {0}")]
+    Profile(String),
 }
 
 #[derive(Error, Debug)]

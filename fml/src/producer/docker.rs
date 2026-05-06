@@ -27,34 +27,36 @@ use crate::{
     error::ProducerError,
     event::ProducerEvent,
     log::{Source, SourceId},
-    producer::{LogProducer, file::LineBuffer, normalizer::Normalizer},
+    producer::{LogProducer, SourceBlock, file::LineBuffer, normalizer::Normalizer},
 };
 
 pub struct DockerProducer {
     docker: Arc<Docker>,
     normalizer: Normalizer,
     cancel: CancellationToken,
+    source_block: Arc<SourceBlock>,
 }
 
 impl DockerProducer {
-    pub fn new() -> Result<Self, ProducerError> {
+    pub fn new(source_block: SourceBlock) -> Result<Self, ProducerError> {
         let docker = Docker::connect_with_local_defaults()?;
 
-        Ok(DockerProducer::new_seeded(docker))
+        Ok(DockerProducer::new_seeded(docker, source_block))
     }
 
     #[cfg(test)]
     fn new_with_socket_path(path: &str) -> Result<Self, ProducerError> {
         let docker = Docker::connect_with_socket(path, 120, API_DEFAULT_VERSION)?;
 
-        Ok(DockerProducer::new_seeded(docker))
+        Ok(DockerProducer::new_seeded(docker, SourceBlock::none()))
     }
 
-    pub fn new_seeded(docker: Docker) -> Self {
+    pub fn new_seeded(docker: Docker, source_block: SourceBlock) -> Self {
         DockerProducer {
             docker: Arc::new(docker),
             normalizer: Normalizer::new(),
             cancel: CancellationToken::new(),
+            source_block: Arc::new(source_block),
         }
     }
 }
@@ -64,9 +66,12 @@ impl LogProducer for DockerProducer {
         let docker = self.docker.clone();
         let normalizer = self.normalizer.clone();
         let cancel = self.cancel.clone();
+        let source_block = self.source_block.clone();
 
         tokio::spawn(async move {
-            if let Err(err) = run_docker_producer(docker, normalizer, tx, cancel).await {
+            if let Err(err) =
+                run_docker_producer(docker, normalizer, tx, cancel, source_block).await
+            {
                 warn!("docker producer exited with error: {err}");
             }
         });
@@ -82,6 +87,7 @@ async fn run_docker_producer(
     normalizer: Normalizer,
     tx: mpsc::Sender<ProducerEvent>,
     cancel: CancellationToken,
+    source_block: Arc<SourceBlock>,
 ) -> Result<(), ProducerError> {
     let (event_tx, mut event_rx) = mpsc::channel(64);
     tokio::spawn(pump_docker_events(docker.clone(), event_tx, cancel.clone()));
@@ -98,6 +104,7 @@ async fn run_docker_producer(
             normalizer.clone(),
             tx.clone(),
             &cancel,
+            &source_block,
         )
         .await;
     }
@@ -119,6 +126,7 @@ async fn run_docker_producer(
                     normalizer.clone(),
                     tx.clone(),
                     &cancel,
+                    &source_block,
                 ).await;
             }
         }
@@ -196,6 +204,7 @@ async fn handle_docker_event(
     normalizer: Normalizer,
     tx: mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
+    source_block: &SourceBlock,
 ) {
     let Some(action) = event.action.as_deref() else {
         return;
@@ -216,7 +225,16 @@ async fn handle_docker_event(
                 .unwrap_or(&container_id);
             let image = labels.get("image").cloned();
             let source = source_from_parts(&container_id, &[name.to_string()], image, &labels);
-            track_container(tracked, source, docker, normalizer, tx, parent_cancel).await;
+            track_container(
+                tracked,
+                source,
+                docker,
+                normalizer,
+                tx,
+                parent_cancel,
+                source_block,
+            )
+            .await;
         }
         "die" | "destroy" => {
             if let Some(child) = tracked.remove(&container_id) {
@@ -235,8 +253,21 @@ async fn track_container(
     normalizer: Normalizer,
     tx: mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
+    source_block: &SourceBlock,
 ) {
     if tracked.contains_key(&source.id) {
+        return;
+    }
+
+    // Single source-emission gate. The docker producer has exactly one
+    // SourceFound emission site (this function); blocked containers are
+    // dropped here and never reach the event bus, the tracked map, or
+    // the per-container log-tail task.
+    if source_block.is_source_blocked(&source) {
+        debug!(
+            "docker producer source `{}` blocked by SourceBlock; skipping",
+            source.id
+        );
         return;
     }
 
@@ -455,7 +486,7 @@ mod tests {
     async fn start_returns_promptly_when_docker_api_is_unreachable() {
         let docker = Docker::connect_with_http("127.0.0.1:9", 1, API_DEFAULT_VERSION)
             .expect("http docker handle");
-        let producer = DockerProducer::new_seeded(docker);
+        let producer = DockerProducer::new_seeded(docker, SourceBlock::none());
         let (tx, _rx) = mpsc::channel(8);
 
         let start = Instant::now();
@@ -468,5 +499,94 @@ mod tests {
     #[test]
     fn decode_line_helper_is_available_for_docker_tail() {
         assert_eq!(decode_line(b"docker \xFF"), "docker �");
+    }
+
+    fn unreachable_docker() -> Arc<Docker> {
+        Arc::new(
+            Docker::connect_with_http("127.0.0.1:9", 1, API_DEFAULT_VERSION)
+                .expect("http docker handle"),
+        )
+    }
+
+    #[tokio::test]
+    async fn track_container_skips_blocked_source_via_regex() {
+        use crate::config::SourceBlockConfig;
+
+        let docker = unreachable_docker();
+        let normalizer = Normalizer::new();
+        let cancel = CancellationToken::new();
+        let block = SourceBlock::from_config(
+            &SourceBlockConfig {
+                blocked: Some("postgres".to_string()),
+                skip_istio: false,
+            },
+            false,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tracked: HashMap<SourceId, CancellationToken> = HashMap::new();
+
+        let source = Source {
+            producer: "docker".to_string(),
+            id: "abc123".to_string(),
+            display_name: "team_postgres_1".to_string(),
+            group: None,
+        };
+
+        track_container(
+            &mut tracked,
+            source,
+            docker,
+            normalizer,
+            tx,
+            &cancel,
+            &block,
+        )
+        .await;
+
+        cancel.cancel();
+        assert!(tracked.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn track_container_skips_blocked_source_via_skip_istio() {
+        use crate::config::SourceBlockConfig;
+
+        let docker = unreachable_docker();
+        let normalizer = Normalizer::new();
+        let cancel = CancellationToken::new();
+        let block = SourceBlock::from_config(
+            &SourceBlockConfig {
+                blocked: None,
+                skip_istio: true,
+            },
+            false,
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tracked: HashMap<SourceId, CancellationToken> = HashMap::new();
+
+        let source = Source {
+            producer: "docker".to_string(),
+            id: "abc123".to_string(),
+            display_name: "istio-proxy".to_string(),
+            group: None,
+        };
+
+        track_container(
+            &mut tracked,
+            source,
+            docker,
+            normalizer,
+            tx,
+            &cancel,
+            &block,
+        )
+        .await;
+
+        cancel.cancel();
+        assert!(tracked.is_empty());
+        assert!(rx.try_recv().is_err());
     }
 }

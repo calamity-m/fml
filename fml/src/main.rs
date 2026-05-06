@@ -5,7 +5,11 @@ use tracing::info;
 
 use tracing_subscriber::EnvFilter;
 
-use fml::{app::App, config::Config, producer::ProducerSpec};
+use fml::{
+    app::App,
+    cli::{compile_resolved, resolve_producers},
+    config::Config,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version = version(), about)]
@@ -24,9 +28,26 @@ pub struct Cli {
 
     /// Log producer to attach. Repeatable. Examples: --producer demo,
     /// --producer file:/var/log/app.log, --producer docker,
-    /// --producer kubernetes:my-namespace
+    /// --producer kubernetes:my-namespace.
+    ///
+    /// When combined with `--profile`, a `--producer` matches profile
+    /// entries by `(kind, disambiguator)` and replaces them; entries with
+    /// no profile match are appended. CLI overrides drop the profile
+    /// entry's `blocked` / `skip_istio` — a CLI `--producer` is a
+    /// brand-new producer config block.
     #[arg(long = "producer")]
     pub producer: Vec<String>,
+
+    /// Activate a named profile from `[profiles.<name>]` in config. Falls
+    /// back to `config.profile` when unset.
+    #[arg(long = "profile")]
+    pub profile: Option<String>,
+
+    /// Block the istio sidecar on every kubernetes and docker producer.
+    /// Composes with (never overrides) per-producer `blocked` / `skip_istio`
+    /// config. No-op for `file` and `demo` producers.
+    #[arg(long = "skip-istio", default_value_t = false)]
+    pub skip_istio: bool,
 
     /// Override the configured TUI theme name
     #[arg(long)]
@@ -108,16 +129,19 @@ async fn main() -> Result<()> {
     let (config, _guard) = cli.init()?;
     info!("config and logging intialized");
 
-    // Parse --producer flags into specs before constructing the app so
-    // invalid kinds fail with a clear error before any state is allocated.
-    let specs: Vec<ProducerSpec> = cli
-        .producer
-        .iter()
-        .map(|s| ProducerSpec::parse(s))
-        .collect::<Result<_, _>>()?;
+    // Resolve the active profile + CLI overrides into a flat list of
+    // (ProducerSpec, SourceBlockConfig) pairs before constructing the app.
+    // Invalid kinds and ambiguous overrides fail here before any state is
+    // allocated.
+    let pairs = resolve_producers(&config, cli.profile.as_deref(), &cli.producer)?;
+    // Compile per-producer SourceBlock matchers; per-entry regex compile
+    // failures are isolated (logged + skipped) inside `compile_resolved`.
+    // `--skip-istio` (a global flag) is composed in here so it OR's with
+    // any per-producer `skip_istio` already set.
+    let resolved = compile_resolved(pairs, cli.skip_istio);
 
     // Create the app and run it
-    let app = App::new(config, specs)?;
+    let app = App::new(config, resolved)?;
     app.run().await?;
     info!("exiting");
 

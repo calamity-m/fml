@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use fml::{
     event::ProducerEvent,
-    producer::{LogProducer, docker::DockerProducer},
+    producer::{LogProducer, SourceBlock, docker::DockerProducer},
 };
 use testcontainers::{GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
 use tokio::sync::mpsc;
@@ -28,7 +28,8 @@ async fn docker_producer_streams_container_logs_and_source_lifecycle() {
         .expect("busybox container should start");
     let container_id = container.id().to_string();
 
-    let producer = DockerProducer::new().expect("docker producer should connect");
+    let producer =
+        DockerProducer::new(SourceBlock::none()).expect("docker producer should connect");
     let (tx, mut rx) = mpsc::channel(128);
     producer.start(tx);
 

@@ -26,8 +26,8 @@ use crate::{
     event::{Query, TuiEvent},
     log::Source,
     producer::{
-        self, LogProducer, ProducerSpec, docker::DockerProducer, fake::FakeProducer,
-        file::FileProducer, kubernetes::KubernetesProducer,
+        self, LogProducer, ProducerSpec, ResolvedProducer, docker::DockerProducer,
+        fake::FakeProducer, file::FileProducer, kubernetes::KubernetesProducer,
     },
     search,
     state::AppState,
@@ -41,7 +41,10 @@ pub struct App<B: Backend = CrosstermBackend<Stdout>> {
 }
 
 impl App<CrosstermBackend<Stdout>> {
-    pub fn new(config: crate::config::Config, specs: Vec<ProducerSpec>) -> Result<Self, FmlError> {
+    pub fn new(
+        config: crate::config::Config,
+        resolved: Vec<ResolvedProducer>,
+    ) -> Result<Self, FmlError> {
         let mut app = Self {
             state: AppState::new(config)?,
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
@@ -49,7 +52,7 @@ impl App<CrosstermBackend<Stdout>> {
         };
 
         let mut demo_count: u32 = 0;
-        for spec in specs {
+        for ResolvedProducer { spec, block } in resolved {
             match spec {
                 ProducerSpec::Demo => {
                     demo_count += 1;
@@ -64,7 +67,7 @@ impl App<CrosstermBackend<Stdout>> {
                 ProducerSpec::File(path) => {
                     app.register_producer(Box::new(FileProducer::new(path)));
                 }
-                ProducerSpec::Docker => match DockerProducer::new() {
+                ProducerSpec::Docker => match DockerProducer::new(block) {
                     Ok(producer) => app.register_producer(Box::new(producer)),
                     Err(err) => tracing::warn!("failed to construct docker producer: {err}"),
                 },
@@ -72,7 +75,8 @@ impl App<CrosstermBackend<Stdout>> {
                     match ns
                         .map(Ok)
                         .unwrap_or_else(KubernetesProducer::resolve_namespace)
-                        .and_then(KubernetesProducer::new)
+                        .map(|ns| KubernetesProducer::new(ns, block.clone()))
+                        .and_then(|r| r)
                     {
                         Ok(producer) => app.register_producer(Box::new(producer)),
                         Err(err) => {

@@ -70,6 +70,75 @@ Repeated identical real producers are allowed but may duplicate log entries.
 
 For local showcase setups, see `examples/file` and `examples/docker`.
 
+## Profiles
+
+A profile is a named bundle of producers in `config.toml`. Activate one at startup with `--profile <name>`, or set `profile = "<name>"` in config:
+
+```toml
+profile = "dev"
+
+[[profiles.dev.producers]]
+type = "demo"
+
+[[profiles.dev.producers]]
+type = "kubernetes"
+namespace = "team-a"
+blocked = "^istio"
+
+[[profiles.dev.producers]]
+type = "docker"
+skip_istio = true
+```
+
+Profile keys:
+
+- `type` is one of `demo`, `file`, `docker`, `kubernetes`.
+- `file` requires `file = "<path>"`.
+- `kubernetes` accepts an optional `namespace`. Multiple kubernetes entries with different namespaces are allowed.
+- `demo` is repeatable.
+- `docker` may appear at most once per profile (a second is a config error).
+- `blocked = "<regex>"` and `skip_istio = true` are accepted on `docker` and `kubernetes` entries.
+
+If `--profile` (or `config.profile`) names a profile that doesn't exist, fml aborts with the available profile names.
+
+### `--producer` precedence over a profile
+
+When combined with `--profile`, each `--producer` matches profile entries by `(kind, disambiguator)`:
+
+| CLI                         | Matches                                                  | Behavior                                |
+| --------------------------- | -------------------------------------------------------- | --------------------------------------- |
+| `--producer demo`           | nothing (demo is repeatable)                             | append a new demo                       |
+| `--producer file:<path>`    | profile `file` entry with the same path string           | replace; otherwise append               |
+| `--producer docker`         | the single profile `docker` entry                        | replace; otherwise append               |
+| `--producer kubernetes:<n>` | profile `kubernetes` entry whose namespace equals `<n>`  | replace; otherwise append               |
+| `--producer kubernetes`     | the unique profile `kubernetes` entry, if exactly one    | replace; ambiguous (>1) is a hard error |
+
+A `--producer` override is a brand-new producer config block — it drops the matched profile entry's `blocked` / `skip_istio`. For durable settings, prefer config + `--profile`. Use `--producer` for ad-hoc overrides.
+
+## Source blocking
+
+Per-producer source filtering. Configured under each docker or kubernetes producer entry:
+
+```toml
+[[profiles.dev.producers]]
+type = "kubernetes"
+namespace = "team-a"
+blocked = "^istio"     # regex matched against source.id OR source.display_name
+skip_istio = true      # shortcut: substring-matches "istio-proxy"
+```
+
+Match semantics:
+
+- `blocked` is a regex tested against both `source.id` and `source.display_name`. A match against either field blocks the source.
+- `skip_istio` (or the global `--skip-istio`) adds the literal `istio-proxy` substring to the matcher. Substring match handles real ids like `istio-proxy-abc123` and pod-prefixed forms like `productpage/istio-proxy`.
+- Both compose; neither overrides the other.
+
+`--skip-istio` on the CLI ORs `skip_istio = true` into every kubernetes and docker producer in effect. It is additive, never subtractive: a profile entry already setting `blocked = "^istio"` plus `--skip-istio` results in both the regex and the literal substring being active. `--skip-istio` is a no-op for `file` and `demo` producers.
+
+Blocked sources emit no events at all — no `SourceFound`, no `SourceLost`, no log entries. Block configuration is **static for the process lifetime**: there is no runtime mutation API and no UI affordance to unblock. To change blocking, restart with a different profile or CLI flags.
+
+If `blocked` is an invalid regex, that one producer is skipped with a warning and the rest of the producers still start.
+
 ## Source Selector
 
 Press `ctrl+s` to open or close the source selector popup. The selector is currently hardcoded to `ctrl+s`; user-configurable remapping is deferred. Some terminals reserve `ctrl+s` for XOFF flow control, so disable terminal flow control or remap it at the terminal level if the popup does not open.
