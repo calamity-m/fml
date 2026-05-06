@@ -1,0 +1,83 @@
+# Example fml config showcasing profiles and source blocking.
+#
+# Drop this at $XDG_CONFIG_HOME/fml/config.toml (or .config/fml/config.toml in
+# the working dir) and launch with `fml --profile dev`. Override `--profile`
+# from the CLI to switch bundles without editing the file.
+
+# Default profile activated when --profile is not passed. Set to a key in
+# [profiles.*]; an unknown name aborts startup with the list of available
+# profiles.
+profile = "dev"
+
+# --- profiles ----------------------------------------------------------------
+#
+# Each [[profiles.<name>.producers]] entry adds one producer to the bundle.
+# `type` is one of: demo, file, docker, kubernetes.
+#   - demo is repeatable.
+#   - docker may appear at most once per profile (a second is a config error).
+#   - kubernetes can appear multiple times with different namespaces.
+#
+# `blocked` (regex) and `skip_istio` (substring shortcut) accept on the
+# docker / kubernetes kinds. Both fields are tested against `source.id`
+# OR `source.display_name`. A match against either field blocks the source
+# — no SourceFound, no SourceLost, no log entries reach fml.
+
+# Local development: a synthetic feed plus a tailed file.
+[[profiles.dev.producers]]
+type = "demo"
+
+[[profiles.dev.producers]]
+type = "file"
+file = "/var/log/app.log"
+
+# Staging: docker producer with the istio sidecar filtered out.
+[[profiles.staging.producers]]
+type = "docker"
+skip_istio = true
+
+# Production: two kube namespaces; team-a drops debug-prefixed pods, team-b
+# blocks anything matching `_postgres_` in the pod or container name.
+[[profiles.prod.producers]]
+type = "kubernetes"
+namespace = "team-a"
+blocked = "^debug-"
+
+[[profiles.prod.producers]]
+type = "kubernetes"
+namespace = "team-b"
+blocked = "_postgres_"
+skip_istio = true
+
+# --- CLI interaction ---------------------------------------------------------
+#
+# `--producer KIND[:ARG]` matches profile entries by (kind, disambiguator)
+# and replaces them; entries with no profile match are appended.
+#
+#   fml --profile prod --producer kubernetes:team-a
+#     Replaces the team-a kube entry above (drops its `blocked` regex).
+#
+#   fml --profile prod --producer demo
+#     Appends a demo producer alongside the prod kube producers.
+#
+#   fml --profile prod --producer kubernetes
+#     Ambiguous (two kube entries) — startup aborts with the candidate list.
+#
+# `--skip-istio` ORs `skip_istio = true` into every kube/docker producer in
+# effect, regardless of what the profile already sets. It composes with
+# (never overrides) per-producer `blocked`. No-op for file/demo.
+
+# --- other config ------------------------------------------------------------
+# All non-profile keys are independent and optional. A few highlights:
+
+# enable_logging = true
+# default_log_level = "info"
+# debug_log_dir = "/tmp"
+
+# [tui]
+# theme = "kanagawa-dragon"
+
+# [store]
+# capacity = 1_000_000
+
+# [search]
+# fuzzy_matcher = "nucleo"
