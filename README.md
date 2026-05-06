@@ -60,6 +60,9 @@ Supported kinds:
 - `demo` starts a synthetic demo source. Repeat it to create multiple demo sources.
 - `file:<path>` tails one file from EOF and follows common rotation patterns.
 - `docker` discovers currently running containers, tails stdout/stderr, and tracks container start/stop events. Requires access to the local Docker daemon.
+
+  > **Note on Docker log delivery:** the Docker daemon delivers container logs in batches over its HTTP API, not as a continuous byte stream. On native Linux this batching is usually small enough to feel real-time. On WSL2 / Docker Desktop the additional VM boundary amplifies it noticeably — high-volume containers may appear to pause for 1–2 seconds and then deliver thousands of entries at once. This is a property of the Docker / bollard log stream and cannot be smoothed out in the producer.
+
 - `kubernetes[:namespace]` watches running pod containers in one namespace and tails each container. Without `:namespace`, fml uses the active kubeconfig context namespace, falling back to `default`. Requires a working local kubeconfig; in-cluster service-account config and explicit context selection are not currently supported.
 
 If a producer cannot be constructed, fml logs a warning and continues with the other producers.

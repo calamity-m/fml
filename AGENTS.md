@@ -138,6 +138,7 @@ Producers emit `SourceFound`, `SourceLost`, and `StoreEvent` messages. Store eve
 - Search is latest-wins per `SearchTarget`; stale worker results are intentionally discarded by request id.
 - Source filtering uses stable source IDs, while display names are labels for users.
 - Config loads from user config, local `.config/fml/config`, then `FML__*` environment overrides.
+- Docker log delivery is inherently batched (worse on WSL2 / Docker Desktop); multi-second pauses followed by thousands of entries at once are the daemon, not the producer.
 
 ---
 
