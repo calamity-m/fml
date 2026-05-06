@@ -68,7 +68,7 @@ fn default_frame_rate() -> f64 {
 }
 
 fn default_sidebar_width_percent() -> u16 {
-    30
+    50
 }
 
 fn default_theme_name() -> String {
