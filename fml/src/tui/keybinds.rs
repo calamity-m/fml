@@ -55,7 +55,7 @@ pub enum StaticKeyAction {
 pub const ACTION_HINTS: &[KeyActionHint] = &[
     KeyActionHint {
         title: "Quit",
-        label: "ctrl+c",
+        label: "ctrl+c / q",
         section: HelpSection::Global,
     },
     KeyActionHint {
@@ -156,6 +156,7 @@ pub fn primary_label(title: &str) -> Option<&'static str> {
 pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedKeyAction) {
     let static_key = match (key.code, key.modifiers) {
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => StaticKeyAction::Quit,
+        (KeyCode::Char('q'), _) => StaticKeyAction::Quit,
         (KeyCode::Tab, _) => StaticKeyAction::FocusCycle,
         (KeyCode::Up | KeyCode::Char('k'), _) => StaticKeyAction::ScrollUp,
         (KeyCode::Down | KeyCode::Char('j'), _) => StaticKeyAction::ScrollDown,

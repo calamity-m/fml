@@ -35,7 +35,7 @@ impl StatusBar {
             StatusBarHint {
                 title: "Quit",
                 label: keybinds::primary_label("Quit")
-                    .unwrap_or("ctrl+c")
+                    .unwrap_or("ctrl+c / q")
                     .to_string(),
             },
             StatusBarHint {
