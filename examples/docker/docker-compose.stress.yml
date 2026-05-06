@@ -1,0 +1,31 @@
+name: fml-stress
+
+# High-volume Spring Boot stress setup.
+# Generates realistic Logstash-encoded JSON with stacktraces and large payloads.
+# Targets ~100k+ logs/min — scripts run with no sleep, throttled only by shell overhead.
+#
+# Run: docker compose -f docker-compose.stress.yml up
+
+x-spring: &spring
+  image: alpine:3.20
+  volumes:
+    - ./scripts:/scripts:ro
+  command: ["sh", "/scripts/stress-spring-json.sh"]
+
+services:
+  order-service:
+    <<: *spring
+  payment-service:
+    <<: *spring
+  inventory-service:
+    <<: *spring
+  user-service:
+    <<: *spring
+  notification-service:
+    <<: *spring
+  gateway-service:
+    <<: *spring
+  scheduler-service:
+    <<: *spring
+  audit-service:
+    <<: *spring
