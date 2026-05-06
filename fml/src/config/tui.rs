@@ -100,6 +100,18 @@ pub struct ThemeConfig {
     #[serde(default = "default_secondary_accent_fg")]
     pub secondary_accent_fg: Color,
 
+    /// Foreground color for producer rows in the source selector tree.
+    #[serde(default = "default_source_selector_producer_fg")]
+    pub source_selector_producer_fg: Color,
+
+    /// Foreground color for group rows in the source selector tree.
+    #[serde(default = "default_source_selector_group_fg")]
+    pub source_selector_group_fg: Color,
+
+    /// Foreground color for source rows in the source selector tree.
+    #[serde(default = "default_source_selector_source_fg")]
+    pub source_selector_source_fg: Color,
+
     /// Background color for the currently selected log row.
     #[serde(default = "default_log_selected_bg")]
     pub log_selected_bg: Color,
@@ -139,6 +151,9 @@ impl Default for ThemeConfig {
             border_unfocused_fg: default_border_unfocused_fg(),
             primary_accent_fg: default_primary_accent_fg(),
             secondary_accent_fg: default_secondary_accent_fg(),
+            source_selector_producer_fg: default_source_selector_producer_fg(),
+            source_selector_group_fg: default_source_selector_group_fg(),
+            source_selector_source_fg: default_source_selector_source_fg(),
             log_selected_bg: default_log_selected_bg(),
             log_selected_modifier: default_log_selected_modifier(),
             log_match_fg: default_log_match_fg(),
@@ -275,6 +290,18 @@ fn default_secondary_accent_fg() -> Color {
 
 fn default_primary_accent_fg() -> Color {
     Color::Yellow
+}
+
+fn default_source_selector_producer_fg() -> Color {
+    Color::Yellow
+}
+
+fn default_source_selector_group_fg() -> Color {
+    Color::Indexed(244)
+}
+
+fn default_source_selector_source_fg() -> Color {
+    Color::Reset
 }
 
 fn default_log_selected_bg() -> Color {

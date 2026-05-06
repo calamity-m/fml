@@ -3,11 +3,13 @@ use std::collections::{BTreeMap, HashSet};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
 
 use crate::{
+    config::tui::ThemeConfig,
     log::{Source, SourceId},
     state::tui_state::{ActivePopup, TuiState},
     tui::widgets::{FmlPopupWidget, PopupSize, header_style, popup_area, render_footer_hints},
@@ -141,6 +143,7 @@ impl FmlPopupWidget for SourceSelector {
                 narrow,
                 base_style,
                 state.selected_theme.selected_style(),
+                &state.selected_theme,
             ));
         }
 
@@ -325,8 +328,9 @@ fn render_row(
     selected: bool,
     width: usize,
     narrow: bool,
-    base_style: ratatui::style::Style,
-    selected_style: ratatui::style::Style,
+    base_style: Style,
+    selected_style: Style,
+    theme: &ThemeConfig,
 ) -> Line<'static> {
     let pointer = if selected { "> " } else { "  " };
     let indent = "  ".repeat(row.depth);
@@ -338,10 +342,17 @@ fn render_row(
         pad_with_right_count(&label, &count, width)
     };
 
-    if selected {
-        Line::from(Span::styled(line, selected_style))
-    } else {
-        Line::from(Span::styled(line, base_style))
+    let row_style =
+        if selected { selected_style } else { base_style }.fg(source_selector_row_fg(row, theme));
+
+    Line::from(Span::styled(line, row_style))
+}
+
+fn source_selector_row_fg(row: &SourceSelectorRow, theme: &ThemeConfig) -> Color {
+    match row.kind {
+        SourceSelectorRowKind::Producer { .. } => theme.source_selector_producer_fg,
+        SourceSelectorRowKind::Group { .. } => theme.source_selector_group_fg,
+        SourceSelectorRowKind::Source(_) => theme.source_selector_source_fg,
     }
 }
 
@@ -372,11 +383,14 @@ fn fit_to_width(value: &str, width: usize) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
 
     use super::*;
     use crate::{
-        config::{search::SearchConfig, tui::TuiConfig},
+        config::{
+            search::SearchConfig,
+            tui::{ThemeConfig, TuiConfig},
+        },
         state::tui_state::TuiState,
     };
 
@@ -440,6 +454,65 @@ mod tests {
         assert_eq!(rows[3].label, "Service B");
         assert_eq!(rows[3].checkbox, CheckboxState::Checked);
         assert_eq!(rows[4].label, "frontend");
+    }
+
+    #[test]
+    fn renders_hierarchy_rows_with_distinct_theme_colors() {
+        let sources = vec![source("fake", Some("backend"), "src-a", "Service A")];
+        let enabled = HashSet::from(["src-a".to_string()]);
+        let rows = build_rows(&sources, &enabled);
+        let theme = ThemeConfig {
+            source_selector_producer_fg: Color::Blue,
+            source_selector_group_fg: Color::Green,
+            source_selector_source_fg: Color::Red,
+            ..ThemeConfig::default()
+        };
+
+        let producer = render_row(
+            &rows[0],
+            false,
+            40,
+            false,
+            theme.surface_style(),
+            theme.selected_style(),
+            &theme,
+        );
+        let group = render_row(
+            &rows[1],
+            false,
+            40,
+            false,
+            theme.surface_style(),
+            theme.selected_style(),
+            &theme,
+        );
+        let source = render_row(
+            &rows[2],
+            false,
+            40,
+            false,
+            theme.surface_style(),
+            theme.selected_style(),
+            &theme,
+        );
+        let selected_source = render_row(
+            &rows[2],
+            true,
+            40,
+            false,
+            theme.surface_style(),
+            theme.selected_style(),
+            &theme,
+        );
+
+        assert_eq!(producer.spans[0].style.fg, Some(Color::Blue));
+        assert_eq!(group.spans[0].style.fg, Some(Color::Green));
+        assert_eq!(source.spans[0].style.fg, Some(Color::Red));
+        assert_eq!(selected_source.spans[0].style.fg, Some(Color::Red));
+        assert_eq!(
+            selected_source.spans[0].style.bg,
+            Some(theme.log_selected_bg)
+        );
     }
 
     #[test]
