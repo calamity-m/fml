@@ -1,4 +1,7 @@
-use std::io::{Stdout, stdout};
+use std::{
+    io::{Stdout, stdout},
+    time::{Duration, Instant},
+};
 
 use crossterm::{
     ExecutableCommand as _,
@@ -6,7 +9,17 @@ use crossterm::{
     terminal::{EnterAlternateScreen, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::Backend, prelude::CrosstermBackend};
+use tokio::time::{MissedTickBehavior, interval};
 use tracing::info;
+
+/// Render budget for a single frame. A render that exceeds this logs once at
+/// info — a quiet way to surface frame drops without per-frame spam.
+const SLOW_RENDER_THRESHOLD: Duration = Duration::from_millis(33);
+
+/// Cadence of the event-loop heartbeat. One info line every five seconds is
+/// invisible during normal operation but immediately diagnostic when the loop
+/// stalls or a channel backs up.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 use crate::{
     error::FmlError,
@@ -128,23 +141,53 @@ impl<B: Backend> App<B> {
             tracing::warn!("failed to dispatch initial tail search: {err}");
         }
 
+        let mut heartbeat = interval(HEARTBEAT_INTERVAL);
+        // Delay (rather than burst) after a stall so the heartbeat doesn't
+        // emit a flurry of catch-up ticks once the loop frees up.
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut tui_count: u64 = 0;
+        let mut search_count: u64 = 0;
+        let mut producer_count: u64 = 0;
+
         loop {
             tokio::select! {
                 biased;
                 Some(event) = self.state.event_bus.tui_event_rx.recv() => {
+                    tui_count += 1;
                     if matches!(event, TuiEvent::Render) {
+                        let started = Instant::now();
                         tui::render(&mut self.state, &mut self.terminal);
+                        let elapsed = started.elapsed();
+                        if elapsed > SLOW_RENDER_THRESHOLD {
+                            info!(elapsed_ms = elapsed.as_millis() as u64, "slow render");
+                        }
                     }
                     let new_state = tui::handle_tui_event(event, self.state);
                     self.state = new_state;
                 },
                 Some(event) = self.state.event_bus.search_event_rx.recv() => {
+                    search_count += 1;
                     let new_state = search::handle_search_event(event, self.state);
                     self.state = new_state;
                 },
                 Some(event) = self.state.event_bus.producer_event_rx.recv() => {
+                    producer_count += 1;
                     let new_state = producer::handle_producer_event(event, self.state);
                     self.state = new_state;
+                },
+                _ = heartbeat.tick() => {
+                    info!(
+                        tui = tui_count,
+                        search = search_count,
+                        producer = producer_count,
+                        tui_backlog = self.state.event_bus.tui_event_rx.len(),
+                        search_backlog = self.state.event_bus.search_event_rx.len(),
+                        producer_backlog = self.state.event_bus.producer_event_rx.len(),
+                        "event loop heartbeat"
+                    );
+                    tui_count = 0;
+                    search_count = 0;
+                    producer_count = 0;
                 },
                 _ = self.state.event_bus.quit_rx.recv() => {
                     info!("quitting tui");
