@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-scripts
+data:
+  json-firehose.sh: |
+    {{- $.Files.Get "files/json-firehose.sh" | nindent 4 }}

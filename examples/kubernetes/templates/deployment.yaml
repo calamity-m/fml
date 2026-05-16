@@ -1,0 +1,42 @@
+{{- range .Values.firehoses }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .name }}
+    spec:
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $.Release.Name }}-scripts
+            defaultMode: 0755
+      containers:
+        - name: json-firehose
+          image: {{ $.Values.image }}
+          command: ["/bin/sh", "/scripts/json-firehose.sh"]
+          env:
+            - name: SERVICE_NAME
+              value: {{ .name }}
+            - name: LINES_PER_BATCH
+              value: "{{ .linesPerBatch }}"
+            - name: BATCH_SLEEP_MS
+              value: "{{ .batchSleepMs }}"
+            - name: MIN_PAYLOAD_CHARS
+              value: "{{ .minPayloadChars }}"
+            - name: MAX_PAYLOAD_CHARS
+              value: "{{ .maxPayloadChars }}"
+            - name: HUGE_EVERY
+              value: "{{ .hugeEvery }}"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+{{- end }}

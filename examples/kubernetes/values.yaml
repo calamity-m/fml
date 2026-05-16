@@ -1,0 +1,17 @@
+image: busybox
+
+firehoses:
+  - name: json-firehose-hot
+    replicas: 4
+    linesPerBatch: 1000
+    batchSleepMs: 100
+    minPayloadChars: 220
+    maxPayloadChars: 1800
+    hugeEvery: 5000
+  - name: json-firehose-slow
+    replicas: 2
+    linesPerBatch: 5
+    batchSleepMs: 2000
+    minPayloadChars: 220
+    maxPayloadChars: 900
+    hugeEvery: 0
