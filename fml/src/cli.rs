@@ -171,9 +171,13 @@ mod tests {
             profile: Some(name.to_string()),
             ..Config::default()
         };
-        config
-            .profiles
-            .insert(name.to_string(), ProfileConfig { producers });
+        config.profiles.insert(
+            name.to_string(),
+            ProfileConfig {
+                theme: None,
+                producers,
+            },
+        );
         config
     }
 
@@ -307,6 +311,7 @@ mod tests {
         config.profiles.insert(
             "prod".to_string(),
             ProfileConfig {
+                theme: None,
                 producers: vec![ProducerConfig::Docker {
                     block: SourceBlockConfig::default(),
                 }],

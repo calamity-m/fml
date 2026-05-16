@@ -11,6 +11,10 @@ theme = "kanagawa"
 
 # To use the custom theme below instead, set:
 # theme = "solarized_dark"
+#
+# Profiles can also override the theme while active:
+# [profiles.dev]
+# theme = "solarized_dark"
 
 [themes.solarized_dark]
 background = "#002B36"

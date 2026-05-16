@@ -153,6 +153,17 @@ impl Config {
         Ok(Some(profile))
     }
 
+    /// Apply the active profile's non-producer overrides to this config.
+    pub fn apply_profile_overrides(&mut self, name: Option<&str>) -> Result<(), FmlError> {
+        let Some(profile) = self.resolve_profile(name)? else {
+            return Ok(());
+        };
+        if let Some(theme) = &profile.theme {
+            self.tui.theme = theme.clone();
+        }
+        Ok(())
+    }
+
     fn load_with_config_dir(config_dir: &str) -> Result<Self, FmlError> {
         let s = config::Config::builder()
             .add_source(File::with_name(&format!("{config_dir}/config")).required(false))
@@ -475,6 +486,9 @@ mod tests {
             r#"
             profile = "dev"
 
+            [profiles.dev]
+            theme = "kanagawa"
+
             [[profiles.dev.producers]]
             type = "demo"
 
@@ -489,7 +503,30 @@ mod tests {
         let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(config.profile.as_deref(), Some("dev"));
         let profile = config.resolve_profile(Some("dev")).unwrap().unwrap();
+        assert_eq!(profile.theme.as_deref(), Some("kanagawa"));
         assert_eq!(profile.producers.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn active_profile_applies_theme_override() {
+        let mut config = Config {
+            profile: Some("dev".to_string()),
+            ..Config::default()
+        };
+        config.profiles.insert(
+            "dev".to_string(),
+            ProfileConfig {
+                theme: Some("nord".to_string()),
+                producers: vec![ProducerConfig::Demo],
+            },
+        );
+
+        config
+            .apply_profile_overrides(config.profile.clone().as_deref())
+            .unwrap();
+
+        assert_eq!(config.tui.theme, "nord");
     }
 
     #[test]

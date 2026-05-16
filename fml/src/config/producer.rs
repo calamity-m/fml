@@ -82,6 +82,10 @@ impl From<&ProducerConfig> for ProducerSpec {
 /// A named startup bundle of producers.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ProfileConfig {
+    /// Optional TUI theme override applied when this profile is active.
+    #[serde(default)]
+    pub theme: Option<String>,
+
     #[serde(default)]
     pub producers: Vec<ProducerConfig>,
 }
@@ -180,6 +184,7 @@ mod tests {
     #[test]
     fn profile_validate_allows_multiple_demo_entries() {
         let profile = ProfileConfig {
+            theme: None,
             producers: vec![ProducerConfig::Demo, ProducerConfig::Demo],
         };
         profile.validate("p").unwrap();
@@ -188,6 +193,7 @@ mod tests {
     #[test]
     fn profile_validate_rejects_multiple_docker_entries() {
         let profile = ProfileConfig {
+            theme: None,
             producers: vec![
                 ProducerConfig::Docker {
                     block: SourceBlockConfig::default(),
@@ -204,6 +210,7 @@ mod tests {
     #[test]
     fn profile_validate_allows_multiple_kube_namespaces() {
         let profile = ProfileConfig {
+            theme: None,
             producers: vec![
                 ProducerConfig::Kubernetes {
                     namespace: Some("a".to_string()),

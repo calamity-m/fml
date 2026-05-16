@@ -80,6 +80,9 @@ impl Cli {
             config.tui.frame_rate = frame_rate;
         }
 
+        let active_profile = self.profile.clone().or_else(|| config.profile.clone());
+        config.apply_profile_overrides(active_profile.as_deref())?;
+
         if let Some(theme) = &self.theme {
             config.tui.theme = theme.clone();
         }
