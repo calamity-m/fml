@@ -6,7 +6,9 @@ source_selector_producer_fg = "White"
 source_selector_group_fg = "LightGray"
 source_selector_source_fg = "Gray"
 log_selected_bg = "DarkGray"
+log_selected_modifier = "BOLD"
 log_match_fg = "White"
+log_match_style = "color"
 log_match_bold = true
 status_dim = true
 
