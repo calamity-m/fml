@@ -22,6 +22,7 @@ Before implementing:
 - No abstractions for single-use code.
 - No configurability that wasn't requested.
 - No error handling for impossible scenarios.
+- No test-only helpers or methods. If an existing helper is close, generalize it (add a parameter, update its callers) rather than adding a `_with_x` sibling. Methods on production types must have a real production caller — not just a test.
 - If you write 200 lines and it could be 50, rewrite it.
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
