@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::{
     layout::{Alignment, Constraint, Layout},
     style::Modifier,
@@ -75,14 +77,36 @@ impl FmlWidget for StatusBar {
         let key_style = base_style
             .fg(state.selected_theme.primary_accent_fg)
             .add_modifier(Modifier::BOLD);
-        let hints = self.visible_hints();
+
+        let now = Instant::now();
+        let transient = state.status_message(now).map(str::to_string);
+        let select_mode = state.select_mode;
+
         let mut spans = Vec::new();
-        for (index, hint) in hints.iter().enumerate() {
-            if index > 0 {
+
+        // A transient message (e.g. "sent yank … — check clipboard") replaces
+        // the normal keybind hints for its TTL. Once it expires the hints
+        // reappear automatically because status_message() returns None.
+        if let Some(msg) = transient {
+            spans.push(Span::styled(msg, key_style));
+        } else {
+            let hints = self.visible_hints();
+            for (index, hint) in hints.iter().enumerate() {
+                if index > 0 {
+                    spans.push(Span::styled(" | ", dim_style));
+                }
+                spans.push(Span::styled(format!("{} ", hint.title), dim_style));
+                spans.push(Span::styled(format!("<{}>", hint.label), key_style));
+            }
+        }
+
+        // [SELECT] is appended regardless of whether a transient message is
+        // shown so the mode indicator is always visible while active.
+        if select_mode {
+            if !spans.is_empty() {
                 spans.push(Span::styled(" | ", dim_style));
             }
-            spans.push(Span::styled(format!("{} ", hint.title), dim_style));
-            spans.push(Span::styled(format!("<{}>", hint.label), key_style));
+            spans.push(Span::styled("[SELECT]", key_style));
         }
 
         frame.render_widget(Block::default().style(base_style), area);

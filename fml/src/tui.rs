@@ -7,8 +7,8 @@ pub mod widgets;
 use crossterm::{
     ExecutableCommand as _,
     event::{
-        DisableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind,
-        KeyModifiers,
+        DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode,
+        KeyEventKind, KeyModifiers,
     },
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
@@ -18,6 +18,7 @@ use tokio::{sync::mpsc, time::interval};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
+    clipboard::OSC52_WARN_BYTES,
     config::tui::TuiConfig,
     error::FmlError,
     event::{Query, QuitEvent, SearchEvent, SearchTarget, TuiEvent},
@@ -166,6 +167,28 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
 
             if custom_key == CustomizedKeyAction::TogglePreviewMode {
                 handle_preview_mode_toggle(&mut state);
+                return state;
+            }
+
+            if custom_key == CustomizedKeyAction::ToggleSelectMode {
+                state.tui.select_mode = !state.tui.select_mode;
+                // No widget currently consumes TuiEvent::Mouse, so releasing
+                // capture has no in-app functional regression today. The toggle
+                // is the first way users can get terminal wheel scrollback.
+                let mut out = stdout();
+                if state.tui.select_mode {
+                    let _ = out.execute(DisableMouseCapture);
+                } else {
+                    let _ = out.execute(EnableMouseCapture);
+                }
+                return state;
+            }
+
+            if custom_key == CustomizedKeyAction::YankSelectedEntry
+                && state.tui.focused == Slot::Main
+                && state.tui.active_popup().is_none()
+            {
+                handle_yank_selected_entry(&mut state);
                 return state;
             }
 
@@ -455,6 +478,46 @@ fn filtered_log_pane_sources(state: &AppState) -> Option<Vec<SourceId>> {
             .collect();
 
     (!source_ids.is_empty()).then_some(source_ids)
+}
+
+fn handle_yank_selected_entry(state: &mut AppState) {
+    let Some(selected) = state.tui.selected_entry.as_ref() else {
+        return; // silent no-op when nothing is selected
+    };
+    let json = serde_json::to_string(&*selected.entry).unwrap_or_default();
+    let mut out = stdout().lock();
+    let msg = match crate::clipboard::yank_osc52(&mut out, &json) {
+        Ok(n) if n > OSC52_WARN_BYTES => {
+            format!("sent yank ({n} bytes) — exceeds 8KB; xterm/vte may drop it")
+        }
+        Ok(n) => format!("sent yank ({n} bytes) — check clipboard"),
+        Err(e) => format!("yank failed: {e}"),
+    };
+    drop(out);
+    state.tui.set_status_message(msg);
+
+    if let Some(hint) = multiplexer_hint() {
+        if !state.tui.multiplexer_clipboard_hint_shown {
+            state.tui.multiplexer_clipboard_hint_shown = true;
+            state.tui.queue_status_message(hint);
+        }
+    }
+}
+
+/// Returns a one-time hint string when running inside a known multiplexer,
+/// or `None` when no multiplexer is detected.
+fn multiplexer_hint() -> Option<String> {
+    let in_tmux = std::env::var("TMUX").is_ok();
+    let in_zellij = std::env::var("ZELLIJ").is_ok();
+    match (in_tmux, in_zellij) {
+        (true, true) | (true, false) => {
+            Some("tmux: run `set -g set-clipboard on` to enable OSC52 yank".into())
+        }
+        (false, true) => {
+            Some("zellij: OSC52 yank needs an OSC52-capable host terminal or copy_command".into())
+        }
+        (false, false) => None,
+    }
 }
 
 fn apply_no_sources_selected(state: &mut AppState) {
@@ -1454,6 +1517,160 @@ mod tests {
             } => assert_eq!(target, SearchTarget::PreviewPane),
             event => panic!("expected surrounding preview search after picker skip, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn toggle_select_mode_flips_state() {
+        let state = AppState::new(Config::default()).expect("app state");
+        assert!(!state.tui.select_mode);
+
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+            state,
+        );
+        assert!(state.tui.select_mode);
+
+        let state = handle_tui_event(
+            TuiEvent::Input(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+            state,
+        );
+        assert!(!state.tui.select_mode);
+    }
+
+    #[test]
+    fn yank_with_no_selection_is_silent_noop() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::Main;
+        assert!(state.tui.selected_entry.is_none());
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+
+        assert!(state.tui.status_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn yank_with_query_box_focused_does_not_trigger() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(1),
+            matches: Vec::new(),
+        });
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+
+        assert!(state.tui.status_message.is_none());
+    }
+
+    #[test]
+    fn yank_with_selection_sets_status_message() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::Main;
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(42),
+            matches: Vec::new(),
+        });
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+
+        let msg = state.tui.status_message.as_ref().map(|(m, _)| m.as_str());
+        assert!(
+            msg.is_some_and(|m| m.contains("sent yank") && m.contains("bytes")),
+            "expected 'sent yank ... bytes' message, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn yank_with_popup_open_does_not_trigger() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::Main;
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(1),
+            matches: Vec::new(),
+        });
+        state
+            .tui
+            .open_popup(crate::state::tui_state::ActivePopup::Help);
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+
+        assert!(state.tui.status_message.is_none());
+    }
+
+    #[test]
+    fn multiplexer_hint_shown_flag_prevents_repeat() {
+        // Simulate multiplexer detection by pre-setting the shown flag. When the
+        // flag is already true, queue_status_message is never called regardless
+        // of $TMUX / $ZELLIJ env vars.
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::Main;
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(1),
+            matches: Vec::new(),
+        });
+        state.tui.multiplexer_clipboard_hint_shown = true;
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+        assert!(state.tui.status_message_pending.is_none());
+    }
+
+    #[test]
+    fn yank_status_message_normal_when_payload_is_small() {
+        // Small entry → well below the 8KB base64 threshold
+        let small_entry = entry_with_fields(
+            99,
+            std::collections::HashMap::from([("k".to_string(), json!("v"))]),
+        );
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::Main;
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: small_entry,
+            matches: Vec::new(),
+        });
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+
+        let msg = state
+            .tui
+            .status_message
+            .as_ref()
+            .map(|(m, _)| m.as_str())
+            .unwrap_or("");
+        assert!(
+            !msg.contains("exceeds 8KB"),
+            "expected normal message for small payload, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn yank_status_message_warns_when_payload_exceeds_8kb_threshold() {
+        // Large pad field → well above the 8KB base64 threshold for any overhead
+        let large_entry = entry_with_fields(
+            99,
+            std::collections::HashMap::from([(
+                "pad".to_string(),
+                serde_json::Value::String("x".repeat(100_000)),
+            )]),
+        );
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::Main;
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: large_entry,
+            matches: Vec::new(),
+        });
+
+        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+
+        let msg = state
+            .tui
+            .status_message
+            .as_ref()
+            .map(|(m, _)| m.as_str())
+            .unwrap_or("");
+        assert!(
+            msg.contains("exceeds 8KB"),
+            "expected 8KB warning message, got: {msg}"
+        );
     }
 
     #[test]

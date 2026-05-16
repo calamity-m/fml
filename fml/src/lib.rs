@@ -1,5 +1,6 @@
 pub mod app;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod error;
 pub mod event;
