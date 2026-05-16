@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +26,8 @@ pub struct TuiConfig {
 
     /// Built-in theme to apply to the TUI.
     ///
-    /// `default` uses the colors from `[tui.default_theme]`. Built-in themes
-    /// currently available are `forest`, `kanagawa_dragon`, `mono`, and `ocean`.
+    /// `default` uses the colors from `[tui.default_theme]`. Built-in and
+    /// user-defined themes can also be selected by name.
     #[serde(default = "default_theme_name")]
     pub theme: String,
 
@@ -59,7 +61,15 @@ impl Default for TuiConfig {
 impl TuiConfig {
     /// Resolve the configured theme selector into the concrete widget palette.
     pub fn resolved_theme(&self) -> Result<ThemeConfig, FmlError> {
-        super::themes::resolve_theme(&self.theme, &self.default_theme)
+        super::themes::resolve_theme(&self.theme, &self.default_theme, &BTreeMap::new())
+    }
+
+    /// Resolve the configured theme selector, including top-level user themes.
+    pub fn resolved_theme_with(
+        &self,
+        user_themes: &BTreeMap<String, ThemeConfig>,
+    ) -> Result<ThemeConfig, FmlError> {
+        super::themes::resolve_theme(&self.theme, &self.default_theme, user_themes)
     }
 }
 

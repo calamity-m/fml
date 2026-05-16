@@ -1,0 +1,22 @@
+background = "#282828"
+border_unfocused_fg = "#665C54"
+primary_accent_fg = "#FABD2F"
+secondary_accent_fg = "#B8BB26"
+source_selector_producer_fg = "#FABD2F"
+source_selector_group_fg = "#83A598"
+source_selector_source_fg = "#EBDBB2"
+log_selected_bg = "#3C3836"
+log_selected_modifier = "BOLD"
+log_match_fg = "#FE8019"
+log_match_style = "color"
+log_match_bold = true
+status_dim = true
+
+[log_level]
+default_fg = "#EBDBB2"
+trace_fg = "#928374"
+debug_fg = "#83A598"
+info_fg = "#B8BB26"
+warn_fg = "#FABD2F"
+error_fg = "#FB4934"
+fatal_fg = "#CC241D"

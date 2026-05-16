@@ -48,6 +48,10 @@ pub struct Config {
     #[serde(default)]
     pub tui: tui::TuiConfig,
 
+    /// User-defined named themes selectable via `tui.theme`.
+    #[serde(default)]
+    pub themes: BTreeMap<String, tui::ThemeConfig>,
+
     /// Store capacity and ingest speed settings
     #[serde(default)]
     pub store: store::StoreConfig,
@@ -76,6 +80,7 @@ impl Default for Config {
             debug_log_dir: default_debug_log_dir(),
             default_log_level: default_log_level(),
             tui: tui::TuiConfig::default(),
+            themes: BTreeMap::new(),
             store: store::StoreConfig::default(),
             search: search::SearchConfig::default(),
             profile: None,
@@ -148,6 +153,17 @@ impl Config {
         Ok(Some(profile))
     }
 
+    /// Apply the active profile's non-producer overrides to this config.
+    pub fn apply_profile_overrides(&mut self, name: Option<&str>) -> Result<(), FmlError> {
+        let Some(profile) = self.resolve_profile(name)? else {
+            return Ok(());
+        };
+        if let Some(theme) = &profile.theme {
+            self.tui.theme = theme.clone();
+        }
+        Ok(())
+    }
+
     fn load_with_config_dir(config_dir: &str) -> Result<Self, FmlError> {
         let s = config::Config::builder()
             .add_source(File::with_name(&format!("{config_dir}/config")).required(false))
@@ -156,6 +172,7 @@ impl Config {
             .build()?;
 
         let config: Self = s.try_deserialize()?;
+        themes::validate_user_themes(&config.themes)?;
 
         Ok(config)
     }
@@ -165,6 +182,7 @@ impl Config {
 mod tests {
     use std::fs;
 
+    use ratatui::style::Color;
     use serial_test::serial;
 
     use super::*;
@@ -305,6 +323,71 @@ mod tests {
 
     #[test]
     #[serial]
+    fn load_with_config_dir_reads_user_defined_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r##"
+            [tui]
+            theme = "solarized"
+
+            [themes.solarized]
+            background = "#002B36"
+            border_unfocused_fg = "#586E75"
+            primary_accent_fg = "#B58900"
+            secondary_accent_fg = "#268BD2"
+            source_selector_producer_fg = "#B58900"
+            source_selector_group_fg = "#2AA198"
+            source_selector_source_fg = "#93A1A1"
+            log_selected_bg = "#073642"
+            log_selected_modifier = "BOLD"
+            log_match_fg = "#CB4B16"
+            log_match_style = "color"
+            log_match_bold = true
+            status_dim = true
+
+            [themes.solarized.log_level]
+            default_fg = "#93A1A1"
+            trace_fg = "#586E75"
+            debug_fg = "#268BD2"
+            info_fg = "#859900"
+            warn_fg = "#B58900"
+            error_fg = "#DC322F"
+            fatal_fg = "#D33682"
+            "##,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+        let resolved = config.tui.resolved_theme_with(&config.themes).unwrap();
+
+        assert_eq!(resolved.background, Some(Color::Rgb(0x00, 0x2B, 0x36)));
+        assert_eq!(resolved.primary_accent_fg, Color::Rgb(0xB5, 0x89, 0x00));
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_config_dir_rejects_user_theme_builtin_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r##"
+            [themes.forest]
+            background = "#002B36"
+            "##,
+        )
+        .unwrap();
+
+        let err = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("collides with a built-in theme name")
+        );
+    }
+
+    #[test]
+    #[serial]
     fn load_with_config_dir_rejects_unknown_fuzzy_matcher() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
@@ -403,6 +486,9 @@ mod tests {
             r#"
             profile = "dev"
 
+            [profiles.dev]
+            theme = "kanagawa"
+
             [[profiles.dev.producers]]
             type = "demo"
 
@@ -417,7 +503,30 @@ mod tests {
         let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(config.profile.as_deref(), Some("dev"));
         let profile = config.resolve_profile(Some("dev")).unwrap().unwrap();
+        assert_eq!(profile.theme.as_deref(), Some("kanagawa"));
         assert_eq!(profile.producers.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn active_profile_applies_theme_override() {
+        let mut config = Config {
+            profile: Some("dev".to_string()),
+            ..Config::default()
+        };
+        config.profiles.insert(
+            "dev".to_string(),
+            ProfileConfig {
+                theme: Some("nord".to_string()),
+                producers: vec![ProducerConfig::Demo],
+            },
+        );
+
+        config
+            .apply_profile_overrides(config.profile.clone().as_deref())
+            .unwrap();
+
+        assert_eq!(config.tui.theme, "nord");
     }
 
     #[test]

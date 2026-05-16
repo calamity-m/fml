@@ -1,0 +1,41 @@
+# Example fml theme config.
+#
+# Copy this file to $XDG_CONFIG_HOME/fml/config.toml or .config/fml/config.toml
+# and choose either a shipped theme or the custom theme below.
+
+[tui]
+# Shipped themes include:
+# default, forest, kanagawa, kanagawa_dragon, gruvbox, dracula,
+# catppuccin_mocha, tokyo_night, nord, mono, ocean.
+theme = "kanagawa"
+
+# To use the custom theme below instead, set:
+# theme = "solarized_dark"
+#
+# Profiles can also override the theme while active:
+# [profiles.dev]
+# theme = "solarized_dark"
+
+[themes.solarized_dark]
+background = "#002B36"
+border_unfocused_fg = "#586E75"
+primary_accent_fg = "#B58900"
+secondary_accent_fg = "#268BD2"
+source_selector_producer_fg = "#B58900"
+source_selector_group_fg = "#2AA198"
+source_selector_source_fg = "#93A1A1"
+log_selected_bg = "#073642"
+log_selected_modifier = "BOLD"
+log_match_fg = "#CB4B16"
+log_match_style = "color"
+log_match_bold = true
+status_dim = true
+
+[themes.solarized_dark.log_level]
+default_fg = "#93A1A1"
+trace_fg = "#586E75"
+debug_fg = "#268BD2"
+info_fg = "#859900"
+warn_fg = "#B58900"
+error_fg = "#DC322F"
+fatal_fg = "#D33682"

@@ -11,8 +11,9 @@ profile = "dev"
 
 # --- profiles ----------------------------------------------------------------
 #
-# Each [[profiles.<name>.producers]] entry adds one producer to the bundle.
-# `type` is one of: demo, file, docker, kubernetes.
+# Each profile can set `theme = "<name>"` to override [tui].theme while that
+# profile is active. Each [[profiles.<name>.producers]] entry adds one producer
+# to the bundle. `type` is one of: demo, file, docker, kubernetes.
 #   - demo is repeatable.
 #   - docker may appear at most once per profile (a second is a config error).
 #   - kubernetes can appear multiple times with different namespaces.
@@ -23,6 +24,9 @@ profile = "dev"
 # — no SourceFound, no SourceLost, no log entries reach fml.
 
 # Local development: a synthetic feed plus a tailed file.
+[profiles.dev]
+theme = "kanagawa"
+
 [[profiles.dev.producers]]
 type = "demo"
 
@@ -31,12 +35,18 @@ type = "file"
 file = "/var/log/app.log"
 
 # Staging: docker producer with the istio sidecar filtered out.
+[profiles.staging]
+theme = "tokyo_night"
+
 [[profiles.staging.producers]]
 type = "docker"
 skip_istio = true
 
 # Production: two kube namespaces; team-a drops debug-prefixed pods, team-b
 # blocks anything matching `_postgres_` in the pod or container name.
+[profiles.prod]
+theme = "nord"
+
 [[profiles.prod.producers]]
 type = "kubernetes"
 namespace = "team-a"
@@ -74,7 +84,11 @@ skip_istio = true
 # debug_log_dir = "/tmp"
 
 # [tui]
-# theme = "kanagawa-dragon"
+# theme = "kanagawa"
+#
+# Shipped themes include: default, forest, kanagawa, kanagawa_dragon,
+# gruvbox, dracula, catppuccin_mocha, tokyo_night, nord, mono, ocean.
+# See examples/config/themes.toml for a complete custom [themes.<name>] example.
 
 # [store]
 # capacity = 1_000_000

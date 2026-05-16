@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ratatui::layout::Rect;
 use ratatui_textarea::TextArea;
@@ -89,7 +89,16 @@ pub struct TuiState {
 
 impl TuiState {
     pub fn new(tui_config: &TuiConfig, search_config: &SearchConfig) -> Result<Self, FmlError> {
-        let selected_theme = tui_config.resolved_theme()?;
+        Self::new_with_themes(tui_config, search_config, &BTreeMap::new())
+    }
+
+    /// Build TUI state with top-level user-defined themes available for theme resolution.
+    pub fn new_with_themes(
+        tui_config: &TuiConfig,
+        search_config: &SearchConfig,
+        user_themes: &BTreeMap<String, ThemeConfig>,
+    ) -> Result<Self, FmlError> {
+        let selected_theme = tui_config.resolved_theme_with(user_themes)?;
         Ok(TuiState {
             focused: Slot::Main,
             areas: HashMap::new(),
