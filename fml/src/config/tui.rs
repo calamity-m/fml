@@ -44,6 +44,13 @@ pub struct TuiConfig {
     /// or disabled.
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
+
+    /// When `true`, the status bar never renders transient messages.
+    ///
+    /// Intended for snapshot tests: set this flag so new status-message
+    /// infrastructure does not invalidate existing snapshots.
+    #[serde(default)]
+    pub suppress_status_messages: bool,
 }
 
 impl Default for TuiConfig {
@@ -54,6 +61,7 @@ impl Default for TuiConfig {
             theme: default_theme_name(),
             default_theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            suppress_status_messages: false,
         }
     }
 }
@@ -398,6 +406,19 @@ pub struct KeybindingsConfig {
     /// Only fires when the log pane has focus.
     #[serde(default = "default_show_info")]
     pub show_info: Vec<String>,
+
+    /// Toggle select mode (releases mouse capture so the terminal handles
+    /// drag-selection and wheel scrollback).
+    ///
+    /// Active globally. `F2` is the default and is distinct from POSIX SIGQUIT (`ctrl+\`).
+    #[serde(default = "default_toggle_select_mode")]
+    pub toggle_select_mode: Vec<String>,
+
+    /// Yank the currently selected log entry as JSON via OSC 52.
+    ///
+    /// Only fires when the log pane has focus and no popup is active.
+    #[serde(default = "default_yank_selected_entry")]
+    pub yank_selected_entry: Vec<String>,
 }
 
 impl Default for KeybindingsConfig {
@@ -405,6 +426,8 @@ impl Default for KeybindingsConfig {
         Self {
             toggle_help: default_toggle_help(),
             show_info: default_show_info(),
+            toggle_select_mode: default_toggle_select_mode(),
+            yank_selected_entry: default_yank_selected_entry(),
         }
     }
 }
@@ -415,6 +438,14 @@ fn default_toggle_help() -> Vec<String> {
 
 fn default_show_info() -> Vec<String> {
     vec!["enter".into()]
+}
+
+fn default_toggle_select_mode() -> Vec<String> {
+    vec!["f2".into()]
+}
+
+fn default_yank_selected_entry() -> Vec<String> {
+    vec!["y".into()]
 }
 
 #[cfg(test)]

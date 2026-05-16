@@ -34,6 +34,12 @@ pub enum CustomizedKeyAction {
     ScrollHead,
     /// Scroll to the bottom (tail)
     ScrollTail,
+    /// Toggle select mode: releases mouse capture so the terminal handles
+    /// drag-selection and wheel scrollback. Active in global scope.
+    ToggleSelectMode,
+    /// Yank the selected log entry as JSON via OSC 52. Only fires when the log
+    /// pane has focus and no popup is active.
+    YankSelectedEntry,
     /// A non-match
     None,
 }
@@ -138,6 +144,16 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
         label: "esc / ?",
         section: HelpSection::HelpPopup,
     },
+    KeyActionHint {
+        title: "Select mode",
+        label: "F2",
+        section: HelpSection::Global,
+    },
+    KeyActionHint {
+        title: "Yank entry",
+        label: "y",
+        section: HelpSection::LogPane,
+    },
 ];
 
 pub fn hints_for_section(section: HelpSection) -> impl Iterator<Item = &'static KeyActionHint> {
@@ -174,6 +190,8 @@ pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedK
         }
         (KeyCode::Char('g') | KeyCode::Home, _) => CustomizedKeyAction::ScrollHead,
         (KeyCode::Char('G') | KeyCode::End, _) => CustomizedKeyAction::ScrollTail,
+        (KeyCode::F(2), _) => CustomizedKeyAction::ToggleSelectMode,
+        (KeyCode::Char('y'), _) => CustomizedKeyAction::YankSelectedEntry,
         _ => CustomizedKeyAction::None,
     };
 

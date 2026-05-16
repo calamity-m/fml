@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    time::{Duration, Instant},
+};
 
 use ratatui::layout::Rect;
 use ratatui_textarea::TextArea;
@@ -9,7 +12,6 @@ pub mod preview_pane_state;
 
 use log_pane_state::LogPaneState;
 use preview_pane_state::PreviewPaneState;
-use tui_popup::Popup;
 
 use crate::{
     config::{
@@ -85,6 +87,21 @@ pub struct TuiState {
     pub active_popup: Option<ActivePopup>,
     pub source_selector: SourceSelectorState,
     pub field_picker: FieldPickerState,
+    /// Transient status-bar message and the instant it was set.
+    pub status_message: Option<(String, Instant)>,
+    /// How long a transient status message remains visible.
+    pub status_message_ttl: Duration,
+    /// Next message to promote when the current one expires.
+    pub status_message_pending: Option<String>,
+    /// When `true`, mouse capture is released so the terminal handles
+    /// drag-selection and wheel scrollback.
+    pub select_mode: bool,
+    /// Set to `true` after the first yank in a multiplexer session so the
+    /// one-time clipboard-config hint is not repeated.
+    pub multiplexer_clipboard_hint_shown: bool,
+    /// When `true`, `status_message()` always returns `None`. Used by snapshot
+    /// tests to keep existing baselines stable.
+    pub suppress_status_messages: bool,
 }
 
 impl TuiState {
@@ -116,6 +133,12 @@ impl TuiState {
             active_popup: None,
             source_selector: SourceSelectorState::new(),
             field_picker: FieldPickerState::new(),
+            status_message: None,
+            status_message_ttl: Duration::from_secs(3),
+            status_message_pending: None,
+            select_mode: false,
+            multiplexer_clipboard_hint_shown: false,
+            suppress_status_messages: tui_config.suppress_status_messages,
         })
     }
 
@@ -346,5 +369,116 @@ impl TuiState {
 
     pub fn remove_source_id(&mut self, source_id: &SourceId) {
         self.source_selector.enabled_source_ids.remove(source_id);
+    }
+
+    /// Set a transient status-bar message, replacing any current message and
+    /// clearing the pending queue.
+    pub fn set_status_message(&mut self, msg: String) {
+        self.status_message = Some((msg, Instant::now()));
+        self.status_message_pending = None;
+    }
+
+    /// Queue a message to display after the current one expires. If there is no
+    /// current active message the queued message becomes current immediately.
+    pub fn queue_status_message(&mut self, msg: String) {
+        let now = Instant::now();
+        let active = self
+            .status_message
+            .as_ref()
+            .is_some_and(|(_, ts)| now.duration_since(*ts) < self.status_message_ttl);
+        if active {
+            self.status_message_pending = Some(msg);
+        } else {
+            self.status_message = Some((msg, now));
+        }
+    }
+
+    /// Return the current transient message if it is within its TTL, promoting
+    /// any pending message when the current one has expired.
+    ///
+    /// Returns `None` when there is no active message or when
+    /// `suppress_status_messages` is set.
+    pub fn status_message(&mut self, now: Instant) -> Option<&str> {
+        if self.suppress_status_messages {
+            return None;
+        }
+        let expired = self
+            .status_message
+            .as_ref()
+            .is_some_and(|(_, ts)| now.duration_since(*ts) >= self.status_message_ttl);
+        if expired {
+            if let Some(pending) = self.status_message_pending.take() {
+                self.status_message = Some((pending, now));
+            } else {
+                self.status_message = None;
+            }
+        }
+        self.status_message.as_ref().map(|(msg, _)| msg.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use crate::config::{search::SearchConfig, tui::TuiConfig};
+
+    use super::TuiState;
+
+    fn state() -> TuiState {
+        TuiState::new(&TuiConfig::default(), &SearchConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn status_message_visible_within_ttl() {
+        let mut s = state();
+        s.set_status_message("hello".into());
+        let now = Instant::now();
+        assert_eq!(s.status_message(now), Some("hello"));
+    }
+
+    #[test]
+    fn status_message_expires_after_ttl() {
+        let mut s = state();
+        s.set_status_message("hello".into());
+        // Use the stored timestamp to compute a deterministic future instant.
+        let ts = s.status_message.as_ref().unwrap().1;
+        let after = ts + s.status_message_ttl + Duration::from_millis(1);
+        assert_eq!(s.status_message(after), None);
+    }
+
+    #[test]
+    fn suppress_status_messages_hides_message() {
+        let mut config = TuiConfig::default();
+        config.suppress_status_messages = true;
+        let mut s = TuiState::new(&config, &SearchConfig::default()).unwrap();
+        s.set_status_message("hello".into());
+        assert_eq!(s.status_message(Instant::now()), None);
+    }
+
+    #[test]
+    fn pending_message_promoted_when_current_expires() {
+        let mut s = state();
+        s.set_status_message("first".into());
+        s.queue_status_message("second".into());
+        // Before expiry: first is visible, pending queued.
+        let now = Instant::now();
+        assert_eq!(s.status_message(now), Some("first"));
+        // After expiry: pending is promoted.
+        let ts = s.status_message.as_ref().unwrap().1;
+        let after = ts + s.status_message_ttl + Duration::from_millis(1);
+        assert_eq!(s.status_message(after), Some("second"));
+    }
+
+    #[test]
+    fn set_status_message_clears_pending() {
+        let mut s = state();
+        s.set_status_message("first".into());
+        s.queue_status_message("second".into());
+        s.set_status_message("replaced".into());
+        let ts = s.status_message.as_ref().unwrap().1;
+        let after = ts + s.status_message_ttl + Duration::from_millis(1);
+        // Pending was cleared, so nothing after expiry.
+        assert_eq!(s.status_message(after), None);
     }
 }
