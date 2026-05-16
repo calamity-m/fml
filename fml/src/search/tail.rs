@@ -11,10 +11,12 @@ use crate::{
 /// Starts the background worker for a tail-oriented search request.
 ///
 /// The worker re-emits the full tail window (up to `tail_size` entries) each
-/// time `LogStore::bounds().1` advances. Emissions share `ctx.target` and
-/// `ctx.request_id` so that `handle_search_event` discards results from
-/// superseded queries. Cancellation is prompt because every iteration yields
-/// at `ticker.tick().await` or inside `emit_results`.
+/// time a *matching* entry advances the tail. Filtering is delegated to
+/// `LogStore::fetch_tail_filtered`, so the window stays full even when an
+/// unrelated hot source dominates ingestion. The re-emit gate tracks the
+/// max sequence id in the last emitted set, suppressing redundant emits
+/// while only non-matching entries arrive. Cancellation is prompt because
+/// every iteration yields at `ticker.tick().await` or inside `emit_results`.
 pub fn start_tail_search(ctx: SearchContext, tail_size: usize) -> JoinHandle<()> {
     let SearchContext {
         target,
@@ -32,37 +34,34 @@ pub fn start_tail_search(ctx: SearchContext, tail_size: usize) -> JoinHandle<()>
             sources, tail_size, tick_rate
         );
 
-        let mut last_sent_high: Option<u64> = None;
+        let mut last_sent_match_high: Option<u64> = None;
+        let mut seeded = false;
         let mut ticker = tokio::time::interval(tick_rate);
 
         loop {
             ticker.tick().await;
 
-            let (low, high) = store.bounds();
-            if last_sent_high == Some(high) {
-                continue;
+            let mut entries: Vec<Arc<LogEntry>> = Vec::new();
+            if let Err(e) = store.fetch_tail_filtered(&sources, tail_size, &mut entries) {
+                let _ = emit_error(e.to_string(), &tx).await;
+                return;
             }
 
-            let entries = if high == 0 {
-                Vec::new()
-            } else {
-                let lower = high.saturating_sub(tail_size as u64 - 1).max(low);
-                let mut pool: Vec<Arc<LogEntry>> = Vec::new();
-                if let Err(e) = store.fetch_range(lower, high, &mut pool) {
-                    let _ = emit_error(e.to_string(), &tx).await;
-                    return;
-                }
-                pool.into_iter()
-                    .filter(|entry| sources.is_empty() || sources.contains(&entry.source.id))
-                    .collect()
-            };
+            let current_match_high = entries.last().map(|e| e.seq);
+            // Skip re-emit when no new matching entry has advanced the tail.
+            // Always emit at least once so consumers see the seed (possibly
+            // empty) state.
+            if seeded && current_match_high == last_sent_match_high {
+                continue;
+            }
 
             match emit_results(target, query.clone(), entries, request_id, true, &tx).await {
                 EmitOutcome::Sent => {}
                 EmitOutcome::ReceiverGone => return,
             }
 
-            last_sent_high = Some(high);
+            last_sent_match_high = current_match_high;
+            seeded = true;
         }
     })
 }
@@ -237,6 +236,98 @@ mod tests {
         assert_eq!(
             update.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
             vec![1, 2]
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn fills_tail_window_with_matching_entries_when_hot_source_dominates() {
+        // Issue #13 repro: hot source dominates ingestion, slow source is the
+        // focused filter. The tail window must walk back past hot entries
+        // to fill `tail_size` matching slow entries.
+        let store = RingBufferStore::new(test_store_config());
+        let mut entries: Vec<(&str, &str)> = Vec::new();
+        // Pattern: [9 hot, 1 slow] x 5 followed by 9 trailing hot entries.
+        // Slow entries land at seqs 10, 20, 30, 40, 50; high = 59.
+        let slow_msgs = ["s0", "s1", "s2", "s3", "s4"];
+        for &slow_msg in &slow_msgs {
+            for _ in 0..9 {
+                entries.push(("h", "hot"));
+            }
+            entries.push((slow_msg, "slow"));
+        }
+        for _ in 0..9 {
+            entries.push(("h", "hot"));
+        }
+        populate(&store, &entries);
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_tail_search(
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                sources: vec!["slow".to_string()],
+                request_id: 1,
+                tick_rate: Duration::from_millis(10),
+                store: store.clone(),
+                tx,
+            },
+            3,
+        );
+
+        let (results, _, complete) = recv_result(&mut rx).await;
+        assert!(complete);
+        let seqs: Vec<u64> = results.iter().map(|r| r.seq_id).collect();
+        // Slow entries land at seqs 10, 20, 30, 40, 50; last 3 ascending:
+        assert_eq!(
+            seqs,
+            vec![30, 40, 50],
+            "tail window must contain last 3 slow entries by seq, ascending"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn does_not_re_emit_when_only_non_matching_entries_arrive() {
+        // Hot inserts should not trigger re-emit when the focused source has
+        // produced nothing new. Today the gate uses global high, so this fails.
+        let store = RingBufferStore::new(test_store_config());
+        populate(&store, &[("a", "slow"), ("b", "hot"), ("c", "slow")]);
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_tail_search(
+            SearchContext {
+                target: SearchTarget::LogPane,
+                query: Query::Tail,
+                sources: vec!["slow".to_string()],
+                request_id: 1,
+                tick_rate: Duration::from_millis(10),
+                store: store.clone(),
+                tx,
+            },
+            5,
+        );
+
+        // Drain the seed emission.
+        let (seed, _, _) = recv_result(&mut rx).await;
+        assert_eq!(
+            seed.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+
+        // Insert many hot-only entries; matching set does not change.
+        for _ in 0..50 {
+            store.insert(make_entry("h", "hot"));
+        }
+
+        // Wait several ticks; no further Result event should arrive.
+        let res = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+        assert!(
+            res.is_err(),
+            "unexpected re-emit when no new matching entries arrived: {:?}",
+            res
         );
 
         handle.abort();

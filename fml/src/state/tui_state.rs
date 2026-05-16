@@ -9,6 +9,7 @@ pub mod preview_pane_state;
 
 use log_pane_state::LogPaneState;
 use preview_pane_state::PreviewPaneState;
+use tui_popup::Popup;
 
 use crate::{
     config::{
