@@ -85,13 +85,19 @@ impl SourceBlock {
     /// Test whether `source` should be blocked. Producers must call this
     /// before every `SourceFound` / `StoreEvent` they emit for the source.
     pub fn is_source_blocked(&self, source: &Source) -> bool {
+        let display_leaf = source.display_name.rsplit('/').next().unwrap_or_default();
         for needle in &self.substrings {
-            if source.id.contains(needle) || source.display_name.contains(needle) {
+            if source.id.contains(needle)
+                || source.display_name.contains(needle)
+                || display_leaf.contains(needle)
+            {
                 return true;
             }
         }
         if let Some(r) = &self.regex {
-            return r.is_match(&source.id) || r.is_match(&source.display_name);
+            return r.is_match(&source.id)
+                || r.is_match(&source.display_name)
+                || r.is_match(display_leaf);
         }
         false
     }

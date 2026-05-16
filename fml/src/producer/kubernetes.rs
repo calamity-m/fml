@@ -221,7 +221,7 @@ async fn track_container(
         return;
     }
 
-    let source = pod_container_to_source(&running.pod_name, &running.container_name, namespace);
+    let source = pod_container_to_source(&running, namespace);
 
     // Single source-emission gate. The kubernetes producer has exactly one
     // SourceFound emission site (this function); blocked sources are dropped
@@ -388,16 +388,19 @@ fn reconcile_restarted(
 
 fn running_containers(pod: &Pod) -> Vec<RunningContainer> {
     let pod_name = pod.name_any();
+    let workload_group = pod_workload_group(pod);
     let mut containers = Vec::new();
     if let Some(status) = &pod.status {
         collect_running(
             &pod_name,
             status.container_statuses.as_deref(),
+            &workload_group,
             &mut containers,
         );
         collect_running(
             &pod_name,
             status.init_container_statuses.as_deref(),
+            &workload_group,
             &mut containers,
         );
     }
@@ -407,6 +410,7 @@ fn running_containers(pod: &Pod) -> Vec<RunningContainer> {
 fn collect_running(
     pod_name: &str,
     statuses: Option<&[ContainerStatus]>,
+    workload_group: &str,
     containers: &mut Vec<RunningContainer>,
 ) {
     for status in statuses.unwrap_or_default() {
@@ -419,18 +423,59 @@ fn collect_running(
             containers.push(RunningContainer {
                 pod_name: pod_name.to_string(),
                 container_name: status.name.clone(),
+                workload_group: workload_group.to_string(),
             });
         }
     }
 }
 
-fn pod_container_to_source(pod_name: &str, container_name: &str, namespace: &str) -> Source {
+fn pod_container_to_source(running: &RunningContainer, namespace: &str) -> Source {
     Source {
         producer: namespace.to_string(),
-        id: format!("{namespace}/{pod_name}/{container_name}"),
-        display_name: container_name.to_string(),
-        group: Some(pod_name.to_string()),
+        id: format!(
+            "{namespace}/{}/{}",
+            running.pod_name, running.container_name
+        ),
+        display_name: format!("{}/{}", running.pod_name, running.container_name),
+        group: Some(running.workload_group.clone()),
     }
+}
+
+fn pod_workload_group(pod: &Pod) -> String {
+    let pod_name = pod.name_any();
+    pod.metadata
+        .owner_references
+        .as_deref()
+        .and_then(|owners| {
+            owners
+                .iter()
+                .find(|owner| owner.controller.unwrap_or(false))
+                .or_else(|| owners.first())
+        })
+        .map(|owner| workload_group_for_owner(&owner.kind, &owner.name))
+        .unwrap_or_else(|| format!("pod/{pod_name}"))
+}
+
+fn workload_group_for_owner(kind: &str, name: &str) -> String {
+    let kind = kind.to_ascii_lowercase();
+    if kind == "replicaset"
+        && let Some(deployment) = deployment_name_from_replicaset(name)
+    {
+        return format!("deployment/{deployment}");
+    }
+
+    format!("{kind}/{name}")
+}
+
+fn deployment_name_from_replicaset(name: &str) -> Option<&str> {
+    let (deployment, suffix) = name.rsplit_once('-')?;
+    let generated_hash = (5..=10).contains(&suffix.len())
+        && suffix
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit());
+    generated_hash
+        .then_some(deployment)
+        .filter(|s| !s.is_empty())
 }
 
 fn source_id_for_key(namespace: &str, key: &ContainerKey) -> SourceId {
@@ -463,6 +508,7 @@ fn resolve_namespace_from_kubeconfig(kubeconfig: &Kubeconfig) -> Result<String, 
 struct RunningContainer {
     pod_name: String,
     container_name: String,
+    workload_group: String,
 }
 
 impl RunningContainer {
@@ -500,7 +546,10 @@ impl ReconnectBackoff {
 mod tests {
     use std::time::Instant;
 
-    use k8s_openapi::api::core::v1::{ContainerState, ContainerStateRunning, PodStatus};
+    use k8s_openapi::{
+        api::core::v1::{ContainerState, ContainerStateRunning, PodStatus},
+        apimachinery::pkg::apis::meta::v1::OwnerReference,
+    };
     use kube::{
         Config,
         config::{Context, NamedContext},
@@ -510,9 +559,26 @@ mod tests {
     use crate::config::SourceBlockConfig;
 
     fn pod(name: &str, regular: &[&str], init: &[&str]) -> Pod {
+        pod_with_owner(name, regular, init, None)
+    }
+
+    fn pod_with_owner(
+        name: &str,
+        regular: &[&str],
+        init: &[&str],
+        owner: Option<(&str, &str)>,
+    ) -> Pod {
         Pod {
             metadata: kube::core::ObjectMeta {
                 name: Some(name.to_string()),
+                owner_references: owner.map(|(kind, name)| {
+                    vec![OwnerReference {
+                        kind: kind.to_string(),
+                        name: name.to_string(),
+                        controller: Some(true),
+                        ..Default::default()
+                    }]
+                }),
                 ..Default::default()
             },
             status: Some(PodStatus {
@@ -521,6 +587,14 @@ mod tests {
                 ..Default::default()
             }),
             ..Default::default()
+        }
+    }
+
+    fn running(pod_name: &str, container_name: &str) -> RunningContainer {
+        RunningContainer {
+            pod_name: pod_name.to_string(),
+            container_name: container_name.to_string(),
+            workload_group: format!("pod/{pod_name}"),
         }
     }
 
@@ -566,13 +640,51 @@ mod tests {
     }
 
     #[test]
-    fn pod_container_source_uses_namespace_pod_and_container() {
-        let source = pod_container_to_source("web-123", "nginx", "prod");
+    fn pod_container_source_uses_namespace_workload_pod_and_container() {
+        let source = pod_container_to_source(
+            &RunningContainer {
+                pod_name: "web-123".to_string(),
+                container_name: "nginx".to_string(),
+                workload_group: "deployment/web".to_string(),
+            },
+            "prod",
+        );
 
         assert_eq!(source.producer, "prod");
         assert_eq!(source.id, "prod/web-123/nginx");
-        assert_eq!(source.display_name, "nginx");
-        assert_eq!(source.group, Some("web-123".to_string()));
+        assert_eq!(source.display_name, "web-123/nginx");
+        assert_eq!(source.group, Some("deployment/web".to_string()));
+    }
+
+    #[test]
+    fn running_containers_group_bare_pods_by_pod_name() {
+        let containers = running_containers(&pod("debug", &["shell"], &[]));
+
+        assert_eq!(containers, vec![running("debug", "shell")]);
+    }
+
+    #[test]
+    fn running_containers_group_by_controller_owner() {
+        let containers = running_containers(&pod_with_owner(
+            "redis-0",
+            &["redis"],
+            &[],
+            Some(("StatefulSet", "redis")),
+        ));
+
+        assert_eq!(containers[0].workload_group, "statefulset/redis");
+    }
+
+    #[test]
+    fn running_containers_resolve_replicaset_owner_to_deployment() {
+        let containers = running_containers(&pod_with_owner(
+            "fastapi-server-7df78c6b8c-abc12",
+            &["fastapi-server"],
+            &[],
+            Some(("ReplicaSet", "fastapi-server-7df78c6b8c")),
+        ));
+
+        assert_eq!(containers[0].workload_group, "deployment/fastapi-server");
     }
 
     #[test]
@@ -624,13 +736,7 @@ mod tests {
         let (additions, removals) =
             reconcile_restarted(&[pod("pod-a", &["web", "sidecar"], &[])], &mut tracked);
 
-        assert_eq!(
-            additions,
-            vec![RunningContainer {
-                pod_name: "pod-a".to_string(),
-                container_name: "sidecar".to_string()
-            }]
-        );
+        assert_eq!(additions, vec![running("pod-a", "sidecar")]);
         assert_eq!(removals.len(), 1);
         assert_eq!(removals[0].0, ("pod-b".to_string(), "api".to_string()));
         assert!(tracked.contains_key(&("pod-a".to_string(), "web".to_string())));
@@ -668,13 +774,7 @@ mod tests {
             &mut tracked,
         );
 
-        assert_eq!(
-            additions,
-            vec![RunningContainer {
-                pod_name: "pod-a".to_string(),
-                container_name: "web".to_string()
-            }]
-        );
+        assert_eq!(additions, vec![running("pod-a", "web")]);
         assert_eq!(removals.len(), 1);
         assert_eq!(removals[0].0, ("pod-a".to_string(), "old".to_string()));
     }
@@ -720,6 +820,7 @@ mod tests {
             RunningContainer {
                 pod_name: "productpage".to_string(),
                 container_name: "istio-proxy".to_string(),
+                workload_group: "deployment/productpage".to_string(),
             },
             "default",
             &api,
@@ -752,11 +853,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let mut tracked: HashMap<ContainerKey, CancellationToken> = HashMap::new();
 
-        // Display name is the container name, e.g. `istio-proxy`.
+        // Display name includes the container name, e.g. `productpage/istio-proxy`.
         track_container(
             RunningContainer {
                 pod_name: "productpage".to_string(),
                 container_name: "istio-proxy".to_string(),
+                workload_group: "deployment/productpage".to_string(),
             },
             "default",
             &api,
@@ -794,6 +896,7 @@ mod tests {
             RunningContainer {
                 pod_name: "api".to_string(),
                 container_name: "web".to_string(),
+                workload_group: "deployment/api".to_string(),
             },
             "default",
             &api,
@@ -810,7 +913,7 @@ mod tests {
         let evt = rx.try_recv().expect("expected SourceFound");
         match evt {
             ProducerEvent::SourceFound(s) => {
-                assert_eq!(s.display_name, "web");
+                assert_eq!(s.display_name, "api/web");
             }
             other => panic!("unexpected event: {other:?}"),
         }
