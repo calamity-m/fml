@@ -118,8 +118,12 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
     let mut new_state = match event {
         TuiEvent::NewSelectedEntry(selected_entry) => {
             let mut state = state;
+            let prev_seq = state.tui.selected_entry.as_ref().map(|e| e.entry.seq);
+            let next_seq = selected_entry.as_ref().map(|e| e.entry.seq);
             state.tui.selected_entry = selected_entry.clone();
-            state.tui.info_pane_scroll_offset = 0;
+            if prev_seq != next_seq {
+                state.tui.info_pane_scroll_offset = 0;
+            }
             if state.tui.field_picker_is_open() {
                 state.tui.prune_field_picker_selection_to_selected_entry();
             }
@@ -839,6 +843,26 @@ mod tests {
         );
 
         assert_eq!(state.tui.info_pane_scroll_offset, 0);
+    }
+
+    #[test]
+    fn new_selected_entry_same_seq_preserves_info_pane_scroll() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.selected_entry = Some(SelectedEntry {
+            entry: entry(7),
+            matches: Vec::new(),
+        });
+        state.tui.info_pane_scroll_offset = 3;
+
+        let state = handle_tui_event(
+            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
+                entry: entry(7),
+                matches: Vec::new(),
+            })),
+            state,
+        );
+
+        assert_eq!(state.tui.info_pane_scroll_offset, 3);
     }
 
     #[test]
