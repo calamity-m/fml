@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use crate::error::FmlError;
 
 pub mod producer;
+pub mod profile;
 pub mod search;
 pub mod store;
 pub mod themes;
 pub mod tui;
 
-pub use producer::{ProducerConfig, ProfileConfig, SourceBlockConfig};
+pub use producer::{ProducerConfig, SourceBlockConfig};
+pub use profile::ProfileConfig;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Config {
