@@ -1,6 +1,5 @@
 ---
 source: fml/tests/log_pane_wrap.rs
-assertion_line: 74
 expression: render_app(&mut app)
 ---
 ┏ FML [TAIL] | Store 1/1M ━━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
@@ -26,4 +25,4 @@ expression: render_app(&mut app)
 ┌ Query ───────────────────────────────┐│                                      │
 │>  Enter a query...                   ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
- Quit <ctrl+c / q> | Help <?>                                            v0.1.1
+ Quit <ctrl+c / q> | Help <?>                                            v0.2.0
