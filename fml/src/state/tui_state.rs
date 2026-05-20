@@ -128,7 +128,12 @@ impl TuiState {
             log_pane_cursor_row: 0,
             selected_entry: None,
             info_pane_scroll_offset: 0,
-            log_pane: LogPaneState::new(search_config.tail_size),
+            log_pane: {
+                let mut lp = LogPaneState::new(search_config.tail_size);
+                let mut cursor = 0;
+                lp.set_line_wrap(tui_config.line_wrap, &mut cursor);
+                lp
+            },
             preview_pane: PreviewPaneState::new(),
             active_popup: None,
             source_selector: SourceSelectorState::new(),

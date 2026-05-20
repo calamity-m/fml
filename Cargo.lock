@@ -1366,6 +1366,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-popup",
  "tui-scrollview",
+ "unicode-width",
  "vergen-gix",
 ]
 

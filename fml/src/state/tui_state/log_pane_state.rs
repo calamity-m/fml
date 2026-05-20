@@ -58,10 +58,20 @@ struct LogPaneViewport {
     selected_seq: Option<u64>,
 }
 
+/// Display-mode state for the log pane that is independent of the viewport
+/// math (which is keyed on entry counts). D2 introduces `line_wrap`; D3
+/// extends this with the renderer-written `visible_layout` and a wrapped
+/// message cache.
+#[derive(Default)]
+struct LogPaneDisplay {
+    line_wrap: bool,
+}
+
 pub struct LogPaneState {
     pub mode: ScrollMode,
     content: LogPaneContent,
     viewport: LogPaneViewport,
+    display: LogPaneDisplay,
     pub retained_bounds: (u64, u64),
     pub store_stats: StoreStats,
     fuzzy_scan_progress: Option<SearchProgress>,
@@ -75,6 +85,7 @@ impl Default for LogPaneState {
             mode: ScrollMode::Tail,
             content: LogPaneContent::default(),
             viewport: LogPaneViewport::default(),
+            display: LogPaneDisplay::default(),
             retained_bounds: (0, 0),
             store_stats: StoreStats::default(),
             fuzzy_scan_progress: None,
@@ -99,6 +110,19 @@ impl LogPaneState {
             history_buffer_limit: history_buffer_limit.max(1),
             ..Self::default()
         }
+    }
+
+    /// Whether the log pane currently renders entries in wrapped (multi-line)
+    /// mode. `false` is the classic single-line truncated rendering.
+    pub fn line_wrap(&self) -> bool {
+        self.display.line_wrap
+    }
+
+    /// Switch wrap mode. Truncated ↔ wrapped reconciliation of the visual
+    /// cursor row is deferred to the renderer's measurement pass (D3); this
+    /// accessor only flips the flag.
+    pub fn set_line_wrap(&mut self, line_wrap: bool, _log_pane_cursor_row: &mut usize) {
+        self.display.line_wrap = line_wrap;
     }
 
     pub fn query_kind(query: &Query) -> SearchKind {
@@ -699,6 +723,19 @@ mod tests {
 
     use super::*;
     use crate::log::{LogLevel, Source};
+
+    #[test]
+    fn set_line_wrap_flips_the_display_flag() {
+        let mut state = LogPaneState::default();
+        let mut cursor = 0;
+        assert!(!state.line_wrap());
+
+        state.set_line_wrap(true, &mut cursor);
+        assert!(state.line_wrap());
+
+        state.set_line_wrap(false, &mut cursor);
+        assert!(!state.line_wrap());
+    }
 
     fn entry(seq: u64) -> Arc<LogEntry> {
         Arc::new(LogEntry {

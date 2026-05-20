@@ -25,6 +25,7 @@ pub mod preview_pane;
 pub mod query_box;
 pub mod source_selector;
 pub mod status_bar;
+pub mod wrap;
 
 pub trait FmlWidget {
     /// The layout [`Slot`] this widget renders into.

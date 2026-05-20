@@ -5,7 +5,7 @@ use ratatui::{
 
 use crate::tui::{
     layout::Slot,
-    widgets::{FmlWidget, highlight},
+    widgets::{FmlWidget, highlight, wrap},
 };
 
 pub struct InfoPane {}
@@ -27,81 +27,6 @@ impl InfoPane {
             serde_json::Value::Null => String::new(),
             value => value.to_string(),
         }
-    }
-
-    fn wrap_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Line<'static>> {
-        let width = usize::from(width).max(1);
-        let styled_chars = spans
-            .into_iter()
-            .flat_map(|span| {
-                let style = span.style;
-                span.content
-                    .chars()
-                    .map(move |ch| (ch, style))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        if styled_chars.is_empty() {
-            return vec![Line::default()];
-        }
-
-        let mut lines = Vec::new();
-        let mut start = 0;
-        while start < styled_chars.len() {
-            while styled_chars
-                .get(start)
-                .is_some_and(|(ch, _)| ch.is_whitespace())
-            {
-                start += 1;
-            }
-
-            if start >= styled_chars.len() {
-                break;
-            }
-
-            let hard_end = start.saturating_add(width).min(styled_chars.len());
-            let end = if hard_end < styled_chars.len() {
-                styled_chars[start..hard_end]
-                    .iter()
-                    .rposition(|(ch, _)| ch.is_whitespace())
-                    .filter(|idx| *idx > 0)
-                    .map(|idx| start + idx)
-                    .unwrap_or(hard_end)
-            } else {
-                hard_end
-            };
-
-            lines.push(Self::line_from_styled_chars(&styled_chars[start..end]));
-            start = end;
-        }
-
-        if lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines
-    }
-
-    fn line_from_styled_chars(chars: &[(char, ratatui::style::Style)]) -> Line<'static> {
-        let mut spans = Vec::new();
-        let mut current = String::new();
-        let mut current_style = None;
-
-        for (ch, style) in chars {
-            if current_style.is_some_and(|current_style| current_style != *style) {
-                let style = current_style.expect("checked above");
-                spans.push(Span::styled(std::mem::take(&mut current), style));
-            }
-
-            current.push(*ch);
-            current_style = Some(*style);
-        }
-
-        if let Some(style) = current_style {
-            spans.push(Span::styled(current, style));
-        }
-
-        Line::from(spans)
     }
 }
 
@@ -198,9 +123,11 @@ impl FmlWidget for InfoPane {
                 ),
                 Line::from(vec![Span::styled("message:", label_style)]),
             ];
-            lines.extend(Self::wrap_spans(
+            lines.extend(wrap::wrap_styled_spans(
                 highlight::styled_field(&entry.msg, matches, "msg", value_style, match_style),
                 inner_area.width,
+                &[],
+                false,
             ));
 
             let mut custom_fields = entry.fields.iter().collect::<Vec<_>>();

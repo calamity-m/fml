@@ -51,6 +51,15 @@ pub struct TuiConfig {
     /// infrastructure does not invalidate existing snapshots.
     #[serde(default)]
     pub suppress_status_messages: bool,
+
+    /// Startup default for log-pane line wrapping.
+    ///
+    /// When `true`, long log entries wrap onto continuation lines indented
+    /// under the `msg` column. When `false` (default), entries render on a
+    /// single line and are clipped to the pane width. Toggle at runtime with
+    /// the `toggle_line_wrap` keybinding.
+    #[serde(default)]
+    pub line_wrap: bool,
 }
 
 impl Default for TuiConfig {
@@ -62,6 +71,7 @@ impl Default for TuiConfig {
             default_theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
             suppress_status_messages: false,
+            line_wrap: false,
         }
     }
 }
@@ -419,6 +429,14 @@ pub struct KeybindingsConfig {
     /// Only fires when the log pane has focus and no popup is active.
     #[serde(default = "default_yank_selected_entry")]
     pub yank_selected_entry: Vec<String>,
+
+    /// Toggle line-wrap mode for the log pane.
+    ///
+    /// Only fires when the log pane has focus. Flips between single-line
+    /// truncated rendering and wrapped rendering with hanging-indent
+    /// continuation lines under the `msg` column.
+    #[serde(default = "default_toggle_line_wrap")]
+    pub toggle_line_wrap: Vec<String>,
 }
 
 impl Default for KeybindingsConfig {
@@ -428,6 +446,7 @@ impl Default for KeybindingsConfig {
             show_info: default_show_info(),
             toggle_select_mode: default_toggle_select_mode(),
             yank_selected_entry: default_yank_selected_entry(),
+            toggle_line_wrap: default_toggle_line_wrap(),
         }
     }
 }
@@ -448,6 +467,10 @@ fn default_yank_selected_entry() -> Vec<String> {
     vec!["y".into()]
 }
 
+fn default_toggle_line_wrap() -> Vec<String> {
+    vec!["w".into()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +478,16 @@ mod tests {
     #[test]
     fn default_theme_has_bold_selection_modifier() {
         assert_eq!(ThemeConfig::default().log_selected_modifier, Modifier::BOLD);
+    }
+
+    #[test]
+    fn default_line_wrap_is_off() {
+        assert!(!TuiConfig::default().line_wrap);
+    }
+
+    #[test]
+    fn default_toggle_line_wrap_binding_is_w() {
+        let kb = KeybindingsConfig::default();
+        assert_eq!(kb.toggle_line_wrap, vec!["w".to_string()]);
     }
 }

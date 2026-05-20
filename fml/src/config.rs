@@ -409,6 +409,23 @@ mod tests {
 
     #[test]
     #[serial]
+    fn fml_tui_line_wrap_env_seeds_initial_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let orig = env::var("FML__TUI__LINE_WRAP").ok();
+        unsafe { env::set_var("FML__TUI__LINE_WRAP", "true") };
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+
+        match orig {
+            Some(v) => unsafe { env::set_var("FML__TUI__LINE_WRAP", v) },
+            None => unsafe { env::remove_var("FML__TUI__LINE_WRAP") },
+        }
+
+        assert!(config.tui.line_wrap);
+    }
+
+    #[test]
+    #[serial]
     fn load_with_config_dir_env_overrides_file() {
         // The config crate with separator("__") uses __ to delimit the prefix
         // from the key as well, so env vars must be FML__<key>, not FML_<key>.

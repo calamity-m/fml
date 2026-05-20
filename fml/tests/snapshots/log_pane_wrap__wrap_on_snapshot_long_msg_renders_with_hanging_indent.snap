@@ -1,0 +1,29 @@
+---
+source: fml/tests/log_pane_wrap.rs
+assertion_line: 74
+expression: render_app(&mut app)
+---
+┏ FML [TAIL] | Store 1/1M ━━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
+┃> 1 INFO src-a entry 1 alpha beta gamm┃│No log selected                       │
+┃               delta epsilon zeta eta ┃│                                      │
+┃               theta iota kappa lambda┃│                                      │
+┃               mu nu xi               ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃└──────────────────────────────────────┘
+┃                                      ┃┌ Preview [ SURROUNDING ] ─────────────┐
+┃                                      ┃│No log selected                       │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛│                                      │
+┌ Query ───────────────────────────────┐│                                      │
+│>  Enter a query...                   ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+ Quit <ctrl+c / q> | Help <?>                                            v0.1.1

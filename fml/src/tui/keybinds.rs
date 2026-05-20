@@ -40,6 +40,10 @@ pub enum CustomizedKeyAction {
     /// Yank the selected log entry as JSON via OSC 52. Only fires when the log
     /// pane has focus and no popup is active.
     YankSelectedEntry,
+    /// Toggle log-pane line-wrap mode (single-line truncated vs. multi-line
+    /// wrapped with hanging-indent continuation). Only fires when the log pane
+    /// has focus.
+    ToggleLineWrap,
     /// A non-match
     None,
 }
@@ -154,6 +158,11 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
         label: "y",
         section: HelpSection::LogPane,
     },
+    KeyActionHint {
+        title: "Toggle wrap",
+        label: "w",
+        section: HelpSection::LogPane,
+    },
 ];
 
 pub fn hints_for_section(section: HelpSection) -> impl Iterator<Item = &'static KeyActionHint> {
@@ -192,8 +201,35 @@ pub fn match_key(key: &KeyEvent, _focus: &Slot) -> (StaticKeyAction, CustomizedK
         (KeyCode::Char('G') | KeyCode::End, _) => CustomizedKeyAction::ScrollTail,
         (KeyCode::F(2), _) => CustomizedKeyAction::ToggleSelectMode,
         (KeyCode::Char('y'), _) => CustomizedKeyAction::YankSelectedEntry,
+        (KeyCode::Char('w'), _) => CustomizedKeyAction::ToggleLineWrap,
         _ => CustomizedKeyAction::None,
     };
 
     (static_key, custom_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_pane_hints_include_toggle_wrap() {
+        let hints: Vec<_> = hints_for_section(HelpSection::LogPane).collect();
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.title == "Toggle wrap" && h.label == "w"),
+            "help popup log-pane section should list toggle wrap binding"
+        );
+    }
+
+    #[test]
+    fn w_key_maps_to_toggle_line_wrap() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_static, custom) = match_key(
+            &KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+            &Slot::Main,
+        );
+        assert_eq!(custom, CustomizedKeyAction::ToggleLineWrap);
+    }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ratatui::{
     layout::Alignment,
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, List, ListItem, ListState, Paragraph, ScrollDirection, Scrollbar,
         ScrollbarOrientation, ScrollbarState,
@@ -24,7 +24,7 @@ use crate::{
     tui::{
         keybinds::{self, StaticKeyAction},
         layout::Slot,
-        widgets::{FmlWidget, highlight},
+        widgets::{FmlWidget, highlight, wrap},
     },
 };
 
@@ -81,12 +81,24 @@ impl LogPane {
         }
     }
 
-    fn render_line(
+    /// Build the renderable `Text` for one log entry.
+    ///
+    /// When `wrap_width` is `None`, returns a single-line `Text` (the classic
+    /// truncated rendering). When `Some(width)`, wraps the `msg` field at
+    /// word boundaries with continuation lines indented to `indent_column`
+    /// columns, so the seq/level/source prefix anchors the eye and the
+    /// continuation `msg` text aligns under itself.
+    ///
+    /// Match highlights survive the wrap because the underlying
+    /// [`wrap::wrap_styled_spans`] preserves per-character style runs.
+    fn render_item(
         entry: &Arc<LogEntry>,
         leading_id: String,
         matches: Option<&[Match]>,
         theme: &ThemeConfig,
-    ) -> Line<'static> {
+        wrap_width: Option<u16>,
+        indent_column: u16,
+    ) -> Text<'static> {
         let base_style = theme.surface_style().fg(theme.log_row_fg(entry.level));
         let match_style = theme.surface_style().patch(theme.match_style());
         let level = entry
@@ -94,34 +106,64 @@ impl LogPane {
             .map(|l| l.to_string())
             .unwrap_or_else(|| "----".to_string());
 
-        let mut spans = Vec::new();
-        spans.push(Span::styled(leading_id, base_style));
-        spans.push(Span::styled(" ", base_style));
-        spans.extend(highlight::styled_field(
+        let mut prefix: Vec<Span<'static>> = Vec::new();
+        prefix.push(Span::styled(leading_id, base_style));
+        prefix.push(Span::styled(" ", base_style));
+        prefix.extend(highlight::styled_field(
             &level,
             matches,
             "level",
             base_style,
             match_style,
         ));
-        spans.push(Span::styled(" ", base_style));
-        spans.extend(highlight::styled_field(
+        prefix.push(Span::styled(" ", base_style));
+        prefix.extend(highlight::styled_field(
             &entry.source.display_name,
             matches,
             "source",
             base_style,
             match_style,
         ));
-        spans.push(Span::styled(" ", base_style));
-        spans.extend(highlight::styled_field(
-            &entry.msg,
-            matches,
-            "msg",
-            base_style,
-            match_style,
-        ));
+        prefix.push(Span::styled(" ", base_style));
 
-        Line::from(spans)
+        let msg_spans =
+            highlight::styled_field(&entry.msg, matches, "msg", base_style, match_style);
+
+        match wrap_width {
+            None => {
+                let mut spans = prefix;
+                spans.extend(msg_spans);
+                Text::from(Line::from(spans))
+            }
+            Some(width) => {
+                // Pad prefix out to indent_column so the first wrapped chunk
+                // begins at the same column the continuation lines align under.
+                let prefix_cells: u16 = prefix_display_width(&prefix);
+                if let Some(pad) = indent_column.checked_sub(prefix_cells)
+                    && pad > 0
+                {
+                    prefix.push(Span::styled(" ".repeat(pad as usize), base_style));
+                }
+
+                let indent_spans =
+                    vec![Span::styled(" ".repeat(indent_column as usize), base_style)];
+                let msg_lines = wrap::wrap_styled_spans(msg_spans, width, &indent_spans, true);
+
+                // The first wrapped line is unindented — that's where the prefix
+                // sits. Continuation lines from `wrap_styled_spans` already carry
+                // the hanging indent.
+                let mut lines: Vec<Line<'static>> = Vec::with_capacity(msg_lines.len().max(1));
+                let mut iter = msg_lines.into_iter();
+                let first = iter.next().unwrap_or_default();
+                let mut first_spans = prefix;
+                first_spans.extend(first.spans);
+                lines.push(Line::from(first_spans));
+                for line in iter {
+                    lines.push(line);
+                }
+                Text::from(lines)
+            }
+        }
     }
 
     fn dispatch_selected_entry(state: &TuiState, events_bus: &mut EventBus) {
@@ -183,19 +225,16 @@ impl FmlWidget for LogPane {
             return;
         }
 
-        // Render whatever domain the state resolved for this mode: retained
-        // sequence order for tail/history, rank order for search.
-        let items: Vec<ListItem> = state
+        // Pre-compute the leading-id strings the same way they'll appear in the
+        // rendered prefix, so the indent_column derivation matches the actual
+        // first-line column the prefix produces.
+        let leading_ids: Vec<String> = state
             .log_pane
             .visible_items()
             .iter()
             .enumerate()
-            .map(|entry| {
-                let (idx, entry) = entry;
-                let leading_id = if state.log_pane.mode == ScrollMode::Search {
-                    // In search mode the useful coordinate is rank position,
-                    // not the underlying log seq, because navigation is over
-                    // fuzzy results rather than retained log order.
+            .map(|(idx, entry)| {
+                if state.log_pane.mode == ScrollMode::Search {
                     state
                         .log_pane
                         .view_start()
@@ -204,15 +243,51 @@ impl FmlWidget for LogPane {
                         .to_string()
                 } else {
                     entry.seq.to_string()
-                };
+                }
+            })
+            .collect();
+
+        // indent_column = max display width of the prefix (leading_id + " " +
+        // level + " " + source.display_name + " ") across the currently-visible
+        // entries. Derived per-frame from visible_items rather than from
+        // store.bounds() / known-sources, which is what the bigplan recommends
+        // for layout stability — but with no two-pass measurement here, the
+        // single-pass derivation is sufficient and avoids extra plumbing.
+        let indent_column: u16 = state
+            .log_pane
+            .visible_items()
+            .iter()
+            .zip(leading_ids.iter())
+            .map(|(entry, leading_id)| prefix_width_for(entry, leading_id))
+            .max()
+            .unwrap_or(0);
+
+        let wrap_width: Option<u16> = if state.log_pane.line_wrap() {
+            let usable = inner_area.width.saturating_sub(indent_column);
+            // wrap_width <= 0 falls back to truncated rendering for this frame.
+            if usable > 0 { Some(usable) } else { None }
+        } else {
+            None
+        };
+
+        // Render whatever domain the state resolved for this mode: retained
+        // sequence order for tail/history, rank order for search.
+        let items: Vec<ListItem> = state
+            .log_pane
+            .visible_items()
+            .iter()
+            .zip(leading_ids)
+            .map(|(entry, leading_id)| {
                 let matches = (state.log_pane.mode == ScrollMode::Search)
                     .then(|| state.log_pane.fuzzy_matches_for(entry.seq))
                     .flatten();
-                ListItem::new(Self::render_line(
+                ListItem::new(Self::render_item(
                     entry,
                     leading_id,
                     matches,
                     &state.selected_theme,
+                    wrap_width,
+                    indent_column,
                 ))
             })
             .collect();
@@ -330,6 +405,13 @@ impl FmlWidget for LogPane {
                     keybinds::CustomizedKeyAction::ScrollTail => {
                         events_bus.tui_event_tx.send(TuiEvent::ScrollTail)
                     }
+                    keybinds::CustomizedKeyAction::ToggleLineWrap => {
+                        let next = !state.log_pane.line_wrap();
+                        state
+                            .log_pane
+                            .set_line_wrap(next, &mut state.log_pane_cursor_row);
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
 
@@ -340,6 +422,32 @@ impl FmlWidget for LogPane {
             _ => {}
         }
     }
+}
+
+/// Display-cell width the rendered prefix for one entry would occupy:
+/// `leading_id + " " + level(4) + " " + source.display_name + " "`. Matches
+/// the spans assembled in [`LogPane::render_item`] so first-line padding lines
+/// up with the hanging indent on continuation lines.
+fn prefix_width_for(entry: &Arc<LogEntry>, leading_id: &str) -> u16 {
+    use unicode_width::UnicodeWidthStr;
+    let id = leading_id.width();
+    // Level is rendered as 4 chars whether the entry has one or not ("----").
+    let level = 4;
+    let source = entry.source.display_name.width();
+    // 3 single-cell spaces between id/level/source and after source.
+    u16::try_from(id + 1 + level + 1 + source + 1).unwrap_or(u16::MAX)
+}
+
+/// Display-cell width of a span sequence, used to align the wrapped-mode
+/// first-line prefix with the hanging indent on continuation lines.
+fn prefix_display_width(spans: &[Span<'static>]) -> u16 {
+    use unicode_width::UnicodeWidthChar;
+    let total: usize = spans
+        .iter()
+        .flat_map(|s| s.content.chars())
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    u16::try_from(total).unwrap_or(u16::MAX)
 }
 
 fn format_count(value: usize) -> String {
@@ -440,12 +548,16 @@ mod tests {
             indices: vec![0],
         }];
 
-        let line = LogPane::render_line(
+        let text = LogPane::render_item(
             &entry(LogLevel::Error),
             "1".to_string(),
             Some(&matches),
             &theme,
+            None,
+            0,
         );
+        assert_eq!(text.lines.len(), 1, "truncated mode = single Line");
+        let line = &text.lines[0];
         let highlighted = line
             .spans
             .iter()
@@ -471,6 +583,148 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    fn long_msg_entry() -> Arc<LogEntry> {
+        Arc::new(LogEntry {
+            seq: 1,
+            msg: "alpha beta gamma delta epsilon zeta eta theta iota".to_string(),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: Source {
+                producer: "fake".to_string(),
+                id: "src-a".to_string(),
+                display_name: "src-a".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn render_item_truncated_mode_is_single_line() {
+        let theme = ThemeConfig::default();
+        let text = LogPane::render_item(&long_msg_entry(), "1".to_string(), None, &theme, None, 0);
+        assert_eq!(text.lines.len(), 1);
+    }
+
+    #[test]
+    fn render_item_wrapped_mode_emits_multiple_lines_with_hanging_indent() {
+        let theme = ThemeConfig::default();
+        // indent_column = "1 INFO src-a " = 1 + 1 + 4 + 1 + 5 + 1 = 13 cells
+        let indent_column = 13;
+        // Pick a narrow wrap_width so the msg definitely wraps.
+        let text = LogPane::render_item(
+            &long_msg_entry(),
+            "1".to_string(),
+            None,
+            &theme,
+            Some(15),
+            indent_column,
+        );
+        assert!(
+            text.lines.len() >= 2,
+            "expected multi-line wrap, got {} line(s)",
+            text.lines.len()
+        );
+
+        // First line: starts with the prefix (leading_id "1").
+        let first: String = text.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            first.starts_with("1 "),
+            "first line should start with prefix, got {first:?}"
+        );
+
+        // Continuation lines: must start with at least `indent_column` spaces
+        // so the wrapped text aligns under the msg column.
+        for (idx, line) in text.lines.iter().enumerate().skip(1) {
+            let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                content.starts_with(&" ".repeat(indent_column as usize)),
+                "continuation line {idx} missing hanging indent: {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_item_wrapped_mode_pads_prefix_to_indent_column() {
+        let theme = ThemeConfig::default();
+        // Inflated indent_column to force first-line padding past natural width.
+        let indent_column = 30;
+        let text = LogPane::render_item(
+            &long_msg_entry(),
+            "1".to_string(),
+            None,
+            &theme,
+            Some(40),
+            indent_column,
+        );
+        // First-line prefix portion (before msg starts) should be padded to
+        // `indent_column` cells. Locate the leading whitespace span.
+        let first: String = text.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        // The leading "1 INFO src-a " is 13 cells; pad to 30 means 17 trailing
+        // spaces before the msg text begins.
+        let trimmed_start = first
+            .find("alpha")
+            .expect("msg should appear on first line");
+        assert_eq!(
+            trimmed_start as u16, indent_column,
+            "msg should start at column {indent_column}, but starts at {trimmed_start} ({first:?})"
+        );
+    }
+
+    #[test]
+    fn render_item_wrapped_match_highlight_survives_continuation() {
+        use ratatui::style::Modifier;
+        let theme = ThemeConfig {
+            log_match_style: LogMatchStyle::Underline,
+            ..ThemeConfig::default()
+        };
+        // Match characters at indices 0 and 31 (the latter is the 'z' of
+        // "zeta", which falls on a continuation line at wrap_width=15).
+        let matches = [Match {
+            key: "msg".to_string(),
+            indices: vec![0, 31],
+        }];
+        let text = LogPane::render_item(
+            &long_msg_entry(),
+            "1".to_string(),
+            Some(&matches),
+            &theme,
+            Some(15),
+            13,
+        );
+
+        let mut underlined_on_continuation = false;
+        for (line_idx, line) in text.lines.iter().enumerate() {
+            for span in &line.spans {
+                let underlined = span.style.add_modifier.contains(Modifier::UNDERLINED);
+                if line_idx > 0 && underlined && span.content.contains('z') {
+                    underlined_on_continuation = true;
+                }
+            }
+        }
+        assert!(
+            underlined_on_continuation,
+            "expected at least one underlined character on a continuation line (match highlight should survive wrap)"
+        );
+    }
+
+    #[test]
+    fn render_item_falls_back_to_truncated_when_wrap_width_unavailable() {
+        let theme = ThemeConfig::default();
+        // wrap_width = None simulates the renderer's fallback when
+        // inner_area.width <= indent_column.
+        let text = LogPane::render_item(&long_msg_entry(), "1".to_string(), None, &theme, None, 13);
+        assert_eq!(text.lines.len(), 1);
     }
 
     #[test]
@@ -521,6 +775,112 @@ mod tests {
             }
             event => panic!("expected selected entry event, got {event:?}"),
         }
+    }
+
+    /// **Spike**: confirm the assumptions the wrapped-mode renderer relies on
+    /// from ratatui's `List` widget. Documented in the bigplan as a gating
+    /// pre-flight: if either property fails, the wrapped-mode design needs a
+    /// manual selection-render pass.
+    ///
+    /// Assertions:
+    /// (a) `highlight_style` applies across **all** visual lines of a multi-line
+    ///     selected `ListItem`.
+    /// (b) `highlight_symbol` renders only on the **first** line of the
+    ///     selected item — continuation lines are not prefixed.
+    #[test]
+    fn ratatui_list_multiline_highlight_spike() {
+        use ratatui::{
+            Terminal,
+            backend::TestBackend,
+            buffer::Buffer,
+            style::{Color, Style},
+            text::{Line, Text},
+            widgets::{List, ListItem, ListState},
+        };
+
+        let items = vec![
+            ListItem::new(Text::from(vec![Line::raw("alpha-1"), Line::raw("alpha-2")])),
+            ListItem::new(Text::from(vec![Line::raw("beta-1"), Line::raw("beta-2")])),
+        ];
+        let list = List::new(items)
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().bg(Color::Blue));
+        let mut state = ListState::default().with_selected(Some(0));
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 4)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(list, frame.area(), &mut state);
+            })
+            .expect("draw");
+
+        let buf: &Buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (0..buf.area().width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        let row_bg = |y: u16, x: u16| buf[(x, y)].style().bg;
+
+        // (b) highlight_symbol on first line only.
+        assert!(
+            row(0).starts_with("> "),
+            "expected highlight symbol on line 1, got {:?}",
+            row(0)
+        );
+        assert!(
+            !row(1).starts_with("> "),
+            "highlight symbol should NOT be on continuation line, got {:?}",
+            row(1)
+        );
+
+        // (a) highlight_style (bg=Blue) applies across BOTH visual lines of the
+        // selected item. Check the first content cell of each row.
+        assert_eq!(
+            row_bg(0, 2),
+            Some(Color::Blue),
+            "selected line 1 missing highlight bg"
+        );
+        assert_eq!(
+            row_bg(1, 2),
+            Some(Color::Blue),
+            "selected line 2 (continuation) missing highlight bg — wrapped mode requires this"
+        );
+
+        // Unselected item must not carry the bg.
+        assert_ne!(row_bg(2, 0), Some(Color::Blue));
+    }
+
+    #[test]
+    fn pressing_w_toggles_log_pane_line_wrap() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut state = TuiState::new(
+            &crate::config::tui::TuiConfig::default(),
+            &crate::config::search::SearchConfig::default(),
+        )
+        .expect("tui state");
+        let mut events_bus = EventBus::new();
+        assert!(!state.log_pane.line_wrap());
+
+        let pane = LogPane::new();
+        let key = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+        pane.handle_event(TuiEvent::Input(key), &mut state, &mut events_bus);
+        assert!(state.log_pane.line_wrap());
+
+        pane.handle_event(TuiEvent::Input(key), &mut state, &mut events_bus);
+        assert!(!state.log_pane.line_wrap());
+    }
+
+    #[test]
+    fn tui_state_seeds_line_wrap_from_config() {
+        let cfg = crate::config::tui::TuiConfig {
+            line_wrap: true,
+            ..crate::config::tui::TuiConfig::default()
+        };
+        let state =
+            TuiState::new(&cfg, &crate::config::search::SearchConfig::default()).expect("state");
+        assert!(state.log_pane.line_wrap());
     }
 
     #[test]

@@ -38,6 +38,7 @@ config.workspace = true
 serde.workspace = true
 frizbee.workspace = true
 nucleo-matcher.workspace = true
+unicode-width = "0.2.2"
 
 
 [features]

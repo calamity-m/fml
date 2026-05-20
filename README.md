@@ -34,6 +34,10 @@ hello
 - Rendered Tail -> Bottom of the vissible log lines
 - Retained Window -> Log lines the log pane has access to, which may extend past a Rendered Window, but not encompass a full ring buffer
 
+## Line Wrap
+
+By default the log pane renders each entry on a single line and clips text past the right edge. Press `w` (when the log pane is focused) to toggle wrapped mode, in which long `msg` text wraps onto continuation lines indented under the `msg` column. Setting `[tui] line_wrap = true` (or `FML__TUI__LINE_WRAP=true`) makes wrapped mode the startup default. The custom binding can be remapped via `[tui.keybindings] toggle_line_wrap = ["..."]`.
+
 ## Log Producers
 
 Attach log sources with the repeatable `--producer KIND[:ARG]` flag:
