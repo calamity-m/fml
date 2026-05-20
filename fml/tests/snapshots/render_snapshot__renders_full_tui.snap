@@ -2,27 +2,27 @@
 source: fml/tests/render_snapshot.rs
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
-┏ FML [TAIL] | Store 5/1M ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓┌ Info ────────────────┐
-┃  1 INFO src-a entry 1                                ┃│seq: 5                │
-┃  2 INFO src-a entry 2                                ┃│timestamp: 2024-01-02T│
-┃  3 INFO src-a entry 3                                ┃│level: INFO           │
-┃  4 INFO src-a entry 4                                ┃│producer: fake        │
-┃> 5 INFO src-a entry 5                                ┃│source: src-a         │
-┃                                                      ┃└──────────────────────┘
-┃                                                      ┃┌ Preview [ SURROUNDING┐
-┃                                                      ┃│                      │
-┃                                                      ┃│                      │
-┃                                                      ┃│                      │
-┃                                                      ┃│  1 INFO src-a entry 1│
-┃                                                      ┃│  2 INFO src-a entry 2│
-┃                                                      ┃│  3 INFO src-a entry 3│
-┃                                                      ┃│  4 INFO src-a entry 4│
-┃                                                      ┃│> 5 INFO src-a entry 5│
-┃                                                      ┃│                      │
-┃                                                      ┃│                      │
-┃                                                      ┃│                      │
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛│                      │
-┌ Query ───────────────────────────────────────────────┐│                      │
-│>  Enter a query...                                   ││                      │
-└──────────────────────────────────────────────────────┘└──────────────────────┘
- Quit <ctrl+c> | Help <?>                                                v0.0.1
+┏ FML [TAIL] | Store 5/1M ━━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
+┃  1 INFO src-a entry 1                ┃│seq: 5                                │
+┃  2 INFO src-a entry 2                ┃│timestamp: 2024-01-02T03:04:05+00:00  │
+┃  3 INFO src-a entry 3                ┃│level: INFO                           │
+┃  4 INFO src-a entry 4                ┃│producer: fake                        │
+┃> 5 INFO src-a entry 5                ┃│source: src-a                         │
+┃                                      ┃└──────────────────────────────────────┘
+┃                                      ┃┌ Preview [ SURROUNDING ] ─────────────┐
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│  1 INFO src-a entry 1                │
+┃                                      ┃│  2 INFO src-a entry 2                │
+┃                                      ┃│  3 INFO src-a entry 3                │
+┃                                      ┃│  4 INFO src-a entry 4                │
+┃                                      ┃│> 5 INFO src-a entry 5                │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┃                                      ┃│                                      │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛│                                      │
+┌ Query ───────────────────────────────┐│                                      │
+│>  Enter a query...                   ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+ Quit <ctrl+c / q> | Help <?>                                            v0.1.1

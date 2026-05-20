@@ -85,11 +85,13 @@ fn buffer_to_underlined_snapshot(buf: &Buffer) -> String {
 }
 
 fn scrollbar_thumb_rows(buf: &Buffer) -> Vec<u16> {
+    // The scrollbar's exact column depends on the configured
+    // `sidebar_width_percent`, so scan the rows within the log pane and
+    // report any that contain a thumb glyph. The log pane is always the
+    // left-hand block, so any "█" before the info pane belongs to it.
     let area = buf.area();
-    let scrollbar_x = 55;
-
     (1..area.height.saturating_sub(5))
-        .filter(|y| buf[(scrollbar_x, *y)].symbol() == "█")
+        .filter(|y| (0..area.width).any(|x| buf[(x, *y)].symbol() == "█"))
         .collect()
 }
 

@@ -2,27 +2,27 @@
 source: fml/tests/tail_live.rs
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
-┏ FML [TAIL] | Store 40/1M ━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓┌ Info ────────────────┐
-┃  23 INFO src-b second 3                              ▲│seq: 40               │
-┃  24 INFO src-b second 4                              ││timestamp: 2024-01-02T│
-┃  25 INFO src-b second 5                              ││level: INFO           │
-┃  26 INFO src-b second 6                              ││producer: fake        │
-┃  27 INFO src-b second 7                              ││source: src-b         │
-┃  28 INFO src-b second 8                              │└──────────────────────┘
-┃  29 INFO src-b second 9                              │┌ Preview [ SURROUNDING┐
-┃  30 INFO src-b second 10                             ││  33 INFO src-b second│
-┃  31 INFO src-b second 11                             ││  34 INFO src-b second│
-┃  32 INFO src-b second 12                             ││  35 INFO src-b second│
-┃  33 INFO src-b second 13                             ││  36 INFO src-b second│
-┃  34 INFO src-b second 14                             ││  37 INFO src-b second│
-┃  35 INFO src-b second 15                             █│  38 INFO src-b second│
-┃  36 INFO src-b second 16                             █│  39 INFO src-b second│
-┃  37 INFO src-b second 17                             █│> 40 INFO src-b second│
-┃  38 INFO src-b second 18                             █│                      │
-┃  39 INFO src-b second 19                             █│                      │
-┃> 40 INFO src-b second 20                             ▼│                      │
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛│                      │
-┌ Query ───────────────────────────────────────────────┐│                      │
-│>  Enter a query...                                   ││                      │
-└──────────────────────────────────────────────────────┘└──────────────────────┘
- Quit <ctrl+c> | Help <?>                                                v0.0.1
+┏ FML [TAIL] | Store 40/1M ━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
+┃  23 INFO src-b second 3              ▲│seq: 40                               │
+┃  24 INFO src-b second 4              ││timestamp: 2024-01-02T03:04:05+00:00  │
+┃  25 INFO src-b second 5              ││level: INFO                           │
+┃  26 INFO src-b second 6              ││producer: fake                        │
+┃  27 INFO src-b second 7              ││source: src-b                         │
+┃  28 INFO src-b second 8              │└──────────────────────────────────────┘
+┃  29 INFO src-b second 9              │┌ Preview [ SURROUNDING ] ─────────────┐
+┃  30 INFO src-b second 10             █│  33 INFO src-b second 13             │
+┃  31 INFO src-b second 11             █│  34 INFO src-b second 14             │
+┃  32 INFO src-b second 12             █│  35 INFO src-b second 15             │
+┃  33 INFO src-b second 13             █│  36 INFO src-b second 16             │
+┃  34 INFO src-b second 14             █│  37 INFO src-b second 17             │
+┃  35 INFO src-b second 15             ││  38 INFO src-b second 18             │
+┃  36 INFO src-b second 16             ││  39 INFO src-b second 19             │
+┃  37 INFO src-b second 17             ││> 40 INFO src-b second 20             │
+┃  38 INFO src-b second 18             ││                                      │
+┃  39 INFO src-b second 19             ││                                      │
+┃> 40 INFO src-b second 20             ▼│                                      │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛│                                      │
+┌ Query ───────────────────────────────┐│                                      │
+│>  Enter a query...                   ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+ Quit <ctrl+c / q> | Help <?>                                            v0.1.1

@@ -50,10 +50,10 @@ fn log_pane_scrollbar_thumb_rows(app: &mut App<ratatui::backend::TestBackend>) -
     tui::render(&mut app.state, &mut app.terminal);
     let buffer = app.terminal.backend().buffer();
     let area = buffer.area();
-    let scrollbar_x = 55;
-
+    // The scrollbar's exact column depends on `sidebar_width_percent`; scan
+    // each row for a thumb glyph instead of hard-coding the column.
     (1..area.height.saturating_sub(5))
-        .filter(|y| buffer[(scrollbar_x, *y)].symbol() == "█")
+        .filter(|y| (0..area.width).any(|x| buffer[(x, *y)].symbol() == "█"))
         .collect()
 }
 

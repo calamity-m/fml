@@ -2,27 +2,27 @@
 source: fml/tests/render_snapshot.rs
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
-┏ FML [TAIL] | Store 3/1M ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓┌ Info ────────────────┐
-┃  1 INFO src-a entry 1                                ┃│seq: 3                │
-┃  2 INFO sr┌ Help ────────────────────────────────────────────────┐2024-01-02T│
-┃> 3 INFO sr│Global                                                │           │
-┃           │  ctrl+c        Quit                                  │ake        │
-┃           │  tab           Cycle focus                           │-a         │
-┃           │  ?             Help                                  │───────────┘
-┃           │  ctrl+s        Sources                               │SURROUNDING┐
+┏ FML [TAIL] | Store 3/1M ━━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
+┃  1 INFO src-a entry 1                ┃│seq: 3                                │
+┃  2 INFO src-a entry 2                ┃│timestamp: 2024-01-02T03:04:05+00:00  │
+┃> 3 INFO sr┌ Help ────────────────────────────────────────────────┐           │
+┃           │Global                                                │           │
+┃           │  ctrl+c / q    Quit                                  │           │
+┃           │  tab           Cycle focus                           │───────────┘
+┃           │  ?             Help                                  │───────────┐
+┃           │  ctrl+s        Sources                               │           │
 ┃           │  ctrl+p        Preview mode                          │           │
+┃           │  F2            Select mode                           │           │
 ┃           │                                                      │           │
 ┃           │Log pane                                              │           │
 ┃           │  k / up        Move up                               │           │
 ┃           │  j / down      Move down                             │           │
-┃           │  g / home      Jump head                             │c-a entry 1│
-┃           │  G / end       Jump tail                             │c-a entry 2│
-┃           │  enter         Entry detail                          │c-a entry 3│
-┃           │                                                      │           │
-┃           │Help popup                                            │           │
-┃           │  esc / ?       Close                                 │           │
-┗━━━━━━━━━━━│                                                      │           │
+┃           │  g / home      Jump head                             │           │
+┃           │  G / end       Jump tail                             │           │
+┃           │  enter         Entry detail                          │           │
+┃           │  y             Yank entry                            │           │
+┗━━━━━━━━━━━│  w             Toggle wrap                           │           │
 ┌ Query ────│                                                      │           │
 │>  Enter a └──────────────────────────────────────────────────────┘           │
-└──────────────────────────────────────────────────────┘└──────────────────────┘
- Quit <ctrl+c> | Help <?>                                                v0.0.1
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+ Quit <ctrl+c / q> | Help <?>                                            v0.1.1

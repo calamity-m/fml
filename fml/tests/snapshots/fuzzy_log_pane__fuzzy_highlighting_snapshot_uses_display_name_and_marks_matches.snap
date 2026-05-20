@@ -2,27 +2,27 @@
 source: fml/tests/fuzzy_log_pane.rs
 expression: buffer_to_underlined_snapshot(buffer)
 ---
-┌ FML [SEARCH] | Store 1/1M | SCAN done ───────────────┐┌ Info ────────────────┐
-│> 1 INFO [Service] A needle                             ││seq: 1                │
-│                                                      ││timestamp: 2024-01-02T│
-│                                                      ││level: INFO           │
-│                                                      ││producer: fake        │
-│                                                      ││source: [Service] A     │
-│                                                      │└──────────────────────┘
-│                                                      │┌ Preview [ SURROUNDING┐
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││> 1 INFO Service A nee│
-│                                                      ││                      │
-│                                                      ││                      │
-│                                                      ││                      │
-└──────────────────────────────────────────────────────┘│                      │
-┏ Query ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓│                      │
-┃> Service                                             ┃│                      │
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────┘
- Quit <ctrl+c> | Help <?>                                                v0.0.1
+┌ FML [SEARCH] | Store 1/1M | SCAN done┐┌ Info ────────────────────────────────┐
+│> 1 INFO [Service] A needle             ││seq: 1                                │
+│                                      ││timestamp: 2024-01-02T03:04:05+00:00  │
+│                                      ││level: INFO                           │
+│                                      ││producer: fake                        │
+│                                      ││source: [Service] A                     │
+│                                      │└──────────────────────────────────────┘
+│                                      │┌ Preview [ SURROUNDING ] ─────────────┐
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││> 1 INFO Service A needle             │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘│                                      │
+┏ Query ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓│                                      │
+┃> Service                             ┃│                                      │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────────────────────┘
+ Quit <ctrl+c / q> | Help <?>                                            v0.1.1
