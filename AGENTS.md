@@ -93,6 +93,8 @@ Rustfmt is available, but `cargo fmt --check` currently reports existing formatt
 
 For local verification after Rust changes, run the smallest relevant command first, then broaden to `cargo test --workspace` when the change touches shared state, event flow, producers, search, or TUI rendering.
 
+For release steps, follow `docs/RELEASE.md`.
+
 ## 7. Repository Map
 
 **Brief orientation. Where things live, where execution starts, how data moves.**
