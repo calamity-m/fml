@@ -25,4 +25,4 @@ expression: buffer_to_underlined_snapshot(buffer)
 ┏ Query ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓│                                      │
 ┃> Service                             ┃│                                      │
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────────────────────┘
- Quit <ctrl+c> | Help <?> | Return <enter>                               v0.3.0
+ Quit <ctrl+c> | Help <?> | Return <enter>                               v0.4.0
