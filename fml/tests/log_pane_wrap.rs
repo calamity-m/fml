@@ -60,8 +60,7 @@ fn wrap_on_snapshot_long_msg_renders_with_hanging_indent() {
     let config = Config::default();
     let mut app = App::with_test_backend(config, 80, 24).expect("app construction");
 
-    let mut cursor = 0;
-    app.state.tui.log_pane.set_line_wrap(true, &mut cursor);
+    app.state.tui.line_wrap = true;
     app.state.tui.log_pane.mode = ScrollMode::Tail;
     app.state.tui.log_pane.apply_update(
         LogPaneUpdate::Tail {
@@ -104,8 +103,7 @@ fn long_msg_wraps_onto_continuation_lines_when_wrap_on() {
     let config = Config::default();
     let mut app = App::with_test_backend(config, 80, 24).expect("app construction");
 
-    let mut cursor = 0;
-    app.state.tui.log_pane.set_line_wrap(true, &mut cursor);
+    app.state.tui.line_wrap = true;
     app.state.tui.log_pane.mode = ScrollMode::Tail;
     app.state.tui.log_pane.apply_update(
         LogPaneUpdate::Tail {
@@ -153,9 +151,7 @@ fn toggle_round_trip_preserves_tail_selection() {
 
     // Toggle wrap on, render, then back off. Tail-mode selection must stay
     // pointed at the latest entry across both toggles.
-    let mut cursor = app.state.tui.log_pane_cursor_row;
-    app.state.tui.log_pane.set_line_wrap(true, &mut cursor);
-    app.state.tui.log_pane_cursor_row = cursor;
+    app.state.tui.line_wrap = true;
     let _ = render_app(&mut app);
     assert_eq!(
         app.state.tui.log_pane.selected_seq(),
@@ -163,9 +159,7 @@ fn toggle_round_trip_preserves_tail_selection() {
         "wrap-on toggle must preserve tail selection"
     );
 
-    let mut cursor = app.state.tui.log_pane_cursor_row;
-    app.state.tui.log_pane.set_line_wrap(false, &mut cursor);
-    app.state.tui.log_pane_cursor_row = cursor;
+    app.state.tui.line_wrap = false;
     let _ = render_app(&mut app);
     assert_eq!(
         app.state.tui.log_pane.selected_seq(),
