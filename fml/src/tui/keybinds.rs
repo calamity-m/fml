@@ -69,11 +69,6 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
         section: HelpSection::Global,
     },
     KeyActionHint {
-        title: "Cycle focus",
-        label: "tab",
-        section: HelpSection::Global,
-    },
-    KeyActionHint {
         title: "Help",
         label: "?",
         section: HelpSection::Global,
@@ -114,6 +109,11 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
         section: HelpSection::LogPane,
     },
     KeyActionHint {
+        title: "Focus search",
+        label: "/",
+        section: HelpSection::LogPane,
+    },
+    KeyActionHint {
         title: "Edit search",
         label: "type",
         section: HelpSection::QueryBox,
@@ -121,6 +121,11 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
     KeyActionHint {
         title: "Delete",
         label: "backspace",
+        section: HelpSection::QueryBox,
+    },
+    KeyActionHint {
+        title: "Return to log",
+        label: "enter",
         section: HelpSection::QueryBox,
     },
     KeyActionHint {

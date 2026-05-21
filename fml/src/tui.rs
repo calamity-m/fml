@@ -237,18 +237,17 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                 }
             }
 
-            if static_key == StaticKeyAction::FocusCycle {
-                let focusable = Slot::focusable();
+            // `/` focuses the query box without inserting into query text.
+            if key.code == KeyCode::Char('/') && state.tui.focused == Slot::Main {
+                state.tui.focused = Slot::QueryBox;
+                return state;
+            }
 
-                // Find the index of our current focused slot by iteration
-                if let Some(index) = focusable.iter().position(|s| *s == state.tui.focused) {
-                    // Create a new state with the focus incremented by 1
-                    let mut focused_state = state;
-                    focused_state.tui.focused = focusable[(index + 1) % focusable.len()];
-
-                    // Return our new state
-                    return focused_state;
-                }
+            // `Enter` while the query box is focused returns to log navigation
+            // without passing the key to the textarea.
+            if key.code == KeyCode::Enter && state.tui.focused == Slot::QueryBox {
+                state.tui.focused = Slot::Main;
+                return state;
             }
 
             state
@@ -1724,5 +1723,122 @@ mod tests {
             } => {}
             event => panic!("expected preview mode redispatch, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn slash_focuses_query_box_and_does_not_insert_slash() {
+        let state = AppState::new(Config::default()).expect("app state");
+        assert_eq!(state.tui.focused, Slot::Main);
+
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+        assert_eq!(state.tui.query_box_textarea.lines().join("").trim(), "");
+    }
+
+    #[tokio::test]
+    async fn slash_when_query_box_already_focused_inserts_into_query() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+        assert_eq!(state.tui.query_box_textarea.lines().join(""), "/");
+    }
+
+    #[test]
+    fn enter_returns_focus_from_query_box_to_main_and_preserves_query() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+        // Pre-type a query into the textarea.
+        state.tui.query_box_textarea.insert_str("error");
+
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.tui.focused, Slot::Main);
+        assert_eq!(
+            state.tui.query_box_textarea.lines().join("").trim(),
+            "error"
+        );
+    }
+
+    #[test]
+    fn tab_does_not_cycle_focus() {
+        let state = AppState::new(Config::default()).expect("app state");
+        assert_eq!(state.tui.focused, Slot::Main);
+
+        let state = handle_tui_event(input(KeyCode::Tab), state);
+
+        assert_eq!(state.tui.focused, Slot::Main);
+    }
+
+    #[test]
+    fn after_slash_enter_j_dispatches_scroll_to_log_pane() {
+        let state = AppState::new(Config::default()).expect("app state");
+
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+        assert_eq!(state.tui.focused, Slot::Main);
+
+        let mut state = handle_tui_event(input(KeyCode::Char('j')), state);
+
+        assert!(matches!(
+            state.event_bus.tui_event_rx.try_recv(),
+            Ok(TuiEvent::Scroll(ratatui::widgets::ScrollDirection::Forward))
+        ));
+    }
+
+    #[test]
+    fn log_pane_action_keys_do_not_mutate_query_text() {
+        // j, k, g, G, w, y should not insert into the query box while focused is Main.
+        let state = AppState::new(Config::default()).expect("app state");
+        assert_eq!(state.tui.focused, Slot::Main);
+
+        let state = handle_tui_event(input(KeyCode::Char('j')), state);
+        let state = handle_tui_event(input(KeyCode::Char('k')), state);
+        let state = handle_tui_event(input(KeyCode::Char('g')), state);
+        let state = handle_tui_event(input(KeyCode::Char('G')), state);
+        let state = handle_tui_event(input(KeyCode::Char('w')), state);
+
+        assert_eq!(state.tui.query_box_textarea.lines().join("").trim(), "");
+    }
+
+    #[test]
+    fn esc_while_query_box_focused_does_not_clear_query() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+        state.tui.query_box_textarea.insert_str("error");
+
+        let state = handle_tui_event(input(KeyCode::Esc), state);
+
+        // Esc should not return focus (that's Enter) and should not clear query.
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+        assert_eq!(
+            state.tui.query_box_textarea.lines().join("").trim(),
+            "error"
+        );
+    }
+
+    #[test]
+    fn query_box_focus_preserved_across_help_popup_open_close() {
+        let mut state = AppState::new(Config::default()).expect("app state");
+        state.tui.focused = Slot::QueryBox;
+
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+        assert_eq!(state.tui.active_popup(), None);
+        assert_eq!(state.tui.focused, Slot::QueryBox);
+    }
+
+    #[test]
+    fn startup_focus_is_main() {
+        let state = AppState::new(Config::default()).expect("app state");
+        assert_eq!(state.tui.focused, Slot::Main);
     }
 }

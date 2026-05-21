@@ -4,8 +4,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 
 /// A named region of the terminal layout that a widget can target.
 ///
-/// Also used as the focus target — [`Slot::focusable()`] returns the ordered
-/// list of slots that can receive keyboard focus.
+/// `focused` in [`TuiState`](crate::state::tui_state::TuiState) tracks which slot
+/// currently receives keyboard input. `/` moves focus to `QueryBox`; `Enter`
+/// returns it to `Main`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Slot {
     /// Primary content area.
@@ -18,14 +19,6 @@ pub enum Slot {
     PreviewPane,
     /// Bottom row — keyboard hints, status text, etc.
     StatusBar,
-}
-
-impl Slot {
-    /// Ordered list of slots that can receive keyboard focus.
-    /// Tab cycles through these in order.
-    pub fn focusable() -> &'static [Slot] {
-        &[Slot::QueryBox, Slot::Main]
-    }
 }
 
 /// Build the slot-to-area mapping for the given terminal area.

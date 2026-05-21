@@ -32,19 +32,35 @@ impl StatusBar {
         StatusBar {}
     }
 
-    fn visible_hints(&self) -> Vec<StatusBarHint> {
-        vec![
+    fn visible_hints(&self, state: &TuiState) -> Vec<StatusBarHint> {
+        let mut hints = vec![
             StatusBarHint {
                 title: "Quit",
                 label: keybinds::primary_label("Quit")
-                    .unwrap_or("ctrl+c / q")
+                    .unwrap_or("ctrl+c")
                     .to_string(),
             },
             StatusBarHint {
                 title: "Help",
                 label: keybinds::primary_label("Help").unwrap_or("?").to_string(),
             },
-        ]
+        ];
+
+        if state.active_popup().is_none() {
+            match state.focused {
+                Slot::Main => hints.push(StatusBarHint {
+                    title: "Search",
+                    label: "/".to_string(),
+                }),
+                Slot::QueryBox => hints.push(StatusBarHint {
+                    title: "Return",
+                    label: "enter".to_string(),
+                }),
+                _ => {}
+            }
+        }
+
+        hints
     }
 }
 
@@ -90,7 +106,7 @@ impl FmlWidget for StatusBar {
         if let Some(msg) = transient {
             spans.push(Span::styled(msg, key_style));
         } else {
-            let hints = self.visible_hints();
+            let hints = self.visible_hints(state);
             for (index, hint) in hints.iter().enumerate() {
                 if index > 0 {
                     spans.push(Span::styled(" | ", dim_style));

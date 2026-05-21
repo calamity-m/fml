@@ -36,7 +36,7 @@ hello
 
 ## Line Wrap
 
-By default the log pane renders each entry on a single line and clips text past the right edge. Press `w` (when the log pane is focused) to toggle wrapped mode, in which long `msg` text wraps onto continuation lines indented under the `msg` column. Setting `[tui] line_wrap = true` (or `FML__TUI__LINE_WRAP=true`) makes wrapped mode the startup default. The custom binding can be remapped via `[tui.keybindings] toggle_line_wrap = ["..."]`.
+By default the log pane renders each entry on a single line and clips text past the right edge. Press `w` to toggle wrapped mode, in which long `msg` text wraps onto continuation lines indented under the `msg` column. Setting `[tui] line_wrap = true` (or `FML__TUI__LINE_WRAP=true`) makes wrapped mode the startup default. The custom binding can be remapped via `[tui.keybindings] toggle_line_wrap = ["..."]`.
 
 ## Log Producers
 
@@ -152,6 +152,8 @@ Sources are organized as `Producer -> Group -> Display Name`. The `producer` fie
 Use `up`/`down` or `k`/`j` to move through rows. Press `space` to toggle the highlighted source, group, or producer. Press `a` to enable all sources in the open selector snapshot, `n` to disable them, and `esc` or `enter` to close. Tail, history, and fuzzy searches all use the enabled source set. Disabling every source is allowed and shows a `No sources selected` empty state in the log pane.
 
 ## Fuzzy Search
+
+Press `/` to focus the query box and start typing a search term. Fuzzy search updates as you type. Press `Enter` to return focus to the log pane and resume navigation without clearing the active query. Backspace and delete edit the query while the query box is focused.
 
 Typing in the query box dispatches a debounced fuzzy search over the retained log store. The default matcher is `nucleo`; set `search.fuzzy_matcher = "frizbee"` to use the previous frizbee matcher. `search.fuzzy_max_typos` is only used by frizbee, and can be set to `0` for exact fuzzy-character matching or left unset for the library default.
 

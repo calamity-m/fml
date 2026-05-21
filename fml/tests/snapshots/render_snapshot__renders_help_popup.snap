@@ -7,10 +7,9 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┃  2 INFO src-a entry 2                ┃│timestamp: 2024-01-02T03:04:05+00:00  │
 ┃> 3 INFO sr┌ Help ────────────────────────────────────────────────┐           │
 ┃           │Global                                                │           │
-┃           │  ctrl+c / q    Quit                                  │           │
-┃           │  tab           Cycle focus                           │───────────┘
-┃           │  ?             Help                                  │───────────┐
-┃           │  ctrl+s        Sources                               │           │
+┃           │  ctrl+c        Quit                                  │           │
+┃           │  ?             Help                                  │───────────┘
+┃           │  ctrl+s        Sources                               │───────────┐
 ┃           │  ctrl+p        Preview mode                          │           │
 ┃           │  F2            Select mode                           │           │
 ┃           │                                                      │           │
@@ -20,9 +19,10 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┃           │  g / home      Jump head                             │           │
 ┃           │  G / end       Jump tail                             │           │
 ┃           │  enter         Entry detail                          │           │
+┃           │  /             Focus search                          │           │
 ┃           │  y             Yank entry                            │           │
 ┗━━━━━━━━━━━│  w             Toggle wrap                           │           │
 ┌ Query ────│                                                      │           │
 │>  Enter a └──────────────────────────────────────────────────────┘           │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
- Quit <ctrl+c / q> | Help <?>                                            v0.2.0
+ Quit <ctrl+c> | Help <?>                                                v0.2.0
