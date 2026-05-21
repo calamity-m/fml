@@ -52,12 +52,12 @@ pub struct TuiConfig {
     #[serde(default)]
     pub suppress_status_messages: bool,
 
-    /// Startup default for log-pane line wrapping.
+    /// Startup default for line wrapping in the log and preview panes.
     ///
     /// When `true`, long log entries wrap onto continuation lines indented
     /// under the `msg` column. When `false` (default), entries render on a
     /// single line and are clipped to the pane width. Toggle at runtime with
-    /// the `toggle_line_wrap` keybinding.
+    /// the `toggle_line_wrap` keybinding; the flag is shared by both panes.
     #[serde(default)]
     pub line_wrap: bool,
 }

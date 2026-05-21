@@ -84,6 +84,10 @@ pub struct TuiState {
     pub info_pane_scroll_offset: usize,
     pub log_pane: LogPaneState,
     pub preview_pane: PreviewPaneState,
+    /// Whether log entries are rendered with multi-line wrapping. Shared by
+    /// the log pane and the preview pane; toggled via the
+    /// `toggle_line_wrap` keybinding.
+    pub line_wrap: bool,
     pub active_popup: Option<ActivePopup>,
     pub source_selector: SourceSelectorState,
     pub field_picker: FieldPickerState,
@@ -128,13 +132,9 @@ impl TuiState {
             log_pane_cursor_row: 0,
             selected_entry: None,
             info_pane_scroll_offset: 0,
-            log_pane: {
-                let mut lp = LogPaneState::new(search_config.tail_size);
-                let mut cursor = 0;
-                lp.set_line_wrap(tui_config.line_wrap, &mut cursor);
-                lp
-            },
+            log_pane: LogPaneState::new(search_config.tail_size),
             preview_pane: PreviewPaneState::new(),
+            line_wrap: tui_config.line_wrap,
             active_popup: None,
             source_selector: SourceSelectorState::new(),
             field_picker: FieldPickerState::new(),

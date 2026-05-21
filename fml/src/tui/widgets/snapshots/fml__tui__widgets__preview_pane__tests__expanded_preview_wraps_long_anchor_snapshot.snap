@@ -2,7 +2,7 @@
 source: fml/src/tui/widgets/preview_pane.rs
 expression: buffer_to_string(terminal.backend().buffer())
 ---
-┌ Preview [ EXPANDED ] ────────────────────────┐
+┌ Preview [ SURROUNDING ] ─────────────────────┐
 │                                              │
 │                                              │
 │                                              │

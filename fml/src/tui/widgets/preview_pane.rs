@@ -31,20 +31,14 @@ impl PreviewPane {
     fn title(mode: &PreviewMode) -> &'static str {
         match mode {
             PreviewMode::Surrounding => " Preview [ SURROUNDING ] ",
-            PreviewMode::Expanded => " Preview [ EXPANDED ] ",
             PreviewMode::FieldMatched { .. } => " Preview [ FIELD MATCHED ] ",
         }
     }
 
-    fn status_message(status: PreviewStatus, mode: &PreviewMode) -> Option<&'static str> {
+    fn status_message(status: PreviewStatus) -> Option<&'static str> {
         match status {
             PreviewStatus::NoSelection => Some("No log selected"),
-            PreviewStatus::Loading => match mode {
-                PreviewMode::Expanded => Some("Loading expanded preview..."),
-                PreviewMode::Surrounding | PreviewMode::FieldMatched { .. } => {
-                    Some("Loading surrounding logs...")
-                }
-            },
+            PreviewStatus::Loading => Some("Loading surrounding logs..."),
             PreviewStatus::AnchorEvicted => Some("Selected log anchor no longer retained"),
             PreviewStatus::NoMatches => Some("No matching retained logs"),
             PreviewStatus::Ready => None,
@@ -124,7 +118,7 @@ impl PreviewPane {
         (items, anchor_index.map(|_| anchor_row))
     }
 
-    fn expanded_items(state: &TuiState, width: u16, height: usize) -> Vec<Line<'static>> {
+    fn wrapped_items(state: &TuiState, width: u16, height: usize) -> Vec<Line<'static>> {
         let anchor_seq = state.tui_preview_anchor_seq();
         let anchor_index = anchor_seq.and_then(|seq| {
             state
@@ -144,7 +138,7 @@ impl PreviewPane {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                Self::expanded_entry_lines(entry, state, width, index == anchor_index)
+                Self::wrapped_entry_lines(entry, state, width, index == anchor_index)
             })
             .collect::<Vec<_>>();
 
@@ -176,7 +170,7 @@ impl PreviewPane {
         lines
     }
 
-    fn expanded_entry_lines(
+    fn wrapped_entry_lines(
         entry: &Arc<LogEntry>,
         state: &TuiState,
         width: u16,
@@ -311,9 +305,7 @@ impl FmlWidget for PreviewPane {
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
 
-        if let Some(message) =
-            Self::status_message(state.preview_pane.status, &state.preview_pane.mode)
-        {
+        if let Some(message) = Self::status_message(state.preview_pane.status) {
             frame.render_widget(
                 Paragraph::new(message).style(state.selected_theme.surface_style()),
                 inner_area,
@@ -321,24 +313,20 @@ impl FmlWidget for PreviewPane {
             return;
         }
 
-        match state.preview_pane.mode {
-            PreviewMode::Expanded => {
-                let lines =
-                    Self::expanded_items(state, inner_area.width, inner_area.height as usize);
-                frame.render_widget(
-                    Paragraph::new(lines).style(state.selected_theme.surface_style()),
-                    inner_area,
-                );
-            }
-            PreviewMode::Surrounding | PreviewMode::FieldMatched { .. } => {
-                let (items, selected) = Self::centered_items(state, inner_area.height as usize);
-                let list = List::new(items)
-                    .style(state.selected_theme.surface_style())
-                    .highlight_symbol("> ")
-                    .highlight_style(state.selected_theme.selected_style());
-                let mut list_state = ListState::default().with_selected(selected);
-                frame.render_stateful_widget(list, inner_area, &mut list_state);
-            }
+        if state.line_wrap {
+            let lines = Self::wrapped_items(state, inner_area.width, inner_area.height as usize);
+            frame.render_widget(
+                Paragraph::new(lines).style(state.selected_theme.surface_style()),
+                inner_area,
+            );
+        } else {
+            let (items, selected) = Self::centered_items(state, inner_area.height as usize);
+            let list = List::new(items)
+                .style(state.selected_theme.surface_style())
+                .highlight_symbol("> ")
+                .highlight_style(state.selected_theme.selected_style());
+            let mut list_state = ListState::default().with_selected(selected);
+            frame.render_stateful_widget(list, inner_area, &mut list_state);
         }
     }
 
@@ -449,7 +437,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 10)).expect("terminal");
         let mut state =
             TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
-        state.preview_pane.mode = PreviewMode::Expanded;
+        state.line_wrap = true;
         state.preview_pane.start_active_mode(2);
         state.preview_pane.apply_surrounding(
             2,
@@ -475,7 +463,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(44, 8)).expect("terminal");
         let mut state =
             TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
-        state.preview_pane.mode = PreviewMode::Expanded;
+        state.line_wrap = true;
         state.preview_pane.start_active_mode(3);
         state.preview_pane.apply_surrounding(
             3,
@@ -500,7 +488,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 10)).expect("terminal");
         let mut state =
             TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
-        state.preview_pane.mode = PreviewMode::Expanded;
+        state.line_wrap = true;
         state.preview_pane.start_active_mode(2);
         state.preview_pane.apply_surrounding(
             2,
@@ -541,7 +529,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(26, 8)).expect("terminal");
         let mut state =
             TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
-        state.preview_pane.mode = PreviewMode::Expanded;
+        state.line_wrap = true;
         state.preview_pane.start_active_mode(1);
         state
             .preview_pane
@@ -563,7 +551,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 5)).expect("terminal");
         let mut state =
             TuiState::new(&TuiConfig::default(), &SearchConfig::default()).expect("tui state");
-        state.preview_pane.mode = PreviewMode::Expanded;
+        state.line_wrap = true;
         state.preview_pane.start_active_mode(2);
         state
             .preview_pane

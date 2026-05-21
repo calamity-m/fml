@@ -174,6 +174,11 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                 return state;
             }
 
+            if custom_key == CustomizedKeyAction::ToggleLineWrap {
+                state.tui.line_wrap = !state.tui.line_wrap;
+                return state;
+            }
+
             if custom_key == CustomizedKeyAction::ToggleSelectMode {
                 state.tui.select_mode = !state.tui.select_mode;
                 // No widget currently consumes TuiEvent::Mouse, so releasing
@@ -403,8 +408,12 @@ fn handle_preview_mode_toggle(state: &mut AppState) {
         state.config.search.tail_size as u64,
         &state.event_bus.search_event_tx,
     );
-    if result == PreviewModeCycle::NeedsFieldSelection {
-        state.tui.open_field_picker();
+    match result {
+        PreviewModeCycle::NeedsFieldSelection => state.tui.open_field_picker(),
+        PreviewModeCycle::NoSelection => state
+            .tui
+            .queue_status_message("Select a log to cycle preview mode".to_string()),
+        PreviewModeCycle::Applied => {}
     }
 }
 
@@ -1365,7 +1374,6 @@ mod tests {
             AppState::new(Config::default()).expect("app state"),
         );
         let _ = recv_search_event(&mut state);
-        state.tui.preview_pane.mode = PreviewMode::Expanded;
         state.tui.preview_pane.open_field_selection();
         state.tui.open_field_picker();
         state.tui.toggle_field_picker_key("trace");
@@ -1411,14 +1419,13 @@ mod tests {
     #[test]
     fn field_picker_escape_cancels_without_losing_previous_mode() {
         let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.preview_pane.mode = PreviewMode::Expanded;
         state.tui.preview_pane.open_field_selection();
         state.tui.open_field_picker();
 
         let state = handle_tui_event(input(KeyCode::Esc), state);
 
         assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
     }
 
     #[test]
@@ -1431,14 +1438,13 @@ mod tests {
             AppState::new(Config::default()).expect("app state"),
         );
         let _ = recv_search_event(&mut state);
-        state.tui.preview_pane.mode = PreviewMode::Expanded;
         state.tui.preview_pane.open_field_selection();
         state.tui.open_field_picker();
 
         let mut state = handle_tui_event(input(KeyCode::Enter), state);
 
         assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
         assert!(state.event_bus.search_event_rx.try_recv().is_err());
     }
 
@@ -1507,23 +1513,9 @@ mod tests {
 
         let mut state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
 
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query:
-                    Query::Surrounding {
-                        middle_seq_id: 7, ..
-                    },
-                ..
-            } => assert_eq!(target, SearchTarget::PreviewPane),
-            event => panic!("expected expanded surrounding preview search, got {event:?}"),
-        }
-
-        state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
-
         assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
+        assert!(state.event_bus.search_event_rx.try_recv().is_err());
 
         state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
 
@@ -1540,6 +1532,18 @@ mod tests {
             } => assert_eq!(target, SearchTarget::PreviewPane),
             event => panic!("expected surrounding preview search after picker skip, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn pressing_w_toggles_line_wrap_globally() {
+        let state = AppState::new(Config::default()).expect("app state");
+        assert!(!state.tui.line_wrap);
+
+        let state = handle_tui_event(input(KeyCode::Char('w')), state);
+        assert!(state.tui.line_wrap);
+
+        let state = handle_tui_event(input(KeyCode::Char('w')), state);
+        assert!(!state.tui.line_wrap);
     }
 
     #[test]
@@ -1711,18 +1715,9 @@ mod tests {
 
         let mut state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
 
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Expanded);
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                query:
-                    Query::Surrounding {
-                        middle_seq_id: 7, ..
-                    },
-                ..
-            } => {}
-            event => panic!("expected preview mode redispatch, got {event:?}"),
-        }
+        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
+        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
+        assert!(state.event_bus.search_event_rx.try_recv().is_err());
     }
 
     #[test]

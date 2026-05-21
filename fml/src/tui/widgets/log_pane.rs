@@ -262,7 +262,7 @@ impl FmlWidget for LogPane {
             .max()
             .unwrap_or(0);
 
-        let wrap_width: Option<u16> = if state.log_pane.line_wrap() {
+        let wrap_width: Option<u16> = if state.line_wrap {
             let usable = inner_area.width.saturating_sub(indent_column);
             // wrap_width <= 0 falls back to truncated rendering for this frame.
             if usable > 0 { Some(usable) } else { None }
@@ -404,13 +404,6 @@ impl FmlWidget for LogPane {
                     }
                     keybinds::CustomizedKeyAction::ScrollTail => {
                         events_bus.tui_event_tx.send(TuiEvent::ScrollTail)
-                    }
-                    keybinds::CustomizedKeyAction::ToggleLineWrap => {
-                        let next = !state.log_pane.line_wrap();
-                        state
-                            .log_pane
-                            .set_line_wrap(next, &mut state.log_pane_cursor_row);
-                        Ok(())
                     }
                     _ => Ok(()),
                 };
@@ -852,27 +845,6 @@ mod tests {
     }
 
     #[test]
-    fn pressing_w_toggles_log_pane_line_wrap() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let mut state = TuiState::new(
-            &crate::config::tui::TuiConfig::default(),
-            &crate::config::search::SearchConfig::default(),
-        )
-        .expect("tui state");
-        let mut events_bus = EventBus::new();
-        assert!(!state.log_pane.line_wrap());
-
-        let pane = LogPane::new();
-        let key = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
-        pane.handle_event(TuiEvent::Input(key), &mut state, &mut events_bus);
-        assert!(state.log_pane.line_wrap());
-
-        pane.handle_event(TuiEvent::Input(key), &mut state, &mut events_bus);
-        assert!(!state.log_pane.line_wrap());
-    }
-
-    #[test]
     fn tui_state_seeds_line_wrap_from_config() {
         let cfg = crate::config::tui::TuiConfig {
             line_wrap: true,
@@ -880,7 +852,7 @@ mod tests {
         };
         let state =
             TuiState::new(&cfg, &crate::config::search::SearchConfig::default()).expect("state");
-        assert!(state.log_pane.line_wrap());
+        assert!(state.line_wrap);
     }
 
     #[test]

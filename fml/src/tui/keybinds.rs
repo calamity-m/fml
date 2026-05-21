@@ -166,7 +166,7 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
     KeyActionHint {
         title: "Toggle wrap",
         label: "w",
-        section: HelpSection::LogPane,
+        section: HelpSection::Global,
     },
 ];
 
@@ -217,13 +217,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_pane_hints_include_toggle_wrap() {
-        let hints: Vec<_> = hints_for_section(HelpSection::LogPane).collect();
+    fn global_hints_include_toggle_wrap() {
+        let hints: Vec<_> = hints_for_section(HelpSection::Global).collect();
         assert!(
             hints
                 .iter()
                 .any(|h| h.title == "Toggle wrap" && h.label == "w"),
-            "help popup log-pane section should list toggle wrap binding"
+            "help popup global section should list toggle wrap binding"
         );
     }
 

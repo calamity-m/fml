@@ -11,10 +11,8 @@ use crate::{
 /// Display/search mode for the preview pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewMode {
-    /// Current behavior: one-line entries around the selected log.
+    /// Entries around the selected log, in retained-sequence order.
     Surrounding,
-    /// Surrounding results rendered with expanded/wrapped rows.
-    Expanded,
     /// Entries matching selected field predicates from the anchor log.
     FieldMatched { predicates: Vec<FieldPredicate> },
 }
@@ -26,6 +24,8 @@ pub enum PreviewModeCycle {
     Applied,
     /// Field-matched mode needs the field picker before it can apply.
     NeedsFieldSelection,
+    /// Cycling requires a selected log entry; mode left unchanged.
+    NoSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,20 +88,22 @@ impl PreviewPaneState {
         buffer: u64,
         search_tx: &mpsc::Sender<SearchEvent>,
     ) -> PreviewModeCycle {
-        let next_mode = match &self.mode {
-            PreviewMode::Surrounding => PreviewMode::Expanded,
-            PreviewMode::Expanded if selected_entry.is_some() => {
+        match &self.mode {
+            PreviewMode::Surrounding => {
+                if selected_entry.is_none() {
+                    return PreviewModeCycle::NoSelection;
+                }
                 self.open_field_selection();
-                return PreviewModeCycle::NeedsFieldSelection;
+                PreviewModeCycle::NeedsFieldSelection
             }
-            PreviewMode::Expanded | PreviewMode::FieldMatched { .. } => PreviewMode::Surrounding,
-        };
-
-        self.mode = next_mode;
-        if let Some(selected_entry) = selected_entry {
-            self.dispatch_active_mode(selected_entry, buffer, search_tx);
+            PreviewMode::FieldMatched { .. } => {
+                self.mode = PreviewMode::Surrounding;
+                if let Some(selected_entry) = selected_entry {
+                    self.dispatch_active_mode(selected_entry, buffer, search_tx);
+                }
+                PreviewModeCycle::Applied
+            }
         }
-        PreviewModeCycle::Applied
     }
 
     pub fn open_field_selection(&mut self) {
@@ -119,10 +121,7 @@ impl PreviewPaneState {
     /// Treat a cancelled field picker as cycling past field-matched mode.
     pub fn skip_field_selection_cycle(&mut self) {
         if let Some(previous_mode) = self.field_selection_previous_mode.take() {
-            self.mode = match previous_mode {
-                PreviewMode::Expanded => PreviewMode::Surrounding,
-                mode => mode,
-            };
+            self.mode = previous_mode;
         }
     }
 
@@ -160,7 +159,7 @@ impl PreviewPaneState {
         search_tx: &mpsc::Sender<SearchEvent>,
     ) {
         match &self.mode {
-            PreviewMode::Surrounding | PreviewMode::Expanded => {
+            PreviewMode::Surrounding => {
                 self.request_surrounding(selected_entry, buffer, search_tx);
             }
             PreviewMode::FieldMatched { .. } => {
@@ -178,7 +177,7 @@ impl PreviewPaneState {
         let anchor_seq = selected_entry.entry.seq;
         let predicates = match &self.mode {
             PreviewMode::FieldMatched { predicates } => predicates.clone(),
-            PreviewMode::Surrounding | PreviewMode::Expanded => Vec::new(),
+            PreviewMode::Surrounding => Vec::new(),
         };
         self.pending_anchor_seq = Some(anchor_seq);
 
@@ -331,42 +330,27 @@ mod tests {
     }
 
     #[test]
-    fn expanded_mode_redispatches_surrounding_for_selected_entry() {
+    fn cycle_with_selection_opens_field_selection() {
         let (tx, mut rx) = mpsc::channel(4);
         let selected = selected_entry(7, "src-a", HashMap::new());
         let mut state = PreviewPaneState::new();
 
         let result = state.cycle_mode(Some(&selected), 5, &tx);
 
-        assert_eq!(result, PreviewModeCycle::Applied);
-        assert_eq!(state.mode, PreviewMode::Expanded);
-        match recv_search_event(&mut rx) {
-            SearchEvent::Search {
-                target,
-                query:
-                    Query::Surrounding {
-                        middle_seq_id,
-                        buffer,
-                    },
-                sources,
-            } => {
-                assert_eq!(target, SearchTarget::PreviewPane);
-                assert_eq!(middle_seq_id, 7);
-                assert_eq!(buffer, 5);
-                assert_eq!(sources, vec!["src-a".to_string()]);
-            }
-            event => panic!("expected surrounding preview search, got {event:?}"),
-        }
+        assert_eq!(result, PreviewModeCycle::NeedsFieldSelection);
+        assert_eq!(state.mode, PreviewMode::Surrounding);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn no_selection_cycles_only_between_surrounding_and_expanded() {
+    fn no_selection_cycle_reports_no_selection() {
         let (tx, mut rx) = mpsc::channel(4);
         let mut state = PreviewPaneState::new();
 
-        assert_eq!(state.cycle_mode(None, 5, &tx), PreviewModeCycle::Applied);
-        assert_eq!(state.mode, PreviewMode::Expanded);
-        assert_eq!(state.cycle_mode(None, 5, &tx), PreviewModeCycle::Applied);
+        assert_eq!(
+            state.cycle_mode(None, 5, &tx),
+            PreviewModeCycle::NoSelection
+        );
         assert_eq!(state.mode, PreviewMode::Surrounding);
         assert!(rx.try_recv().is_err());
     }
@@ -380,13 +364,12 @@ mod tests {
             HashMap::from([("request_id".to_string(), json!("abc"))]),
         );
         let mut state = PreviewPaneState::new();
-        state.mode = PreviewMode::Expanded;
 
         let result = state.cycle_mode(Some(&selected), 5, &tx);
         state.cancel_field_selection();
 
         assert_eq!(result, PreviewModeCycle::NeedsFieldSelection);
-        assert_eq!(state.mode, PreviewMode::Expanded);
+        assert_eq!(state.mode, PreviewMode::Surrounding);
         assert!(rx.try_recv().is_err());
     }
 
