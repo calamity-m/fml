@@ -139,13 +139,6 @@ async fn renders_field_matched_preview_workflow() {
                 crossterm::event::KeyCode::Char('p'),
                 crossterm::event::KeyModifiers::CONTROL,
             )))
-            .expect("send expanded preview input");
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        tui_tx
-            .send(TuiEvent::Input(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('p'),
-                crossterm::event::KeyModifiers::CONTROL,
-            )))
             .expect("send field picker input");
         tui_tx
             .send(TuiEvent::Input(crossterm::event::KeyEvent::new(

@@ -12,6 +12,7 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┃           │  ctrl+s        Sources                               │───────────┐
 ┃           │  ctrl+p        Preview mode                          │           │
 ┃           │  F2            Select mode                           │           │
+┃           │  w             Toggle wrap                           │           │
 ┃           │                                                      │           │
 ┃           │Log pane                                              │           │
 ┃           │  k / up        Move up                               │           │
@@ -20,8 +21,7 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┃           │  G / end       Jump tail                             │           │
 ┃           │  enter         Entry detail                          │           │
 ┃           │  /             Focus search                          │           │
-┃           │  y             Yank entry                            │           │
-┗━━━━━━━━━━━│  w             Toggle wrap                           │           │
+┗━━━━━━━━━━━│  y             Yank entry                            │           │
 ┌ Query ────│                                                      │           │
 │>  Enter a └──────────────────────────────────────────────────────┘           │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
