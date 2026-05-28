@@ -12,7 +12,7 @@ use crate::{
         TuiState,
         preview_pane_state::{PreviewMode, PreviewStatus},
     },
-    tui::{layout::Slot, widgets::FmlWidget},
+    tui::{layout::Slot, widgets::FmlWidget, widgets::truncate},
 };
 
 pub struct PreviewPane {}
@@ -64,7 +64,12 @@ impl PreviewPane {
         style
     }
 
-    fn render_line(entry: &Arc<LogEntry>, state: &TuiState, is_anchor: bool) -> Line<'static> {
+    fn render_line(
+        entry: &Arc<LogEntry>,
+        state: &TuiState,
+        is_anchor: bool,
+        source_budget: u16,
+    ) -> Line<'static> {
         let base_style = Self::entry_style(entry, state, is_anchor);
         let level = entry
             .level
@@ -76,13 +81,20 @@ impl PreviewPane {
             Span::styled(" ", base_style),
             Span::styled(level, base_style),
             Span::styled(" ", base_style),
-            Span::styled(entry.source.display_name.clone(), base_style),
+            Span::styled(
+                truncate::truncate_middle(&entry.source.display_name, source_budget),
+                base_style,
+            ),
             Span::styled(" ", base_style),
             Span::styled(entry.msg.clone(), base_style),
         ])
     }
 
-    fn centered_items(state: &TuiState, height: usize) -> (Vec<ListItem<'static>>, Option<usize>) {
+    fn centered_items(
+        state: &TuiState,
+        height: usize,
+        source_budget: u16,
+    ) -> (Vec<ListItem<'static>>, Option<usize>) {
         let anchor_row = height / 2;
         let anchor_seq = state.tui_preview_anchor_seq();
         let anchor_index = anchor_seq.and_then(|seq| {
@@ -110,7 +122,7 @@ impl PreviewPane {
             let is_anchor = anchor_index.is_some() && row == anchor_row;
             items.push(ListItem::new(
                 entry
-                    .map(|entry| Self::render_line(entry, state, is_anchor))
+                    .map(|entry| Self::render_line(entry, state, is_anchor, source_budget))
                     .unwrap_or_default(),
             ));
         }
@@ -182,10 +194,9 @@ impl PreviewPane {
             .map(|level| level.to_string())
             .unwrap_or_else(|| "----".to_string());
         let marker = if is_anchor { "> " } else { "  " };
-        let prefix = format!(
-            "{marker}{} {level} {} ",
-            entry.seq, entry.source.display_name
-        );
+        let source =
+            truncate::truncate_middle(&entry.source.display_name, truncate::source_budget(width));
+        let prefix = format!("{marker}{} {level} {source} ", entry.seq);
         let continuation_prefix = " ".repeat(prefix.chars().count());
 
         Self::wrap_entry_text(&prefix, &continuation_prefix, &entry.msg, width)
@@ -320,7 +331,11 @@ impl FmlWidget for PreviewPane {
                 inner_area,
             );
         } else {
-            let (items, selected) = Self::centered_items(state, inner_area.height as usize);
+            let (items, selected) = Self::centered_items(
+                state,
+                inner_area.height as usize,
+                truncate::source_budget(inner_area.width),
+            );
             let list = List::new(items)
                 .style(state.selected_theme.surface_style())
                 .highlight_symbol("> ")

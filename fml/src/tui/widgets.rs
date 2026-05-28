@@ -25,6 +25,7 @@ pub mod preview_pane;
 pub mod query_box;
 pub mod source_selector;
 pub mod status_bar;
+pub mod truncate;
 pub mod wrap;
 
 pub trait FmlWidget {

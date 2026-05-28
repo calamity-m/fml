@@ -24,7 +24,7 @@ use crate::{
     tui::{
         keybinds::{self, StaticKeyAction},
         layout::Slot,
-        widgets::{FmlWidget, highlight, wrap},
+        widgets::{FmlWidget, highlight, truncate, wrap},
     },
 };
 
@@ -98,6 +98,7 @@ impl LogPane {
         theme: &ThemeConfig,
         wrap_width: Option<u16>,
         indent_column: u16,
+        source_budget: u16,
     ) -> Text<'static> {
         let base_style = theme.surface_style().fg(theme.log_row_fg(entry.level));
         let match_style = theme.surface_style().patch(theme.match_style());
@@ -117,12 +118,13 @@ impl LogPane {
             match_style,
         ));
         prefix.push(Span::styled(" ", base_style));
-        prefix.extend(highlight::styled_field(
+        prefix.extend(highlight::styled_truncated_field(
             &entry.source.display_name,
             matches,
             "source",
             base_style,
             match_style,
+            source_budget,
         ));
         prefix.push(Span::styled(" ", base_style));
 
@@ -247,8 +249,12 @@ impl FmlWidget for LogPane {
             })
             .collect();
 
+        // Cap each source name to a fraction of the pane width so long
+        // Kubernetes `pod/container` names don't crowd out the message column.
+        let source_budget = truncate::source_budget(inner_area.width);
+
         // indent_column = max display width of the prefix (leading_id + " " +
-        // level + " " + source.display_name + " ") across the currently-visible
+        // level + " " + source(<=source_budget) + " ") across the currently-visible
         // entries. Derived per-frame from visible_items rather than from
         // store.bounds() / known-sources, which is what the bigplan recommends
         // for layout stability — but with no two-pass measurement here, the
@@ -258,7 +264,7 @@ impl FmlWidget for LogPane {
             .visible_items()
             .iter()
             .zip(leading_ids.iter())
-            .map(|(entry, leading_id)| prefix_width_for(entry, leading_id))
+            .map(|(entry, leading_id)| prefix_width_for(entry, leading_id, source_budget))
             .max()
             .unwrap_or(0);
 
@@ -288,6 +294,7 @@ impl FmlWidget for LogPane {
                     &state.selected_theme,
                     wrap_width,
                     indent_column,
+                    source_budget,
                 ))
             })
             .collect();
@@ -418,15 +425,16 @@ impl FmlWidget for LogPane {
 }
 
 /// Display-cell width the rendered prefix for one entry would occupy:
-/// `leading_id + " " + level(4) + " " + source.display_name + " "`. Matches
-/// the spans assembled in [`LogPane::render_item`] so first-line padding lines
-/// up with the hanging indent on continuation lines.
-fn prefix_width_for(entry: &Arc<LogEntry>, leading_id: &str) -> u16 {
+/// `leading_id + " " + level(4) + " " + source(<=source_budget) + " "`. Matches
+/// the spans assembled in [`LogPane::render_item`] — including the same source
+/// truncation — so first-line padding lines up with the hanging indent on
+/// continuation lines.
+fn prefix_width_for(entry: &Arc<LogEntry>, leading_id: &str, source_budget: u16) -> u16 {
     use unicode_width::UnicodeWidthStr;
     let id = leading_id.width();
     // Level is rendered as 4 chars whether the entry has one or not ("----").
     let level = 4;
-    let source = entry.source.display_name.width();
+    let source = truncate::truncate_middle(&entry.source.display_name, source_budget).width();
     // 3 single-cell spaces between id/level/source and after source.
     u16::try_from(id + 1 + level + 1 + source + 1).unwrap_or(u16::MAX)
 }
@@ -548,6 +556,7 @@ mod tests {
             &theme,
             None,
             0,
+            u16::MAX,
         );
         assert_eq!(text.lines.len(), 1, "truncated mode = single Line");
         let line = &text.lines[0];
@@ -597,7 +606,15 @@ mod tests {
     #[test]
     fn render_item_truncated_mode_is_single_line() {
         let theme = ThemeConfig::default();
-        let text = LogPane::render_item(&long_msg_entry(), "1".to_string(), None, &theme, None, 0);
+        let text = LogPane::render_item(
+            &long_msg_entry(),
+            "1".to_string(),
+            None,
+            &theme,
+            None,
+            0,
+            u16::MAX,
+        );
         assert_eq!(text.lines.len(), 1);
     }
 
@@ -614,6 +631,7 @@ mod tests {
             &theme,
             Some(15),
             indent_column,
+            u16::MAX,
         );
         assert!(
             text.lines.len() >= 2,
@@ -655,6 +673,7 @@ mod tests {
             &theme,
             Some(40),
             indent_column,
+            u16::MAX,
         );
         // First-line prefix portion (before msg starts) should be padded to
         // `indent_column` cells. Locate the leading whitespace span.
@@ -694,6 +713,7 @@ mod tests {
             &theme,
             Some(15),
             13,
+            u16::MAX,
         );
 
         let mut underlined_on_continuation = false;
@@ -716,7 +736,15 @@ mod tests {
         let theme = ThemeConfig::default();
         // wrap_width = None simulates the renderer's fallback when
         // inner_area.width <= indent_column.
-        let text = LogPane::render_item(&long_msg_entry(), "1".to_string(), None, &theme, None, 13);
+        let text = LogPane::render_item(
+            &long_msg_entry(),
+            "1".to_string(),
+            None,
+            &theme,
+            None,
+            13,
+            u16::MAX,
+        );
         assert_eq!(text.lines.len(), 1);
     }
 
