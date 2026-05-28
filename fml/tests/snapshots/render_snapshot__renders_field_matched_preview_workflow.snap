@@ -25,4 +25,4 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┌ Query ───────────────────────────────┐│                                      │
 │>  Enter a query...                   ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
- Quit <ctrl+c> | Help <?> | Search </>                                   v0.4.0
+ Quit <ctrl+c> | Help <?> | Search </>                                   v0.5.0
