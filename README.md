@@ -38,6 +38,33 @@ hello
 
 By default the log pane renders each entry on a single line and clips text past the right edge. Press `w` to toggle wrapped mode, in which long `msg` text wraps onto continuation lines indented under the `msg` column. Setting `[tui] line_wrap = true` (or `FML__TUI__LINE_WRAP=true`) makes wrapped mode the startup default. The custom binding can be remapped via `[tui.keybindings] toggle_line_wrap = ["..."]`.
 
+## Keybindings
+
+Configurable actions are remapped under `[tui.keybindings]`. Each action takes a
+list of key specs; the first spec is the primary label shown in the help popup
+(`?`) and status bar, and an empty list disables the action.
+
+```toml
+[tui.keybindings]
+toggle_help            = ["?"]
+toggle_source_selector = ["ctrl+s"]
+toggle_preview_mode    = ["ctrl+p"]
+show_info              = ["i"]
+scroll_head            = ["g", "home"]
+scroll_tail            = ["G", "end"]
+toggle_select_mode     = ["f2"]
+yank_selected_entry    = ["y"]
+toggle_line_wrap       = ["w"]
+```
+
+A key spec is a lowercase string like `"?"`, `"enter"`, `"ctrl+s"`, `"pgdn"`, or
+`"f2"`. Optional `ctrl`/`alt`/`shift` modifier prefixes are joined with `+`;
+printable characters are written directly and keep their case (`"G"` is shift-g).
+
+`ctrl+c` (quit), `tab` (cycle focus), `esc` (close popup), and the `j`/`k`/arrow
+log-navigation keys are reserved fallbacks and are not remappable. An invalid key
+spec aborts startup with a keybinding error.
+
 ## Log Producers
 
 Attach log sources with the repeatable `--producer KIND[:ARG]` flag:
@@ -145,7 +172,7 @@ If `blocked` is an invalid regex, that one producer is skipped with a warning an
 
 ## Source Selector
 
-Press `ctrl+s` to open or close the source selector popup. The selector is currently hardcoded to `ctrl+s`; user-configurable remapping is deferred. Some terminals reserve `ctrl+s` for XOFF flow control, so disable terminal flow control or remap it at the terminal level if the popup does not open.
+Press `ctrl+s` to open or close the source selector popup. The binding is remappable via `[tui.keybindings] toggle_source_selector = ["..."]`. Some terminals reserve `ctrl+s` for XOFF flow control, so either remap it here, disable terminal flow control, or remap it at the terminal level if the popup does not open.
 
 Sources are organized as `Producer -> Group -> Display Name`. The `producer` field is the top-level row users recognize, such as `file`, `docker`, or a Kubernetes namespace. The optional `group` field is the second-level bucket, such as a Docker compose project, deployment group, path category, or `(ungrouped)` when no group exists. Display names are labels only; source IDs remain the identity used for filtering.
 

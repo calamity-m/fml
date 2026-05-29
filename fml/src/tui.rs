@@ -158,7 +158,8 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
         }
         TuiEvent::Input(key) => {
             let mut state = state;
-            let (static_key, custom_key) = keybinds::match_key(&key, &state.tui.focused);
+            let (static_key, custom_key) =
+                keybinds::match_key(&key, &state.tui.focused, &state.tui.keybindings);
 
             if static_key == StaticKeyAction::Quit {
                 if let Err(err) = state.event_bus.quit_tx.try_send(QuitEvent {}) {
@@ -198,6 +199,14 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                 && state.tui.active_popup().is_none()
             {
                 handle_yank_selected_entry(&mut state);
+                return state;
+            }
+
+            if custom_key == CustomizedKeyAction::ShowInfo
+                && state.tui.focused == Slot::Main
+                && state.tui.active_popup().is_none()
+            {
+                state.tui.open_field_picker();
                 return state;
             }
 

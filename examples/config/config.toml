@@ -90,6 +90,29 @@ skip_istio = true
 # gruvbox, dracula, catppuccin_mocha, tokyo_night, nord, mono, ocean.
 # See examples/config/themes.toml for a complete custom [themes.<name>] example.
 
+# [tui.keybindings]
+# Remap any configurable action. Each takes a list of key specs; the first is
+# the primary label shown in the help popup (?) and status bar. An empty list
+# disables the action. Values below are the built-in defaults.
+#
+# A key spec is a lowercase string like "?", "enter", "ctrl+s", "pgdn", or "f2".
+# Optional ctrl/alt/shift prefixes join with "+"; printable characters are
+# written directly and keep their case ("G" is shift-g). An invalid spec aborts
+# startup with a keybinding error.
+#
+# ctrl+c (quit), tab (cycle focus), esc (close popup), and the j/k/arrow
+# log-navigation keys are reserved fallbacks and are not remappable.
+#
+# toggle_help            = ["?"]
+# toggle_source_selector = ["ctrl+s"]
+# toggle_preview_mode    = ["ctrl+p"]
+# show_info              = ["i"]
+# scroll_head            = ["g", "home"]
+# scroll_tail            = ["G", "end"]
+# toggle_select_mode     = ["f2"]
+# yank_selected_entry    = ["y"]
+# toggle_line_wrap       = ["w"]
+
 # [store]
 # capacity = 1_000_000
 

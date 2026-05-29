@@ -403,6 +403,7 @@ fn default_true() -> bool {
 /// - `ctrl+c` — quit the application (checked before any configured binding)
 /// - `tab` — cycle focus between panes
 /// - `esc` — close any open popup
+/// - `j` / `k` / arrow keys — log-pane navigation
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct KeybindingsConfig {
     /// Open or close the help popup.
@@ -411,11 +412,35 @@ pub struct KeybindingsConfig {
     #[serde(default = "default_toggle_help")]
     pub toggle_help: Vec<String>,
 
-    /// Show the entry detail popup for the selected log entry.
+    /// Open the field picker for the selected log entry.
     ///
-    /// Only fires when the log pane has focus.
+    /// Only fires when the log pane has focus and no popup is active.
     #[serde(default = "default_show_info")]
     pub show_info: Vec<String>,
+
+    /// Open or close the source selector popup.
+    ///
+    /// Active globally. Also closes the popup when one is already open.
+    #[serde(default = "default_toggle_source_selector")]
+    pub toggle_source_selector: Vec<String>,
+
+    /// Cycle the preview pane mode.
+    ///
+    /// Active globally.
+    #[serde(default = "default_toggle_preview_mode")]
+    pub toggle_preview_mode: Vec<String>,
+
+    /// Jump the log pane to the head (oldest retained entry).
+    ///
+    /// Only fires when the log pane has focus.
+    #[serde(default = "default_scroll_head")]
+    pub scroll_head: Vec<String>,
+
+    /// Jump the log pane to the tail (newest entry).
+    ///
+    /// Only fires when the log pane has focus.
+    #[serde(default = "default_scroll_tail")]
+    pub scroll_tail: Vec<String>,
 
     /// Toggle select mode (releases mouse capture so the terminal handles
     /// drag-selection and wheel scrollback).
@@ -444,6 +469,10 @@ impl Default for KeybindingsConfig {
         Self {
             toggle_help: default_toggle_help(),
             show_info: default_show_info(),
+            toggle_source_selector: default_toggle_source_selector(),
+            toggle_preview_mode: default_toggle_preview_mode(),
+            scroll_head: default_scroll_head(),
+            scroll_tail: default_scroll_tail(),
             toggle_select_mode: default_toggle_select_mode(),
             yank_selected_entry: default_yank_selected_entry(),
             toggle_line_wrap: default_toggle_line_wrap(),
@@ -456,7 +485,23 @@ fn default_toggle_help() -> Vec<String> {
 }
 
 fn default_show_info() -> Vec<String> {
-    vec!["enter".into()]
+    vec!["i".into()]
+}
+
+fn default_toggle_source_selector() -> Vec<String> {
+    vec!["ctrl+s".into()]
+}
+
+fn default_toggle_preview_mode() -> Vec<String> {
+    vec!["ctrl+p".into()]
+}
+
+fn default_scroll_head() -> Vec<String> {
+    vec!["g".into(), "home".into()]
+}
+
+fn default_scroll_tail() -> Vec<String> {
+    vec!["G".into(), "end".into()]
 }
 
 fn default_toggle_select_mode() -> Vec<String> {

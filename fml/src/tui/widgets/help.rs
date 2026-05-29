@@ -101,11 +101,16 @@ fn push_section(
     lines.push(Line::styled(title, header_style(&state.selected_theme)));
 
     for hint in keybinds::hints_for_section(section) {
-        lines.push(render_hint(hint, state));
+        // Disabled configurable bindings resolve to no label and are hidden.
+        if let Some(line) = render_hint(hint, state) {
+            lines.push(line);
+        }
     }
 }
 
-fn render_hint(hint: &KeyActionHint, state: &TuiState) -> Line<'static> {
+fn render_hint(hint: &KeyActionHint, state: &TuiState) -> Option<Line<'static>> {
+    let label = keybinds::hint_label(hint, &state.keybindings)?;
+
     let base_style = state.selected_theme.surface_style();
     let key_style = base_style
         .fg(state.selected_theme.primary_accent_fg)
@@ -116,8 +121,8 @@ fn render_hint(hint: &KeyActionHint, state: &TuiState) -> Line<'static> {
         base_style
     };
 
-    Line::from(vec![
-        Span::styled(format!("  {:<14}", hint.label), key_style),
+    Some(Line::from(vec![
+        Span::styled(format!("  {label:<14}"), key_style),
         Span::styled(hint.title, dim_style),
-    ])
+    ]))
 }

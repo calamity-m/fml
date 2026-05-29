@@ -387,7 +387,8 @@ impl FmlWidget for LogPane {
             }
             TuiEvent::Input(key) => {
                 debug!("received input event - {:?}", key);
-                let (static_key, custom_key) = keybinds::match_key(&key, &state.focused);
+                let (static_key, custom_key) =
+                    keybinds::match_key(&key, &state.focused, &state.keybindings);
 
                 // First we process static keys as higher relevance
 

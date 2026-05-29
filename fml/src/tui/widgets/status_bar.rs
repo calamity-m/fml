@@ -33,15 +33,18 @@ impl StatusBar {
 
     fn visible_hints(&self, state: &TuiState) -> Vec<StatusBarHint> {
         let mut hints = vec![
+            // `ctrl+c` is a reserved fallback and is not user-configurable.
             StatusBarHint {
                 title: "Quit",
-                label: keybinds::primary_label("Quit")
-                    .unwrap_or("ctrl+c")
-                    .to_string(),
+                label: "ctrl+c".to_string(),
             },
             StatusBarHint {
                 title: "Help",
-                label: keybinds::primary_label("Help").unwrap_or("?").to_string(),
+                label: state
+                    .keybindings
+                    .label_for(keybinds::CustomizedKeyAction::ToggleHelp)
+                    .unwrap_or("?")
+                    .to_string(),
             },
         ];
 

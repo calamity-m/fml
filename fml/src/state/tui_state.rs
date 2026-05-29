@@ -21,7 +21,7 @@ use crate::{
     error::FmlError,
     event::SelectedEntry,
     log::{Source, SourceId},
-    tui::{layout::Slot, widgets::query_box},
+    tui::{keybinds::ResolvedKeybindings, layout::Slot, widgets::query_box},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +88,9 @@ pub struct TuiState {
     /// the log pane and the preview pane; toggled via the
     /// `toggle_line_wrap` keybinding.
     pub line_wrap: bool,
+    /// Active key bindings resolved from `[tui.keybindings]`. Source of truth
+    /// for runtime key matching and the help/status-bar labels.
+    pub keybindings: ResolvedKeybindings,
     pub active_popup: Option<ActivePopup>,
     pub source_selector: SourceSelectorState,
     pub field_picker: FieldPickerState,
@@ -120,6 +123,7 @@ impl TuiState {
         user_themes: &BTreeMap<String, ThemeConfig>,
     ) -> Result<Self, FmlError> {
         let selected_theme = tui_config.resolved_theme_with(user_themes)?;
+        let keybindings = ResolvedKeybindings::from_config(&tui_config.keybindings)?;
         Ok(TuiState {
             focused: Slot::Main,
             areas: HashMap::new(),
@@ -135,6 +139,7 @@ impl TuiState {
             log_pane: LogPaneState::new(search_config.tail_size),
             preview_pane: PreviewPaneState::new(),
             line_wrap: tui_config.line_wrap,
+            keybindings,
             active_popup: None,
             source_selector: SourceSelectorState::new(),
             field_picker: FieldPickerState::new(),
