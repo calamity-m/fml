@@ -1,7 +1,6 @@
 use std::time::Instant;
 
 use ratatui::{
-    layout::{Alignment, Constraint, Layout},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
@@ -77,13 +76,6 @@ impl FmlWidget for StatusBar {
     ) {
         trace!("draw called on StatusBar");
 
-        let version = concat!("v", env!("CARGO_PKG_VERSION"));
-        let chunks = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(version.len() as u16 + 1),
-        ])
-        .split(area);
-
         let base_style = state.selected_theme.surface_style();
         let dim_style = if state.selected_theme.status_dim {
             base_style.add_modifier(Modifier::DIM)
@@ -133,19 +125,7 @@ impl FmlWidget for StatusBar {
                 top: 0,
                 bottom: 0,
             })),
-            chunks[0],
-        );
-        frame.render_widget(
-            Paragraph::new(version.to_string())
-                .alignment(Alignment::Right)
-                .style(base_style)
-                .block(Block::default().padding(Padding {
-                    left: 0,
-                    right: 1,
-                    top: 0,
-                    bottom: 0,
-                })),
-            chunks[1],
+            area,
         );
     }
 

@@ -1,6 +1,5 @@
 ---
 source: fml/tests/tail_live.rs
-assertion_line: 60
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
 ┏ FML [TAIL] | Store 40/1M ━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
@@ -26,4 +25,4 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┌ Query ───────────────────────────────┐│                                      │
 │>  Enter a query...                   ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
- Quit <ctrl+c> | Help <?> | Search <enter>                               v0.6.0
+ Quit <ctrl+c> | Help <?> | Search <enter>

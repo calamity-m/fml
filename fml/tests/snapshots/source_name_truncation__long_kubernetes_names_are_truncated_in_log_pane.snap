@@ -1,6 +1,5 @@
 ---
 source: fml/tests/source_name_truncation.rs
-assertion_line: 59
 expression: buffer_to_string(app.terminal.backend().buffer())
 ---
 ┏ FML [TAIL] | Store 3/1M ━━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
@@ -26,4 +25,4 @@ expression: buffer_to_string(app.terminal.backend().buffer())
 ┌ Query ───────────────────────────────┐│                                      │
 │>  Enter a query...                   ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
- Quit <ctrl+c> | Help <?> | Search <enter>                               v0.6.0
+ Quit <ctrl+c> | Help <?> | Search <enter>
