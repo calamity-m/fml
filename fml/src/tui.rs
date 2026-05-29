@@ -201,13 +201,17 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                 return state;
             }
 
-            if key.code == KeyCode::Esc && state.tui.field_picker_is_open() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Backspace)
+                && state.tui.field_picker_is_open()
+            {
                 state.tui.preview_pane.cancel_field_selection();
                 state.tui.close_field_picker();
                 return state;
             }
 
-            if key.code == KeyCode::Esc && state.tui.active_popup().is_some() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Backspace)
+                && state.tui.active_popup().is_some()
+            {
                 state.tui.close_popup();
                 return state;
             }
@@ -226,7 +230,8 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                 return state;
             }
 
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && state.tui.focused != Slot::QueryBox
+            {
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => {
                         state.tui.info_pane_scroll_offset =

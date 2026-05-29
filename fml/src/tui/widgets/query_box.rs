@@ -149,6 +149,20 @@ impl FmlWidget for QueryBox {
         debug!("handling event for query_box - {:?}", event);
 
         if let TuiEvent::Input(key) = event {
+            // Ctrl+K clears the entire query regardless of cursor position.
+            // ratatui-textarea would handle it as delete-to-end-of-line; we
+            // intercept first so partial queries don't linger.
+            if key.code == crossterm::event::KeyCode::Char('k')
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                state.query_box_textarea.select_all();
+                state.query_box_textarea.delete_line_by_end();
+                Self::dispatch_tail(state, events_bus);
+                return;
+            }
+
             let before = Self::query_text(state);
             let changed = state.query_box_textarea.input(key);
             let after = Self::query_text(state);

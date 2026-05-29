@@ -119,6 +119,11 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
         section: HelpSection::QueryBox,
     },
     KeyActionHint {
+        title: "Clear query",
+        label: "ctrl+k",
+        section: HelpSection::QueryBox,
+    },
+    KeyActionHint {
         title: "Return to log",
         label: "enter",
         section: HelpSection::QueryBox,
@@ -140,12 +145,12 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
     },
     KeyActionHint {
         title: "Close",
-        label: "esc / enter",
+        label: "esc / backspace / enter",
         section: HelpSection::SourceSelector,
     },
     KeyActionHint {
         title: "Close",
-        label: "esc / ?",
+        label: "esc / backspace / ?",
         section: HelpSection::HelpPopup,
     },
     KeyActionHint {
