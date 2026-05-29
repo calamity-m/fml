@@ -1,5 +1,6 @@
 ---
 source: fml/tests/fuzzy_log_pane.rs
+assertion_line: 395
 expression: buffer_to_underlined_snapshot(buffer)
 ---
 ┌ FML [SEARCH] | Store 1/1M | SCAN done┐┌ Info ────────────────────────────────┐
@@ -25,4 +26,4 @@ expression: buffer_to_underlined_snapshot(buffer)
 ┏ Query ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓│                                      │
 ┃> Service                             ┃│                                      │
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────────────────────┘
- Quit <ctrl+c> | Help <?> | Return <enter>                               v0.5.0
+ Quit <ctrl+c> | Help <?> | Return <enter>                               v0.6.0
