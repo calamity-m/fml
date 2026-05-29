@@ -17,7 +17,7 @@ use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use kube::{
     Api, Client, ResourceExt,
     api::LogParams,
-    config::Kubeconfig,
+    config::{Config, Kubeconfig},
     runtime::watcher::{self, Event},
 };
 use tokio::{sync::mpsc, time::sleep};
@@ -46,7 +46,9 @@ impl KubernetesProducer {
     /// Create a producer using the local kubeconfig and the supplied namespace.
     pub fn new(namespace: String, source_block: SourceBlock) -> Result<Self, ProducerError> {
         let kubeconfig = Kubeconfig::read()?;
-        let client = Client::try_from(kubeconfig)?;
+        let mut config = Config::try_from(kubeconfig)?;
+        apply_no_proxy(&mut config);
+        let client = Client::try_from(config)?;
 
         Ok(KubernetesProducer::new_seeded(
             namespace,
@@ -480,6 +482,47 @@ fn deployment_name_from_replicaset(name: &str) -> Option<&str> {
 
 fn source_id_for_key(namespace: &str, key: &ContainerKey) -> SourceId {
     format!("{namespace}/{}/{}", key.0, key.1)
+}
+
+/// Clear `config.proxy_url` when the cluster host matches the `NO_PROXY`
+/// environment variable.
+///
+/// kube 3.1 resolves `HTTPS_PROXY` but ignores `NO_PROXY` (kube-rs/kube#1203),
+/// so a configured proxy is applied even to clusters meant to be reached
+/// directly. We strip the proxy here before the client is built.
+fn apply_no_proxy(config: &mut Config) {
+    if config.proxy_url.is_none() {
+        return;
+    }
+    let no_proxy = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .unwrap_or_default();
+    if let Some(host) = config.cluster_url.host()
+        && host_bypasses_proxy(host, &no_proxy)
+    {
+        config.proxy_url = None;
+    }
+}
+
+/// Returns true if `host` should bypass the proxy per a `NO_PROXY`-style value.
+///
+/// `no_proxy` is a comma-separated list. Matching follows the common
+/// Go/curl convention: `*` bypasses every host, and each entry matches `host`
+/// either exactly or as a domain suffix (`example.com` matches
+/// `api.example.com`). CIDR ranges are not handled; an IP literal only matches
+/// the same literal verbatim.
+fn host_bypasses_proxy(host: &str, no_proxy: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    no_proxy.split(',').any(|raw| {
+        let entry = raw.trim().trim_matches('.').to_ascii_lowercase();
+        if entry.is_empty() {
+            return false;
+        }
+        if entry == "*" {
+            return true;
+        }
+        host == entry || host.ends_with(&format!(".{entry}"))
+    })
 }
 
 fn resolve_namespace_from_kubeconfig(kubeconfig: &Kubeconfig) -> Result<String, ProducerError> {
@@ -933,5 +976,29 @@ mod tests {
 
         assert!(start.elapsed() < Duration::from_millis(50));
         producer.stop();
+    }
+
+    #[test]
+    fn no_proxy_matches_exact_and_suffix() {
+        assert!(super::host_bypasses_proxy("api.example.com", "example.com"));
+        assert!(super::host_bypasses_proxy("example.com", "example.com"));
+        assert!(super::host_bypasses_proxy(
+            "k8s.internal",
+            "other.com,.internal"
+        ));
+    }
+
+    #[test]
+    fn no_proxy_wildcard_and_empty() {
+        assert!(super::host_bypasses_proxy("anything.local", "*"));
+        assert!(!super::host_bypasses_proxy("api.example.com", ""));
+        assert!(!super::host_bypasses_proxy("api.example.com", "  ,  "));
+    }
+
+    #[test]
+    fn no_proxy_does_not_match_unrelated_or_partial_host() {
+        assert!(!super::host_bypasses_proxy("api.example.com", "other.com"));
+        // Suffix must align on a label boundary, not a substring.
+        assert!(!super::host_bypasses_proxy("notexample.com", "example.com"));
     }
 }
