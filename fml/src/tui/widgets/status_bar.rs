@@ -50,7 +50,7 @@ impl StatusBar {
             match state.focused {
                 Slot::Main => hints.push(StatusBarHint {
                     title: "Search",
-                    label: "/".to_string(),
+                    label: "enter".to_string(),
                 }),
                 Slot::QueryBox => hints.push(StatusBarHint {
                     title: "Return",

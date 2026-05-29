@@ -242,17 +242,20 @@ pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
                 }
             }
 
-            // `/` focuses the query box without inserting into query text.
-            if key.code == KeyCode::Char('/') && state.tui.focused == Slot::Main {
-                state.tui.focused = Slot::QueryBox;
-                return state;
-            }
-
-            // `Enter` while the query box is focused returns to log navigation
+            // `Enter` toggles focus between log navigation and the query box
             // without passing the key to the textarea.
-            if key.code == KeyCode::Enter && state.tui.focused == Slot::QueryBox {
-                state.tui.focused = Slot::Main;
-                return state;
+            if key.code == KeyCode::Enter {
+                match state.tui.focused {
+                    Slot::Main => {
+                        state.tui.focused = Slot::QueryBox;
+                        return state;
+                    }
+                    Slot::QueryBox => {
+                        state.tui.focused = Slot::Main;
+                        return state;
+                    }
+                    _ => {}
+                }
             }
 
             state
@@ -1721,11 +1724,11 @@ mod tests {
     }
 
     #[test]
-    fn slash_focuses_query_box_and_does_not_insert_slash() {
+    fn enter_focuses_query_box_and_does_not_insert() {
         let state = AppState::new(Config::default()).expect("app state");
         assert_eq!(state.tui.focused, Slot::Main);
 
-        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        let state = handle_tui_event(input(KeyCode::Enter), state);
 
         assert_eq!(state.tui.focused, Slot::QueryBox);
         assert_eq!(state.tui.query_box_textarea.lines().join("").trim(), "");
@@ -1769,10 +1772,10 @@ mod tests {
     }
 
     #[test]
-    fn after_slash_enter_j_dispatches_scroll_to_log_pane() {
+    fn after_enter_enter_j_dispatches_scroll_to_log_pane() {
         let state = AppState::new(Config::default()).expect("app state");
 
-        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        let state = handle_tui_event(input(KeyCode::Enter), state);
         assert_eq!(state.tui.focused, Slot::QueryBox);
 
         let state = handle_tui_event(input(KeyCode::Enter), state);

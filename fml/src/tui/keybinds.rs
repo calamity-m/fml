@@ -104,13 +104,8 @@ pub const ACTION_HINTS: &[KeyActionHint] = &[
         section: HelpSection::LogPane,
     },
     KeyActionHint {
-        title: "Entry detail",
-        label: "enter",
-        section: HelpSection::LogPane,
-    },
-    KeyActionHint {
         title: "Focus search",
-        label: "/",
+        label: "enter",
         section: HelpSection::LogPane,
     },
     KeyActionHint {

@@ -96,9 +96,7 @@ fn scrollbar_thumb_rows(buf: &Buffer) -> Vec<u16> {
 }
 
 async fn type_query(tui_tx: &tokio::sync::mpsc::UnboundedSender<TuiEvent>, text: &str) {
-    tui_tx
-        .send(key(KeyCode::Char('/')))
-        .expect("focus query box");
+    tui_tx.send(key(KeyCode::Enter)).expect("focus query box");
     for ch in text.chars() {
         tui_tx
             .send(key(KeyCode::Char(ch)))
