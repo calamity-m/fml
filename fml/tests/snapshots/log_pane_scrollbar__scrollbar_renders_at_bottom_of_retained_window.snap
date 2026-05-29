@@ -1,5 +1,6 @@
 ---
 source: fml/tests/log_pane_scrollbar.rs
+assertion_line: 292
 expression: render_app(&mut app)
 ---
 ┏ FML [TAIL] | Store 20/1M ━━━━━━━━━━━━┓┌ Info ────────────────────────────────┐
@@ -25,4 +26,4 @@ expression: render_app(&mut app)
 ┌ Query ───────────────────────────────┐│                                      │
 │>  Enter a query...                   ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
- Quit <ctrl+c> | Help <?> | Search <enter>                               v0.5.0
+ Quit <ctrl+c> | Help <?> | Search <enter>                               v0.6.0
