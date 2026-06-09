@@ -120,6 +120,7 @@ mod tests {
                 target: _,
                 query: _,
                 results,
+                hit_seqs: _,
                 request_id,
                 complete,
                 progress: _,

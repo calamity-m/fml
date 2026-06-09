@@ -26,10 +26,13 @@
 //! [`tokio::task::JoinHandle::abort`] — every loop iteration awaits at the
 //! ticker or inside the emission helper, so abort is prompt.
 //!
-//! The emission contract is deliberately "emit everything we have": the
-//! worker keeps up to `result_limit` hits (default 20k) and emits all of
-//! them each cycle. Partial results are explicitly marked incomplete so
-//! UI code can distinguish "best so far" from "full snapshot ranked".
+//! Each emission carries two things: up to `result_limit` ranked display
+//! hits, and the full uncapped list of matching seq ids (for `n`/`N` hit
+//! navigation). Scanning is scores-only; the expensive index traceback for
+//! highlights runs at emission time against just the display hits, so its
+//! cost tracks what is shown rather than what is retained. Partial results
+//! are explicitly marked incomplete so UI code can distinguish "best so
+//! far" from "full snapshot ranked".
 //!
 //! Per-hit highlight data is carried in [`Match::indices`] as ascending
 //! character offsets into the matched field's value.
@@ -115,7 +118,17 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
         // this request_id respond at least once, then exit — no point
         // holding a ticker open for something that can never produce hits.
         if term.is_empty() {
-            let _ = emit_hits(target, query, Vec::new(), request_id, true, None, &tx).await;
+            let _ = emit_hits(
+                target,
+                query,
+                Vec::new(),
+                Some(Vec::new()),
+                request_id,
+                true,
+                None,
+                &tx,
+            )
+            .await;
             return;
         }
 
@@ -138,6 +151,9 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
         // the cap it is not rediscovered (capped-ranking-over-a-stream
         // semantics — a fresh query rescans everything anyway).
         let mut scored: Vec<ScoredHit> = Vec::new();
+        // Every matching seq (uncapped, ascending) — hit navigation walks
+        // this full set even though only `result_limit` hits are displayed.
+        let mut hit_seqs: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         let mut scanned_high: u64 = 0;
 
         loop {
@@ -151,10 +167,12 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                 if high == 0 {
                     if last_complete_bounds != Some((low, high)) {
                         scored.clear();
+                        hit_seqs.clear();
                         match emit_hits(
                             target,
                             query.clone(),
                             Vec::new(),
+                            Some(Vec::new()),
                             request_id,
                             true,
                             None,
@@ -175,6 +193,7 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                 }
 
                 scored.retain(|hit| hit.entry.seq >= low);
+                hit_seqs = hit_seqs.split_off(&low);
                 let fetch_low = if scanned_high == 0 {
                     low
                 } else {
@@ -182,8 +201,18 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                 };
                 if fetch_low > high {
                     // Pure eviction — ranking is already correct.
-                    let hits = build_hits(&scored, options.result_limit);
-                    match emit_hits(target, query.clone(), hits, request_id, true, None, &tx).await
+                    let hits = build_hits(&scored, options.result_limit, &term, &mut matcher);
+                    match emit_hits(
+                        target,
+                        query.clone(),
+                        hits,
+                        Some(hit_seqs.iter().copied().collect()),
+                        request_id,
+                        true,
+                        None,
+                        &tx,
+                    )
+                    .await
                     {
                         EmitOutcome::Sent => {}
                         EmitOutcome::ReceiverGone => return,
@@ -209,11 +238,12 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
 
             tokio::select! {
                 _ = ticker.tick() => {
-                    let hits = build_hits(&scored, options.result_limit);
+                    let hits = build_hits(&scored, options.result_limit, &term, &mut matcher);
                     match emit_hits(
                         target,
                         query.clone(),
                         hits,
+                        Some(hit_seqs.iter().copied().collect()),
                         request_id,
                         false,
                         Some(state.progress()),
@@ -224,13 +254,20 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                     }
                 }
                 _ = tokio::task::yield_now(), if !state.is_complete() => {
-                    state.process_next_chunk(&term, &mut matcher, &mut scored, options.result_limit);
+                    state.process_next_chunk(
+                        &term,
+                        &mut matcher,
+                        &mut scored,
+                        &mut hit_seqs,
+                        options.result_limit,
+                    );
                     if state.is_complete() {
-                        let hits = build_hits(&scored, options.result_limit);
+                        let hits = build_hits(&scored, options.result_limit, &term, &mut matcher);
                         match emit_hits(
                             target,
                             query.clone(),
                             hits,
+                            Some(hit_seqs.iter().copied().collect()),
                             request_id,
                             true,
                             Some(state.progress()),
@@ -270,11 +307,14 @@ impl ScanState {
 
     /// Scores the next chunk into the shared accumulator, pruning to the
     /// score cap once the accumulator doubles it (amortizes the sort).
+    /// Every matching seq is recorded in `hit_seqs` before pruning, so the
+    /// navigation set stays uncapped.
     fn process_next_chunk(
         &mut self,
         needle: &str,
         matcher: &mut FuzzyMatcher,
         scored: &mut Vec<ScoredHit>,
+        hit_seqs: &mut std::collections::BTreeSet<u64>,
         result_limit: usize,
     ) {
         if self.is_complete() {
@@ -282,7 +322,9 @@ impl ScanState {
         }
 
         let end = (self.next_index + SCAN_CHUNK_SIZE).min(self.entries.len());
-        scored.extend(matcher.score_batch(needle, &self.entries[self.next_index..end]));
+        let batch = matcher.score_batch(needle, &self.entries[self.next_index..end]);
+        hit_seqs.extend(batch.iter().map(|hit| hit.entry.seq));
+        scored.extend(batch);
         self.next_index = end;
 
         if scored.len() > result_limit.saturating_mul(2).max(SCAN_CHUNK_SIZE) {
@@ -312,16 +354,23 @@ fn rank_hits(scored: &mut [ScoredHit]) {
 ///
 /// `score` is the weighted aggregate across all matched field classes
 /// (`i64` to absorb summed u16 scores under weights without overflow).
-/// `matches` carries one [`Match`] per field that contributed — the
-/// downstream `SearchHit` clones these out so the UI can highlight
-/// matched characters per-field.
+/// Highlight indices are intentionally absent: the scan is scores-only,
+/// and [`build_hits`] re-runs the index traceback for just the hits that
+/// are actually emitted.
 struct ScoredHit {
     entry: Arc<LogEntry>,
     score: i64,
-    matches: Vec<Match>,
 }
 
-fn build_hits(scored: &[ScoredHit], result_limit: usize) -> Vec<SearchHit> {
+/// Ranks the accumulator and produces display hits for the top
+/// `result_limit`, computing highlight indices only for those — traceback
+/// cost is proportional to what is shown, not what is retained.
+fn build_hits(
+    scored: &[ScoredHit],
+    result_limit: usize,
+    needle: &str,
+    matcher: &mut FuzzyMatcher,
+) -> Vec<SearchHit> {
     let mut ranked: Vec<&ScoredHit> = scored.iter().collect();
     ranked.sort_by(|a, b| {
         b.score
@@ -336,22 +385,7 @@ fn build_hits(scored: &[ScoredHit], result_limit: usize) -> Vec<SearchHit> {
         .into_iter()
         .map(|hit| SearchHit {
             seq_id: hit.entry.seq,
-            matches: clone_matches(&hit.matches),
-        })
-        .collect()
-}
-
-/// Deep-clones a per-hit `Match` list.
-///
-/// `Match` doesn't derive `Clone` (see `fml/src/event.rs`), so we
-/// reconstruct manually when copying from the cache into each emitted
-/// `SearchHit`.
-fn clone_matches(matches: &[Match]) -> Vec<Match> {
-    matches
-        .iter()
-        .map(|m| Match {
-            key: m.key.clone(),
-            indices: m.indices.clone(),
+            matches: matcher.trace_entry(needle, &hit.entry),
         })
         .collect()
 }
@@ -375,6 +409,16 @@ impl FuzzyMatcher {
             Self::Nucleo(matcher) => matcher.score_batch(entries),
         }
     }
+
+    /// Computes highlight indices for one already-matched entry. Only
+    /// called for hits being emitted, so the per-field index traceback
+    /// runs on the displayed few instead of every retained entry.
+    fn trace_entry(&mut self, needle: &str, entry: &Arc<LogEntry>) -> Vec<Match> {
+        match self {
+            Self::Frizbee(matcher) => matcher.trace_entry(needle, entry),
+            Self::Nucleo(matcher) => matcher.trace_entry(entry),
+        }
+    }
 }
 
 struct FrizbeeMatcher {
@@ -394,8 +438,9 @@ impl FrizbeeMatcher {
         }
     }
 
-    /// Scores one batch with batched frizbee calls, preserving the original
-    /// implementation's ranking and highlight behavior.
+    /// Scores one batch with batched frizbee calls — scores only, no index
+    /// traceback. The weighted aggregate and match gating reproduce the
+    /// previous indices-based implementation's ranking exactly.
     fn score_batch(&self, needle: &str, entries: &[Arc<LogEntry>]) -> Vec<ScoredHit> {
         if entries.is_empty() {
             return Vec::new();
@@ -412,90 +457,76 @@ impl FrizbeeMatcher {
             .collect();
 
         let mut field_haystack: Vec<Cow<'_, str>> = Vec::new();
-        let mut field_owners: Vec<(usize, String)> = Vec::new();
+        let mut field_owners: Vec<usize> = Vec::new();
         for (idx, entry) in entries.iter().enumerate() {
             for (key, value) in &entry.fields {
-                for_each_leaf(key, value, &mut |path, text| {
+                for_each_leaf(key, value, &mut |_, text| {
                     field_haystack.push(text);
-                    field_owners.push((idx, path.to_string()));
+                    field_owners.push(idx);
                 });
             }
         }
 
-        let msg_hits = match_list_indices(needle, &msg_haystack, &self.config);
+        let msg_hits = frizbee::match_list(needle, &msg_haystack, &self.config);
         let level_hits = if level_haystack.iter().any(|s| !s.is_empty()) {
-            match_list_indices(needle, &level_haystack, &self.config)
+            frizbee::match_list(needle, &level_haystack, &self.config)
         } else {
             Vec::new()
         };
-        let source_hits = match_list_indices(needle, &source_haystack, &self.config);
+        let source_hits = frizbee::match_list(needle, &source_haystack, &self.config);
         let field_hits = if !field_haystack.is_empty() {
-            match_list_indices(needle, &field_haystack, &self.config)
+            frizbee::match_list(needle, &field_haystack, &self.config)
         } else {
             Vec::new()
         };
 
-        let mut scored: Vec<Option<ScoredHit>> = entries
-            .iter()
-            .map(|e| {
-                Some(ScoredHit {
-                    entry: e.clone(),
-                    score: 0,
-                    matches: Vec::new(),
-                })
-            })
-            .collect();
-
+        // (aggregate score, matched-field count) per entry in the batch.
+        let mut scores: Vec<(i64, usize)> = vec![(0, 0); entries.len()];
+        let mut bump = |entry_idx: usize, raw: u16, weight: f32| {
+            if let Some(slot) = scores.get_mut(entry_idx) {
+                slot.0 = slot.0.saturating_add((raw as f32 * weight).round() as i64);
+                slot.1 += 1;
+            }
+        };
         for m in msg_hits {
-            apply_frizbee_match(
-                &mut scored,
-                m.index as usize,
-                "msg",
-                m.score,
-                m.indices,
-                WEIGHT_MSG,
-            );
+            bump(m.index as usize, m.score, WEIGHT_MSG);
         }
         for m in level_hits {
-            apply_frizbee_match(
-                &mut scored,
-                m.index as usize,
-                "level",
-                m.score,
-                m.indices,
-                WEIGHT_LEVEL,
-            );
+            bump(m.index as usize, m.score, WEIGHT_LEVEL);
         }
         for m in source_hits {
-            apply_frizbee_match(
-                &mut scored,
-                m.index as usize,
-                "source",
-                m.score,
-                m.indices,
-                WEIGHT_SOURCE,
-            );
+            bump(m.index as usize, m.score, WEIGHT_SOURCE);
         }
         for m in field_hits {
-            let owner_idx = m.index as usize;
-            if owner_idx >= field_owners.len() {
-                continue;
+            if let Some(&entry_idx) = field_owners.get(m.index as usize) {
+                bump(entry_idx, m.score, WEIGHT_FIELDS);
             }
-            let (entry_idx, key) = &field_owners[owner_idx];
-            apply_frizbee_match(
-                &mut scored,
-                *entry_idx,
-                key,
-                m.score,
-                m.indices,
-                WEIGHT_FIELDS,
-            );
         }
 
-        scored
+        entries
+            .iter()
+            .zip(scores)
+            .filter(|(_, (score, matched))| *score > 0 && *matched > 0)
+            .map(|(entry, (score, _))| ScoredHit {
+                entry: entry.clone(),
+                score,
+            })
+            .collect()
+    }
+
+    /// Index traceback for a single entry's fields (emission-time only).
+    fn trace_entry(&self, needle: &str, entry: &Arc<LogEntry>) -> Vec<Match> {
+        let fields = searchable_fields(entry);
+        let haystacks: Vec<&str> = fields.iter().map(|field| field.value.as_ref()).collect();
+        match_list_indices(needle, &haystacks, &self.config)
             .into_iter()
-            .flatten()
-            .filter(|hit| hit.score > 0 && !hit.matches.is_empty())
+            .filter_map(|m| {
+                let field = fields.get(m.index as usize)?;
+                Some(Match {
+                    key: field.key.clone(),
+                    indices: reverse_to_u32(m.indices),
+                })
+            })
             .collect()
     }
 }
@@ -534,29 +565,43 @@ impl NucleoMatcher {
             return Some(ScoredHit {
                 entry: entry.clone(),
                 score: 0,
-                matches: Vec::new(),
             });
         }
 
-        let mut scored = ScoredHit {
-            entry: entry.clone(),
-            score: 0,
-            matches: Vec::new(),
-        };
-
+        let mut score: i64 = 0;
+        let mut matched = 0usize;
         for field in &fields {
-            if let Some((score, indices)) = self.match_positive_field(&field.value) {
-                scored.score = scored
-                    .score
-                    .saturating_add((score as f32 * field.weight).round() as i64);
-                scored.matches.push(Match {
-                    key: field.key.clone(),
-                    indices,
-                });
+            let mut buf = Vec::new();
+            if let Some(field_score) = self
+                .pattern
+                .score(Utf32Str::new(&field.value, &mut buf), &mut self.engine)
+            {
+                score = score.saturating_add((field_score as f32 * field.weight).round() as i64);
+                matched += 1;
             }
         }
 
-        (scored.score > 0 && !scored.matches.is_empty()).then_some(scored)
+        (score > 0 && matched > 0).then_some(ScoredHit {
+            entry: entry.clone(),
+            score,
+        })
+    }
+
+    /// Index traceback for a single entry's fields (emission-time only).
+    fn trace_entry(&mut self, entry: &Arc<LogEntry>) -> Vec<Match> {
+        if !self.has_positive_atoms {
+            return Vec::new();
+        }
+        searchable_fields(entry)
+            .iter()
+            .filter_map(|field| {
+                let (_, indices) = self.match_positive_field(&field.value)?;
+                Some(Match {
+                    key: field.key.clone(),
+                    indices,
+                })
+            })
+            .collect()
     }
 
     fn entry_matches_negative_atom(&mut self, fields: &[SearchableField]) -> bool {
@@ -620,26 +665,6 @@ fn searchable_fields(entry: &LogEntry) -> Vec<SearchableField<'_>> {
         });
     }
     fields
-}
-
-fn apply_frizbee_match(
-    scored: &mut [Option<ScoredHit>],
-    entry_idx: usize,
-    key: &str,
-    raw_score: u16,
-    indices: Vec<usize>,
-    weight: f32,
-) {
-    let Some(slot) = scored.get_mut(entry_idx).and_then(Option::as_mut) else {
-        return;
-    };
-    slot.score = slot
-        .score
-        .saturating_add((raw_score as f32 * weight).round() as i64);
-    slot.matches.push(Match {
-        key: key.to_string(),
-        indices: reverse_to_u32(indices),
-    });
 }
 
 /// Converts frizbee's reverse-order `Vec<usize>` indices into the
@@ -751,6 +776,7 @@ mod tests {
                 target: _,
                 query: _,
                 results,
+                hit_seqs: _,
                 request_id,
                 complete,
                 progress: _,
@@ -774,6 +800,7 @@ mod tests {
                 target: _,
                 query: _,
                 results,
+                hit_seqs: _,
                 request_id,
                 complete,
                 progress,
@@ -1417,6 +1444,53 @@ mod tests {
         handle.abort();
     }
 
+    /// With a display cap of 1, the emitted results are capped but the
+    /// hit-seq list still names every match, and the displayed hit carries
+    /// highlight indices from the emission-time traceback.
+    #[tokio::test]
+    async fn display_cap_keeps_full_hit_seqs_for_navigation() {
+        let store = RingBufferStore::new(store_config(8));
+        store.insert(make_entry("alpha one", "src-a", Some(LogLevel::Info)));
+        store.insert(make_entry("noise", "src-a", Some(LogLevel::Info)));
+        store.insert(make_entry("alpha two", "src-a", Some(LogLevel::Info)));
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let handle = start_test_fuzzy_search(
+            "alpha".to_string(),
+            vec![],
+            Duration::from_millis(10),
+            fuzzy_options(1, FuzzyMatcherKind::Frizbee, Some(0)),
+            store.clone(),
+            5,
+            tx,
+        );
+
+        let (results, hit_seqs) = loop {
+            let evt = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("timed out awaiting result")
+                .expect("channel closed");
+            if let SearchEvent::Result {
+                results,
+                hit_seqs,
+                complete: true,
+                ..
+            } = evt
+            {
+                break (results, hit_seqs);
+            }
+        };
+
+        assert_eq!(results.len(), 1, "display hits are capped");
+        assert!(
+            !results[0].matches.is_empty(),
+            "displayed hit carries traceback indices"
+        );
+        assert_eq!(hit_seqs, Some(vec![1, 3]), "navigation set is uncapped");
+
+        handle.abort();
+    }
+
     /// New entries are picked up by an incremental scan and ring-evicted
     /// hits are dropped, without rescanning the already-scored window.
     #[tokio::test]
@@ -1533,13 +1607,16 @@ mod tests {
 
         // 1. Production path: all fields, indices, per-scan stringify.
         let matcher = FrizbeeMatcher::new(None);
-        time("production score_batch (all fields, indices)", &mut || {
-            let mut total = 0usize;
-            for chunk in entries.chunks(SCAN_CHUNK_SIZE) {
-                total += matcher.score_batch(needle, chunk).len();
-            }
-            assert!(total > 0);
-        });
+        time(
+            "production scan pass (all fields, scores-only)",
+            &mut || {
+                let mut total = 0usize;
+                for chunk in entries.chunks(SCAN_CHUNK_SIZE) {
+                    total += matcher.score_batch(needle, chunk).len();
+                }
+                assert!(total > 0);
+            },
+        );
 
         // 2. Same haystacks, scores only (no index traceback).
         let config = FrizbeeConfig {

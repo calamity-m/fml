@@ -14,6 +14,9 @@ pub struct SearchConfig {
     #[serde(default = "default_fuzzy_tick_rate_ms")]
     pub fuzzy_tick_rate_ms: u64,
 
+    /// Maximum fuzzy hits displayed/ranked per emission. Hit *navigation*
+    /// (`n`/`N`) is unaffected — the worker reports every matching seq id
+    /// separately — so this only bounds the per-tick display payload.
     #[serde(default = "default_fuzzy_result_limit")]
     pub fuzzy_result_limit: usize,
 
@@ -52,7 +55,7 @@ fn default_fuzzy_tick_rate_ms() -> u64 {
 }
 
 fn default_fuzzy_result_limit() -> usize {
-    20_000
+    1_000
 }
 
 fn default_fuzzy_max_typos() -> Option<u16> {

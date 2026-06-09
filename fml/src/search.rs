@@ -78,6 +78,7 @@ pub(crate) async fn emit_results(
             target,
             query,
             results,
+            hit_seqs: None,
             request_id,
             complete,
             progress: None,
@@ -94,11 +95,13 @@ pub(crate) async fn emit_results(
 
 /// Sends pre-built `SearchHit`s as a single `SearchEvent::Result`. Used by
 /// workers (fuzzy) that populate per-field `Match` data; the entry-only
-/// `emit_results` helper hard-codes an empty matches vec.
+/// `emit_results` helper hard-codes an empty matches vec. `hit_seqs`
+/// carries the full uncapped match list when `hits` is display-capped.
 pub(crate) async fn emit_hits(
     target: SearchTarget,
     query: Query,
     hits: Vec<SearchHit>,
+    hit_seqs: Option<Vec<u64>>,
     request_id: u64,
     complete: bool,
     progress: Option<SearchProgress>,
@@ -109,6 +112,7 @@ pub(crate) async fn emit_hits(
             target,
             query,
             results: hits,
+            hit_seqs,
             request_id,
             complete,
             progress,
@@ -227,6 +231,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             target,
             query,
             results,
+            hit_seqs,
             request_id,
             complete,
             progress,
@@ -269,7 +274,14 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 state.search.cancel(target);
                 return state;
             };
-            pane.apply_result(&query, entries, matches_by_seq, progress, retained_bounds);
+            pane.apply_result(
+                &query,
+                entries,
+                matches_by_seq,
+                hit_seqs,
+                progress,
+                retained_bounds,
+            );
             state
         }
 
@@ -336,6 +348,7 @@ mod tests {
             target,
             query,
             results,
+            hit_seqs: None,
             request_id,
             complete: true,
             progress: None,
@@ -484,6 +497,7 @@ mod tests {
                 target,
                 query,
                 results,
+                hit_seqs: _,
                 request_id,
                 complete,
                 progress,

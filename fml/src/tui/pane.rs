@@ -102,6 +102,9 @@ pub struct Pane {
     pub last_search: Option<String>,
     /// Seq ids of the confirmed search's matches, ascending.
     pub hits: Vec<u64>,
+    /// Full match list of the in-flight (unconfirmed) search, ascending.
+    /// Uncapped, unlike the displayed results.
+    live_hit_seqs: Vec<u64>,
     /// Cursor position to restore when a live search is abandoned.
     pub search_return_seq: Option<u64>,
     /// Center of the last dispatched history query, used to avoid
@@ -132,6 +135,7 @@ impl Pane {
             follow: true,
             last_search: None,
             hits: Vec::new(),
+            live_hit_seqs: Vec::new(),
             search_return_seq: None,
             last_history_center: None,
             empty_note: None,
@@ -169,6 +173,7 @@ impl Pane {
             follow: self.follow,
             last_search: self.last_search.clone(),
             hits: self.hits.clone(),
+            live_hit_seqs: self.live_hit_seqs.clone(),
             search_return_seq: None,
             last_history_center: None,
             empty_note: self.empty_note.clone(),
@@ -276,11 +281,16 @@ impl Pane {
     /// Apply a routed search result. Results for a query this pane is no
     /// longer running are dropped (the engine's request-id check already
     /// guards staleness; this guards query swaps within one input frame).
+    ///
+    /// `hit_seqs` is the full uncapped match list for fuzzy queries —
+    /// displayed entries are only the top-scored subset, but `n`/`N`
+    /// navigation should walk every match.
     pub fn apply_result(
         &mut self,
         query: &Query,
         mut entries: Vec<Arc<LogEntry>>,
         matches: HashMap<u64, Vec<Match>>,
+        hit_seqs: Option<Vec<u64>>,
         progress: Option<SearchProgress>,
         retained_bounds: (u64, u64),
     ) {
@@ -288,6 +298,9 @@ impl Pane {
             return;
         }
         let _ = retained_bounds;
+        if let Some(hit_seqs) = hit_seqs {
+            self.live_hit_seqs = hit_seqs;
+        }
 
         match query {
             Query::Fuzzy(term) => {
@@ -485,7 +498,14 @@ impl Pane {
     /// Returns the number of hits.
     pub fn confirm_search(&mut self) -> usize {
         if let View::Results { entries, term, .. } = &self.view {
-            self.hits = entries.iter().map(|entry| entry.seq).collect();
+            // The worker's full match list covers hits beyond the displayed
+            // top-scored subset; fall back to displayed entries when the
+            // result predates split emission (e.g. unit-injected results).
+            self.hits = if self.live_hit_seqs.is_empty() {
+                entries.iter().map(|entry| entry.seq).collect()
+            } else {
+                self.live_hit_seqs.clone()
+            };
             self.last_search = (!term.is_empty()).then(|| term.clone());
         }
         self.hits.len()
@@ -814,6 +834,7 @@ mod tests {
             entries(&[1, 2, 3]),
             HashMap::new(),
             None,
+            None,
             (1, 3),
         );
         assert_eq!(pane.cursor_seq, Some(3));
@@ -822,6 +843,7 @@ mod tests {
             &Query::Tail,
             entries(&[2, 3, 4]),
             HashMap::new(),
+            None,
             None,
             (2, 4),
         );
@@ -839,7 +861,14 @@ mod tests {
         };
         pane.active_query = Some(query.clone());
         // Seq 5 was evicted; cursor should clamp to the nearest survivor.
-        pane.apply_result(&query, entries(&[7, 8, 9]), HashMap::new(), None, (7, 9));
+        pane.apply_result(
+            &query,
+            entries(&[7, 8, 9]),
+            HashMap::new(),
+            None,
+            None,
+            (7, 9),
+        );
         assert_eq!(pane.cursor_seq, Some(7));
     }
 
@@ -852,6 +881,7 @@ mod tests {
             entries(&[1]),
             HashMap::new(),
             None,
+            None,
             (1, 1),
         );
         assert!(pane.view.entries().is_empty());
@@ -863,7 +893,14 @@ mod tests {
         let mut pane = Pane::new(PaneId(1));
         let query = Query::Fuzzy("entry".to_string());
         pane.active_query = Some(query.clone());
-        pane.apply_result(&query, entries(&[9, 2, 5]), HashMap::new(), None, (1, 9));
+        pane.apply_result(
+            &query,
+            entries(&[9, 2, 5]),
+            HashMap::new(),
+            None,
+            None,
+            (1, 9),
+        );
 
         let seqs: Vec<u64> = pane.view.entries().iter().map(|e| e.seq).collect();
         assert_eq!(seqs, vec![2, 5, 9]);
@@ -880,6 +917,7 @@ mod tests {
             &Query::Tail,
             entries(&[1, 2, 3]),
             HashMap::new(),
+            None,
             None,
             (1, 3),
         );
@@ -908,7 +946,14 @@ mod tests {
             buffer: 100,
         };
         pane.active_query = Some(query.clone());
-        pane.apply_result(&query, entries(&[1, 2, 3]), HashMap::new(), None, (1, 3));
+        pane.apply_result(
+            &query,
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            None,
+            None,
+            (1, 3),
+        );
         pane.cursor_seq = Some(3);
 
         pane.move_cursor(10, &ctx);
@@ -929,7 +974,7 @@ mod tests {
             buffer: 100,
         };
         pane.active_query = Some(query.clone());
-        pane.apply_result(&query, entries(&seqs), HashMap::new(), None, (1, 200));
+        pane.apply_result(&query, entries(&seqs), HashMap::new(), None, None, (1, 200));
         // apply_result kept cursor at latest; drag it near the top edge.
         pane.cursor_seq = Some(55);
 
@@ -997,13 +1042,39 @@ mod tests {
     }
 
     #[test]
+    fn confirm_search_prefers_full_hit_list_over_displayed_entries() {
+        let mut pane = Pane::new(PaneId(1));
+        let query = Query::Fuzzy("entry".to_string());
+        pane.active_query = Some(query.clone());
+        // Display shows only seq 9, but the worker reported three matches.
+        pane.apply_result(
+            &query,
+            entries(&[9]),
+            HashMap::new(),
+            Some(vec![2, 5, 9]),
+            None,
+            (1, 9),
+        );
+
+        assert_eq!(pane.confirm_search(), 3);
+        assert_eq!(pane.hits, vec![2, 5, 9]);
+    }
+
+    #[test]
     fn confirm_search_records_hits_and_jump_hit_walks_them() {
         let srcs = [source("src-a", None)];
         let (ctx, _rx) = ctx_with(&srcs, (1, 9));
         let mut pane = Pane::new(PaneId(1));
         let query = Query::Fuzzy("entry".to_string());
         pane.active_query = Some(query.clone());
-        pane.apply_result(&query, entries(&[2, 5, 9]), HashMap::new(), None, (1, 9));
+        pane.apply_result(
+            &query,
+            entries(&[2, 5, 9]),
+            HashMap::new(),
+            None,
+            None,
+            (1, 9),
+        );
 
         assert_eq!(pane.confirm_search(), 3);
         assert_eq!(pane.hits, vec![2, 5, 9]);
@@ -1029,6 +1100,7 @@ mod tests {
             &query,
             entries(&[1, 2, 3, 4, 5]),
             HashMap::new(),
+            None,
             None,
             (1, 5),
         );

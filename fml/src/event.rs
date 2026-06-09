@@ -136,7 +136,13 @@ pub enum SearchEvent {
     Result {
         target: SearchTarget,
         query: Query,
+        /// Hits to display, capped at the configured result limit and
+        /// carrying highlight indices.
         results: Vec<SearchHit>,
+        /// Every matching seq id (ascending, uncapped) for fuzzy queries,
+        /// so hit navigation can walk matches that aren't displayed.
+        /// `None` for queries where `results` already is the full set.
+        hit_seqs: Option<Vec<u64>>,
         request_id: u64,
         complete: bool,
         progress: Option<SearchProgress>,

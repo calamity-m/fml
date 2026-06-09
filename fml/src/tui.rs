@@ -961,7 +961,7 @@ mod tests {
         let bounds = state.store.bounds();
         let pane = state.workspace.focused_pane_mut();
         pane.active_query = Some(Query::Tail);
-        pane.apply_result(&Query::Tail, entries, HashMap::new(), None, bounds);
+        pane.apply_result(&Query::Tail, entries, HashMap::new(), None, None, bounds);
     }
 
     fn drain_search_events(state: &mut AppState) -> Vec<SearchEvent> {
@@ -1100,7 +1100,7 @@ mod tests {
         {
             let pane = state.workspace.focused_pane_mut();
             pane.active_query = Some(term.clone());
-            pane.apply_result(&term, entries, HashMap::new(), None, (1, 5));
+            pane.apply_result(&term, entries, HashMap::new(), None, None, (1, 5));
         }
 
         let state = handle_tui_event(input(KeyCode::Enter), state);
