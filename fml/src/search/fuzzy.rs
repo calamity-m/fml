@@ -13,13 +13,15 @@
 //! holds an in-flight [`ScanState`] across ticks, racing chunk processing
 //! against the ticker in a `tokio::select!`: between ticks it scores
 //! `SCAN_CHUNK_SIZE` entries at a time, and when a tick fires it emits
-//! whatever has been scored so far with `complete = false`. The snapshot
-//! is only retired when the scan finishes (final emission with
-//! `complete = true`, bounds recorded so we don't re-scan an unchanged
-//! window) or when the store's retained bounds drift before a fresh
-//! scan starts. So `tick_rate` doubles as both the emission cadence and
-//! the per-tick processing budget — there is no separate scan-budget
-//! knob.
+//! whatever has been scored so far with `complete = false`. So `tick_rate`
+//! doubles as both the emission cadence and the per-tick processing budget
+//! — there is no separate scan-budget knob.
+//!
+//! Scanning is incremental across the query's lifetime: the first snapshot
+//! covers the full retained window; once it completes, bounds drift only
+//! triggers a scan of the newly ingested seqs (plus eviction of hits that
+//! fell out of retention), so steady-state cost under live ingest is
+//! O(new entries) per tick rather than a perpetual full rescan.
 //! Cancellation of superseded queries is handled by the caller via
 //! [`tokio::task::JoinHandle::abort`] — every loop iteration awaits at the
 //! ticker or inside the emission helper, so abort is prompt.
@@ -32,7 +34,7 @@
 //! Per-hit highlight data is carried in [`Match::indices`] as ascending
 //! character offsets into the matched field's value.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use frizbee::{Config as FrizbeeConfig, match_list_indices};
 use nucleo_matcher::{
@@ -128,6 +130,15 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
         // Active snapshot kept alive across ticks so partial emissions
         // resume instead of throwing away work. (low, high, scan).
         let mut scan: Option<(u64, u64, ScanState)> = None;
+        // Hits accumulated across snapshots. The scan is incremental: only
+        // seqs above `scanned_high` are fetched per snapshot, while hits
+        // below the retained low bound are evicted, so steady-state cost
+        // under live ingest is O(new entries) instead of O(retained). The
+        // set is score-capped at `result_limit`; once a hit is pruned by
+        // the cap it is not rediscovered (capped-ranking-over-a-stream
+        // semantics — a fresh query rescans everything anyway).
+        let mut scored: Vec<ScoredHit> = Vec::new();
+        let mut scanned_high: u64 = 0;
 
         loop {
             // No live scan: park on the ticker until something might
@@ -139,6 +150,7 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
 
                 if high == 0 {
                     if last_complete_bounds != Some((low, high)) {
+                        scored.clear();
                         match emit_hits(
                             target,
                             query.clone(),
@@ -162,8 +174,26 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                     continue;
                 }
 
+                scored.retain(|hit| hit.entry.seq >= low);
+                let fetch_low = if scanned_high == 0 {
+                    low
+                } else {
+                    (scanned_high + 1).max(low)
+                };
+                if fetch_low > high {
+                    // Pure eviction — ranking is already correct.
+                    let hits = build_hits(&scored, options.result_limit);
+                    match emit_hits(target, query.clone(), hits, request_id, true, None, &tx).await
+                    {
+                        EmitOutcome::Sent => {}
+                        EmitOutcome::ReceiverGone => return,
+                    }
+                    last_complete_bounds = Some((low, high));
+                    continue;
+                }
+
                 let mut pool: Vec<Arc<LogEntry>> = Vec::new();
-                if let Err(e) = store.fetch_range(low, high, &mut pool) {
+                if let Err(e) = store.fetch_range(fetch_low, high, &mut pool) {
                     let _ = emit_error(e.to_string(), &tx).await;
                     return;
                 }
@@ -179,7 +209,7 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
 
             tokio::select! {
                 _ = ticker.tick() => {
-                    let hits = build_hits(&state.scored, options.result_limit);
+                    let hits = build_hits(&scored, options.result_limit);
                     match emit_hits(
                         target,
                         query.clone(),
@@ -194,9 +224,9 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                     }
                 }
                 _ = tokio::task::yield_now(), if !state.is_complete() => {
-                    state.process_next_chunk(&term, &mut matcher);
+                    state.process_next_chunk(&term, &mut matcher, &mut scored, options.result_limit);
                     if state.is_complete() {
-                        let hits = build_hits(&state.scored, options.result_limit);
+                        let hits = build_hits(&scored, options.result_limit);
                         match emit_hits(
                             target,
                             query.clone(),
@@ -211,6 +241,7 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                             EmitOutcome::Sent => {}
                             EmitOutcome::ReceiverGone => return,
                         }
+                        scanned_high = *snap_high;
                         last_complete_bounds = Some((*snap_low, *snap_high));
                         scan = None;
                     }
@@ -223,7 +254,6 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
 struct ScanState {
     entries: Vec<Arc<LogEntry>>,
     next_index: usize,
-    scored: Vec<ScoredHit>,
 }
 
 impl ScanState {
@@ -231,7 +261,6 @@ impl ScanState {
         Self {
             entries,
             next_index: 0,
-            scored: Vec::new(),
         }
     }
 
@@ -239,15 +268,27 @@ impl ScanState {
         self.next_index >= self.entries.len()
     }
 
-    fn process_next_chunk(&mut self, needle: &str, matcher: &mut FuzzyMatcher) {
+    /// Scores the next chunk into the shared accumulator, pruning to the
+    /// score cap once the accumulator doubles it (amortizes the sort).
+    fn process_next_chunk(
+        &mut self,
+        needle: &str,
+        matcher: &mut FuzzyMatcher,
+        scored: &mut Vec<ScoredHit>,
+        result_limit: usize,
+    ) {
         if self.is_complete() {
             return;
         }
 
         let end = (self.next_index + SCAN_CHUNK_SIZE).min(self.entries.len());
-        self.scored
-            .extend(matcher.score_batch(needle, &self.entries[self.next_index..end]));
+        scored.extend(matcher.score_batch(needle, &self.entries[self.next_index..end]));
         self.next_index = end;
+
+        if scored.len() > result_limit.saturating_mul(2).max(SCAN_CHUNK_SIZE) {
+            rank_hits(scored);
+            scored.truncate(result_limit);
+        }
     }
 
     fn progress(&self) -> SearchProgress {
@@ -256,6 +297,15 @@ impl ScanState {
             total: self.entries.len(),
         }
     }
+}
+
+/// Sorts hits by aggregate score (desc), then recency (`seq` desc).
+fn rank_hits(scored: &mut [ScoredHit]) {
+    scored.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.entry.seq.cmp(&a.entry.seq))
+    });
 }
 
 /// One ranked entry in the worker's internal cache.
@@ -361,12 +411,14 @@ impl FrizbeeMatcher {
             .map(|e| e.source.display_name.as_str())
             .collect();
 
-        let mut field_haystack: Vec<String> = Vec::new();
+        let mut field_haystack: Vec<Cow<'_, str>> = Vec::new();
         let mut field_owners: Vec<(usize, String)> = Vec::new();
         for (idx, entry) in entries.iter().enumerate() {
             for (key, value) in &entry.fields {
-                field_haystack.push(stringify_value(value));
-                field_owners.push((idx, key.clone()));
+                for_each_leaf(key, value, &mut |path, text| {
+                    field_haystack.push(text);
+                    field_owners.push((idx, path.to_string()));
+                });
             }
         }
 
@@ -473,7 +525,7 @@ impl NucleoMatcher {
     }
 
     fn score_entry(&mut self, entry: &Arc<LogEntry>) -> Option<ScoredHit> {
-        let mut fields = searchable_fields(entry);
+        let fields = searchable_fields(entry);
         if self.entry_matches_negative_atom(&fields) {
             return None;
         }
@@ -492,7 +544,7 @@ impl NucleoMatcher {
             matches: Vec::new(),
         };
 
-        for field in &mut fields {
+        for field in &fields {
             if let Some((score, indices)) = self.match_positive_field(&field.value) {
                 scored.score = scored
                     .score
@@ -535,34 +587,38 @@ impl NucleoMatcher {
     }
 }
 
-struct SearchableField {
+struct SearchableField<'a> {
     key: String,
-    value: String,
+    value: Cow<'a, str>,
     weight: f32,
 }
 
-fn searchable_fields(entry: &LogEntry) -> Vec<SearchableField> {
+fn searchable_fields(entry: &LogEntry) -> Vec<SearchableField<'_>> {
     let mut fields = Vec::with_capacity(3 + entry.fields.len());
     fields.push(SearchableField {
         key: "msg".to_string(),
-        value: entry.msg.clone(),
+        value: Cow::Borrowed(entry.msg.as_str()),
         weight: WEIGHT_MSG,
     });
     fields.push(SearchableField {
         key: "level".to_string(),
-        value: entry.level.map(|l| l.to_string()).unwrap_or_default(),
+        value: Cow::Owned(entry.level.map(|l| l.to_string()).unwrap_or_default()),
         weight: WEIGHT_LEVEL,
     });
     fields.push(SearchableField {
         key: "source".to_string(),
-        value: entry.source.display_name.clone(),
+        value: Cow::Borrowed(entry.source.display_name.as_str()),
         weight: WEIGHT_SOURCE,
     });
-    fields.extend(entry.fields.iter().map(|(key, value)| SearchableField {
-        key: key.clone(),
-        value: stringify_value(value),
-        weight: WEIGHT_FIELDS,
-    }));
+    for (key, value) in &entry.fields {
+        for_each_leaf(key, value, &mut |path, text| {
+            fields.push(SearchableField {
+                key: path.to_string(),
+                value: text,
+                weight: WEIGHT_FIELDS,
+            });
+        });
+    }
     fields
 }
 
@@ -599,21 +655,33 @@ fn reverse_to_u32(mut indices: Vec<usize>) -> Vec<u32> {
     indices.into_iter().map(|i| i as u32).collect()
 }
 
-/// Flattens a `serde_json::Value` into a plain string for frizbee.
+/// Walks a `serde_json::Value` and yields each scalar leaf as a haystack,
+/// with object members reported under dotted paths (`http.method`).
 ///
-/// Frizbee matches on byte sequences, so any JSON structure needs a
-/// concrete representation. For scalars we use the natural textual
-/// form; for composite types we fall back to the JSON encoding so
-/// users can still fuzzy-find keys or substrings inside arrays/objects
-/// (e.g. typing `user_id` finds it inside a JSON blob field).
-fn stringify_value(value: &serde_json::Value) -> String {
+/// String leaves are borrowed straight out of the entry — the scan happens
+/// every tick over every retained entry, so cloning multi-KB payload
+/// strings per pass dominated scan cost. Numbers/bools are tiny owned
+/// formats. Composite values are never serialized: the needle matches
+/// values, not JSON syntax or key names.
+fn for_each_leaf<'a>(
+    path: &str,
+    value: &'a serde_json::Value,
+    f: &mut dyn FnMut(&str, Cow<'a, str>),
+) {
     match value {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            serde_json::to_string(value).unwrap_or_default()
+        serde_json::Value::Null => {}
+        serde_json::Value::String(s) => f(path, Cow::Borrowed(s.as_str())),
+        serde_json::Value::Bool(b) => f(path, Cow::Owned(b.to_string())),
+        serde_json::Value::Number(n) => f(path, Cow::Owned(n.to_string())),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                for_each_leaf(path, item, f);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                for_each_leaf(&format!("{path}.{key}"), value, f);
+            }
         }
     }
 }
@@ -1347,5 +1415,174 @@ mod tests {
         assert!(results.iter().all(|hit| hit.matches.is_empty()));
 
         handle.abort();
+    }
+
+    /// New entries are picked up by an incremental scan and ring-evicted
+    /// hits are dropped, without rescanning the already-scored window.
+    #[tokio::test]
+    async fn incremental_rescan_adds_new_hits_and_drops_evicted() {
+        let store = RingBufferStore::new(store_config(4));
+        store.insert(make_entry("alpha match one", "src-a", Some(LogLevel::Info)));
+        store.insert(make_entry("noise", "src-a", Some(LogLevel::Info)));
+        store.insert(make_entry("alpha match two", "src-a", Some(LogLevel::Info)));
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let handle = start_test_fuzzy_search(
+            "alpha".to_string(),
+            vec![],
+            Duration::from_millis(10),
+            // Zero typos: only true subsequence matches count, so noise
+            // entries can't sneak in via weak source/level matches.
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, Some(0)),
+            store.clone(),
+            7,
+            tx,
+        );
+
+        // First full scan completes with both alpha entries.
+        let hits = loop {
+            let (results, rid, complete) = recv_result(&mut rx).await;
+            assert_eq!(rid, 7);
+            if complete {
+                break results;
+            }
+        };
+        let mut seqs: Vec<u64> = hits.iter().map(|h| h.seq_id).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![1, 3]);
+
+        // Capacity 4: these inserts evict seqs 1-2, retaining 3..=6.
+        store.insert(make_entry("noise two", "src-a", Some(LogLevel::Info)));
+        store.insert(make_entry(
+            "alpha match three",
+            "src-a",
+            Some(LogLevel::Info),
+        ));
+        store.insert(make_entry("noise three", "src-a", Some(LogLevel::Info)));
+
+        // Next complete emission: evicted hit gone, new hit found.
+        let hits = loop {
+            let (results, _, complete) = recv_result(&mut rx).await;
+            let mut seqs: Vec<u64> = results.iter().map(|h| h.seq_id).collect();
+            seqs.sort_unstable();
+            if complete && seqs != vec![1, 3] {
+                break results;
+            }
+        };
+        let mut seqs: Vec<u64> = hits.iter().map(|h| h.seq_id).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![3, 5]);
+
+        handle.abort();
+    }
+
+    /// Release-mode throughput probe, not a regression test. Run with:
+    /// `cargo test --release -p fml bench_fuzzy_scan -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_fuzzy_scan_throughput() {
+        use std::time::Instant;
+
+        // Firehose-shaped entries: short msg, ~10 fields including a fat
+        // ~1KB payload string, mirroring the kubernetes load test.
+        let msgs = [
+            "request completed",
+            "validation failed",
+            "retrying downstream dependency",
+            "cache lookup completed",
+            "database query completed",
+            "downstream call completed",
+        ];
+        let fat: String = "x".repeat(1024);
+        let entries: Vec<Arc<LogEntry>> = (0..10_000u64)
+            .map(|seq| {
+                let mut fields = HashMap::new();
+                fields.insert("trace_id".into(), serde_json::json!("49c7562f535215f2a43921220002d6d9"));
+                fields.insert("span_id".into(), serde_json::json!("505bd20dbaa9f06d"));
+                fields.insert("request_id".into(), serde_json::json!(format!("req-json-firehose-hot-{seq}")));
+                fields.insert("tenant_id".into(), serde_json::json!(seq % 5000));
+                fields.insert("user_id".into(), serde_json::json!(seq * 7));
+                fields.insert("http".into(), serde_json::json!({"method": "POST", "path": "/internal/events", "status": 203, "duration_ms": 2018, "bytes_in": 10673, "bytes_out": 213177}));
+                fields.insert("kubernetes".into(), serde_json::json!({"namespace": "default", "pod": "json-firehose-hot-787f564958-xzf2p", "container": "json-firehose"}));
+                fields.insert("labels".into(), serde_json::json!({"app": "firehose", "version": "v3.13.13", "shard": "17"}));
+                fields.insert("payload".into(), serde_json::json!({"cart_id": "cart-60572823", "random": fat}));
+                Arc::new(LogEntry {
+                    seq,
+                    msg: msgs[seq as usize % msgs.len()].to_string(),
+                    ts: Utc::now(),
+                    level: Some(LogLevel::Info),
+                    source: Source {
+                        producer: "kubernetes".into(),
+                        id: "default/json-firehose-hot/json-firehose".into(),
+                        display_name: "json-firehose-hot-787f564958-xzf2p/json-firehose".into(),
+                        group: Some("default".into()),
+                    },
+                    fields,
+                })
+            })
+            .collect();
+        let needle = "retrying downstream";
+        let n = entries.len() as f64;
+
+        let time = |label: &str, f: &mut dyn FnMut()| {
+            let start = Instant::now();
+            f();
+            let secs = start.elapsed().as_secs_f64();
+            println!("{label:<46} {:>10.0} entries/s", n / secs);
+        };
+
+        // 1. Production path: all fields, indices, per-scan stringify.
+        let matcher = FrizbeeMatcher::new(None);
+        time("production score_batch (all fields, indices)", &mut || {
+            let mut total = 0usize;
+            for chunk in entries.chunks(SCAN_CHUNK_SIZE) {
+                total += matcher.score_batch(needle, chunk).len();
+            }
+            assert!(total > 0);
+        });
+
+        // 2. Same haystacks, scores only (no index traceback).
+        let config = FrizbeeConfig {
+            max_typos: None,
+            sort: false,
+            scoring: frizbee::Scoring::default(),
+        };
+        let mut field_strings: Vec<Cow<'_, str>> = Vec::new();
+        for entry in &entries {
+            for (key, value) in &entry.fields {
+                for_each_leaf(key, value, &mut |_, text| field_strings.push(text));
+            }
+        }
+        time("all-field haystacks, match_list (scores only)", &mut || {
+            let msg_haystack: Vec<&str> = entries.iter().map(|e| e.msg.as_str()).collect();
+            let hits = frizbee::match_list(needle, &msg_haystack, &config);
+            let field_hits = frizbee::match_list(needle, &field_strings, &config);
+            assert!(hits.len() + field_hits.len() > 0);
+        });
+
+        // 3. Leaf-walk haystack collection alone (per-scan prep cost).
+        time("leaf-walk collection over all fields", &mut || {
+            let mut leaves: Vec<Cow<'_, str>> = Vec::new();
+            for entry in &entries {
+                for (key, value) in &entry.fields {
+                    for_each_leaf(key, value, &mut |_, text| leaves.push(text));
+                }
+            }
+            assert!(!leaves.is_empty());
+        });
+
+        // 4. msg-only, indices (what a haystack-capped scan would pay).
+        time("msg-only match_list_indices", &mut || {
+            let msg_haystack: Vec<&str> = entries.iter().map(|e| e.msg.as_str()).collect();
+            let hits = match_list_indices(needle, &msg_haystack, &config);
+            assert!(!hits.is_empty());
+        });
+
+        // 5. msg-only, scores only — the matcher's ceiling on short lines.
+        time("msg-only match_list (scores only)", &mut || {
+            let msg_haystack: Vec<&str> = entries.iter().map(|e| e.msg.as_str()).collect();
+            let hits = frizbee::match_list(needle, &msg_haystack, &config);
+            assert!(!hits.is_empty());
+        });
     }
 }
