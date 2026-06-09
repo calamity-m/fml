@@ -214,6 +214,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                         result_limit: state.config.search.fuzzy_result_limit,
                         matcher_kind: state.config.search.fuzzy_matcher,
                         max_typos: state.config.search.fuzzy_max_typos,
+                        max_field_bytes: state.config.search.fuzzy_max_field_bytes,
                     },
                 ),
             };

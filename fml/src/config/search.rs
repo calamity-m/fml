@@ -28,6 +28,13 @@ pub struct SearchConfig {
 
     #[serde(default = "default_fuzzy_matcher")]
     pub fuzzy_matcher: FuzzyMatcherKind,
+
+    /// Maximum byte length of a field leaf value the fuzzy scan matches
+    /// against. Longer values (e.g. multi-KB payload blobs) are skipped —
+    /// they are rarely search targets but dominate scan cost. The log
+    /// message itself is never capped. `0` disables the cap.
+    #[serde(default = "default_fuzzy_max_field_bytes")]
+    pub fuzzy_max_field_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -81,6 +88,11 @@ impl Default for SearchConfig {
             fuzzy_max_typos: default_fuzzy_max_typos(),
             fuzzy_debounce_ms: default_fuzzy_debounce_ms(),
             fuzzy_matcher: default_fuzzy_matcher(),
+            fuzzy_max_field_bytes: default_fuzzy_max_field_bytes(),
         }
     }
+}
+
+fn default_fuzzy_max_field_bytes() -> usize {
+    512
 }

@@ -74,6 +74,9 @@ pub struct FuzzySearchOptions {
     pub result_limit: usize,
     pub matcher_kind: FuzzyMatcherKind,
     pub max_typos: Option<u16>,
+    /// Field leaf values longer than this many bytes are skipped during
+    /// matching (`msg` is never capped). `0` disables the cap.
+    pub max_field_bytes: usize,
 }
 
 /// Starts the background worker for a fuzzy text search.
@@ -132,7 +135,12 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
             return;
         }
 
-        let mut matcher = FuzzyMatcher::new(options.matcher_kind, &term, options.max_typos);
+        let mut matcher = FuzzyMatcher::new(
+            options.matcher_kind,
+            &term,
+            options.max_typos,
+            options.max_field_bytes,
+        );
 
         let mut ticker = tokio::time::interval(tick_rate);
         // The tick is an emission cadence, not a backlog of mandatory sends.
@@ -396,10 +404,17 @@ enum FuzzyMatcher {
 }
 
 impl FuzzyMatcher {
-    fn new(kind: FuzzyMatcherKind, needle: &str, max_typos: Option<u16>) -> Self {
+    fn new(
+        kind: FuzzyMatcherKind,
+        needle: &str,
+        max_typos: Option<u16>,
+        max_field_bytes: usize,
+    ) -> Self {
         match kind {
-            FuzzyMatcherKind::Frizbee => Self::Frizbee(FrizbeeMatcher::new(max_typos)),
-            FuzzyMatcherKind::Nucleo => Self::Nucleo(NucleoMatcher::new(needle)),
+            FuzzyMatcherKind::Frizbee => {
+                Self::Frizbee(FrizbeeMatcher::new(max_typos, max_field_bytes))
+            }
+            FuzzyMatcherKind::Nucleo => Self::Nucleo(NucleoMatcher::new(needle, max_field_bytes)),
         }
     }
 
@@ -423,10 +438,11 @@ impl FuzzyMatcher {
 
 struct FrizbeeMatcher {
     config: FrizbeeConfig,
+    max_field_bytes: usize,
 }
 
 impl FrizbeeMatcher {
-    fn new(max_typos: Option<u16>) -> Self {
+    fn new(max_typos: Option<u16>, max_field_bytes: usize) -> Self {
         // `sort: false` — we combine scores across several frizbee calls
         // into a single aggregate and need to sort on that combined number.
         Self {
@@ -435,6 +451,7 @@ impl FrizbeeMatcher {
                 sort: false,
                 scoring: frizbee::Scoring::default(),
             },
+            max_field_bytes,
         }
     }
 
@@ -460,7 +477,7 @@ impl FrizbeeMatcher {
         let mut field_owners: Vec<usize> = Vec::new();
         for (idx, entry) in entries.iter().enumerate() {
             for (key, value) in &entry.fields {
-                for_each_leaf(key, value, &mut |_, text| {
+                for_each_leaf(key, value, self.max_field_bytes, &mut |_, text| {
                     field_haystack.push(text);
                     field_owners.push(idx);
                 });
@@ -516,7 +533,7 @@ impl FrizbeeMatcher {
 
     /// Index traceback for a single entry's fields (emission-time only).
     fn trace_entry(&self, needle: &str, entry: &Arc<LogEntry>) -> Vec<Match> {
-        let fields = searchable_fields(entry);
+        let fields = searchable_fields(entry, self.max_field_bytes);
         let haystacks: Vec<&str> = fields.iter().map(|field| field.value.as_ref()).collect();
         match_list_indices(needle, &haystacks, &self.config)
             .into_iter()
@@ -535,16 +552,18 @@ struct NucleoMatcher {
     pattern: Pattern,
     engine: NucleoEngine,
     has_positive_atoms: bool,
+    max_field_bytes: usize,
 }
 
 impl NucleoMatcher {
-    fn new(needle: &str) -> Self {
+    fn new(needle: &str, max_field_bytes: usize) -> Self {
         let pattern = Pattern::parse(needle, CaseMatching::Ignore, Normalization::Smart);
         let has_positive_atoms = pattern.atoms.iter().any(|atom| !atom.negative);
         Self {
             pattern,
             engine: NucleoEngine::new(NucleoConfig::DEFAULT),
             has_positive_atoms,
+            max_field_bytes,
         }
     }
 
@@ -556,7 +575,7 @@ impl NucleoMatcher {
     }
 
     fn score_entry(&mut self, entry: &Arc<LogEntry>) -> Option<ScoredHit> {
-        let fields = searchable_fields(entry);
+        let fields = searchable_fields(entry, self.max_field_bytes);
         if self.entry_matches_negative_atom(&fields) {
             return None;
         }
@@ -592,7 +611,7 @@ impl NucleoMatcher {
         if !self.has_positive_atoms {
             return Vec::new();
         }
-        searchable_fields(entry)
+        searchable_fields(entry, self.max_field_bytes)
             .iter()
             .filter_map(|field| {
                 let (_, indices) = self.match_positive_field(&field.value)?;
@@ -638,7 +657,7 @@ struct SearchableField<'a> {
     weight: f32,
 }
 
-fn searchable_fields(entry: &LogEntry) -> Vec<SearchableField<'_>> {
+fn searchable_fields(entry: &LogEntry, max_field_bytes: usize) -> Vec<SearchableField<'_>> {
     let mut fields = Vec::with_capacity(3 + entry.fields.len());
     fields.push(SearchableField {
         key: "msg".to_string(),
@@ -656,7 +675,7 @@ fn searchable_fields(entry: &LogEntry) -> Vec<SearchableField<'_>> {
         weight: WEIGHT_SOURCE,
     });
     for (key, value) in &entry.fields {
-        for_each_leaf(key, value, &mut |path, text| {
+        for_each_leaf(key, value, max_field_bytes, &mut |path, text| {
             fields.push(SearchableField {
                 key: path.to_string(),
                 value: text,
@@ -688,24 +707,33 @@ fn reverse_to_u32(mut indices: Vec<usize>) -> Vec<u32> {
 /// strings per pass dominated scan cost. Numbers/bools are tiny owned
 /// formats. Composite values are never serialized: the needle matches
 /// values, not JSON syntax or key names.
+/// String leaves longer than `max_bytes` are skipped entirely (`0` = no
+/// cap): giant payload blobs are rarely search targets but dominate match
+/// cost. The cap never applies to `msg` — only callers walking `fields`
+/// come through here.
 fn for_each_leaf<'a>(
     path: &str,
     value: &'a serde_json::Value,
+    max_bytes: usize,
     f: &mut dyn FnMut(&str, Cow<'a, str>),
 ) {
     match value {
         serde_json::Value::Null => {}
-        serde_json::Value::String(s) => f(path, Cow::Borrowed(s.as_str())),
+        serde_json::Value::String(s) => {
+            if max_bytes == 0 || s.len() <= max_bytes {
+                f(path, Cow::Borrowed(s.as_str()))
+            }
+        }
         serde_json::Value::Bool(b) => f(path, Cow::Owned(b.to_string())),
         serde_json::Value::Number(n) => f(path, Cow::Owned(n.to_string())),
         serde_json::Value::Array(items) => {
             for item in items {
-                for_each_leaf(path, item, f);
+                for_each_leaf(path, item, max_bytes, f);
             }
         }
         serde_json::Value::Object(map) => {
             for (key, value) in map {
-                for_each_leaf(&format!("{path}.{key}"), value, f);
+                for_each_leaf(&format!("{path}.{key}"), value, max_bytes, f);
             }
         }
     }
@@ -820,6 +848,8 @@ mod tests {
             result_limit,
             matcher_kind,
             max_typos,
+            // Tests opt out of the leaf cap unless they exercise it.
+            max_field_bytes: 0,
         }
     }
 
@@ -1444,6 +1474,63 @@ mod tests {
         handle.abort();
     }
 
+    /// The leaf-size cap skips long field values but never the message.
+    #[tokio::test]
+    async fn leaf_cap_skips_long_field_values_but_not_msg() {
+        let store = RingBufferStore::new(store_config(8));
+        let long_blob = format!("{}alpha{}", "x".repeat(300), "x".repeat(300));
+        // seq 1: needle only inside an over-cap field value.
+        store.insert(make_entry_with_fields(
+            "quiet message",
+            "src-a",
+            Some(LogLevel::Info),
+            HashMap::from([("payload".to_string(), serde_json::json!(long_blob))]),
+        ));
+        // seq 2: needle in a short field value — must still match.
+        store.insert(make_entry_with_fields(
+            "quiet message",
+            "src-a",
+            Some(LogLevel::Info),
+            HashMap::from([("tag".to_string(), serde_json::json!("alpha"))]),
+        ));
+        // seq 3: needle in a msg longer than the cap — msg is never capped.
+        store.insert(make_entry(
+            &format!("alpha {}", "m".repeat(600)),
+            "src-a",
+            Some(LogLevel::Info),
+        ));
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut options = fuzzy_options(100, FuzzyMatcherKind::Frizbee, Some(0));
+        options.max_field_bytes = 512;
+        let handle = start_test_fuzzy_search(
+            "alpha".to_string(),
+            vec![],
+            Duration::from_millis(10),
+            options,
+            store.clone(),
+            11,
+            tx,
+        );
+
+        let hits = loop {
+            let (results, rid, complete) = recv_result(&mut rx).await;
+            assert_eq!(rid, 11);
+            if complete {
+                break results;
+            }
+        };
+        let mut seqs: Vec<u64> = hits.iter().map(|h| h.seq_id).collect();
+        seqs.sort_unstable();
+        assert_eq!(
+            seqs,
+            vec![2, 3],
+            "capped blob skipped; short field and long msg match"
+        );
+
+        handle.abort();
+    }
+
     /// With a display cap of 1, the emitted results are capped but the
     /// hit-seq list still names every match, and the displayed hit carries
     /// highlight indices from the emission-time traceback.
@@ -1567,7 +1654,13 @@ mod tests {
             "database query completed",
             "downstream call completed",
         ];
-        let fat: String = "x".repeat(1024);
+        // Alphabet-soup blob like the firehose's random payload: it passes
+        // char-frequency prefilters, forcing real match work when uncapped.
+        let fat: String = "abcdefghijklmnopqrstuvwxyz0123456789"
+            .chars()
+            .cycle()
+            .take(1024)
+            .collect();
         let entries: Vec<Arc<LogEntry>> = (0..10_000u64)
             .map(|seq| {
                 let mut fields = HashMap::new();
@@ -1606,9 +1699,9 @@ mod tests {
         };
 
         // 1. Production path: all fields, indices, per-scan stringify.
-        let matcher = FrizbeeMatcher::new(None);
+        let matcher = FrizbeeMatcher::new(None, 512);
         time(
-            "production scan pass (all fields, scores-only)",
+            "production scan pass (scores-only, 512B leaf cap)",
             &mut || {
                 let mut total = 0usize;
                 for chunk in entries.chunks(SCAN_CHUNK_SIZE) {
@@ -1617,6 +1710,22 @@ mod tests {
                 assert!(total > 0);
             },
         );
+
+        // 1b. Nucleo (the default matcher — no SIMD prefilter), capped
+        // and uncapped, to show what the leaf cap buys it.
+        for (label, cap) in [
+            ("nucleo scan pass (512B leaf cap)", 512usize),
+            ("nucleo scan pass (uncapped)", 0usize),
+        ] {
+            let mut matcher = NucleoMatcher::new(needle, cap);
+            time(label, &mut || {
+                let mut total = 0usize;
+                for chunk in entries.chunks(SCAN_CHUNK_SIZE) {
+                    total += matcher.score_batch(chunk).len();
+                }
+                assert!(total > 0);
+            });
+        }
 
         // 2. Same haystacks, scores only (no index traceback).
         let config = FrizbeeConfig {
@@ -1627,7 +1736,7 @@ mod tests {
         let mut field_strings: Vec<Cow<'_, str>> = Vec::new();
         for entry in &entries {
             for (key, value) in &entry.fields {
-                for_each_leaf(key, value, &mut |_, text| field_strings.push(text));
+                for_each_leaf(key, value, 0, &mut |_, text| field_strings.push(text));
             }
         }
         time("all-field haystacks, match_list (scores only)", &mut || {
@@ -1642,7 +1751,7 @@ mod tests {
             let mut leaves: Vec<Cow<'_, str>> = Vec::new();
             for entry in &entries {
                 for (key, value) in &entry.fields {
-                    for_each_leaf(key, value, &mut |_, text| leaves.push(text));
+                    for_each_leaf(key, value, 0, &mut |_, text| leaves.push(text));
                 }
             }
             assert!(!leaves.is_empty());
