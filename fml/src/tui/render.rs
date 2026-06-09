@@ -77,9 +77,86 @@ pub fn draw(state: &mut AppState, frame: &mut Frame) {
         let pane_rect = state.workspace.focused_pane().rect;
         draw_detail_overlay(state.workspace.focused_pane(), frame, pane_rect, &theme);
     }
+    if state.workspace.picker.is_some() {
+        draw_picker_overlay(state, frame, content, &theme);
+    }
     if state.workspace.help_open {
         draw_help_overlay(frame, area, &theme);
     }
+}
+
+/// Centered fuzzy source picker: query line on top, narrowed source rows
+/// below, toggled rows marked, highlighted row reversed.
+fn draw_picker_overlay(state: &AppState, frame: &mut Frame, area: Rect, theme: &ThemeConfig) {
+    let Some(picker) = &state.workspace.picker else {
+        return;
+    };
+    let rows = picker.rows(&state.producer.sources);
+
+    let width = 64.min(area.width);
+    let height = (rows.len() as u16 + 3)
+        .clamp(5, (area.height as f32 * 0.7) as u16)
+        .min(area.height);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.primary_accent_fg))
+        .title(" sources — Tab toggle · C-a all · Enter apply ");
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block.style(theme.surface_style()), rect);
+    if inner.height == 0 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::with_capacity(inner.height as usize);
+    lines.push(Line::from(prompt_spans(">", &picker.query, theme)));
+
+    let visible = (inner.height as usize).saturating_sub(1);
+    let cursor = picker.cursor.min(rows.len().saturating_sub(1));
+    let scroll = cursor.saturating_sub(visible.saturating_sub(1));
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no sources match",
+            Style::default().fg(theme.border_unfocused_fg),
+        )));
+    }
+    for (offset, source) in rows.iter().skip(scroll).take(visible).enumerate() {
+        let idx = scroll + offset;
+        let toggled = picker.selected.contains(&source.id);
+        let marker = if toggled { "●" } else { " " };
+        let origin = match &source.group {
+            Some(group) => format!("{}/{}", source.producer, group),
+            None => source.producer.clone(),
+        };
+        let mut spans = vec![
+            Span::styled(
+                format!(" {marker} "),
+                Style::default().fg(theme.primary_accent_fg),
+            ),
+            Span::raw(source.display_name.clone()),
+            Span::styled(
+                format!("  {origin} ({})", source.id),
+                Style::default().fg(theme.border_unfocused_fg),
+            ),
+        ];
+        if idx == cursor {
+            spans = spans
+                .into_iter()
+                .map(|span| {
+                    let style = span.style.add_modifier(Modifier::REVERSED);
+                    Span::styled(span.content, style)
+                })
+                .collect();
+        }
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_tab_line(state: &AppState, frame: &mut Frame, area: Rect) {
@@ -352,7 +429,11 @@ fn draw_cmdline(
 ) {
     let ws = &state.workspace;
     let pane = ws.focused_pane();
-    let (badge, badge_color) = mode_badge(ws.mode, pane.follow);
+    let (badge, badge_color) = if ws.picker.is_some() {
+        (" PICKER ", Color::White)
+    } else {
+        mode_badge(ws.mode, pane.follow)
+    };
     let mut spans = vec![Span::styled(
         badge,
         Style::default()
@@ -475,12 +556,14 @@ const HELP_TEXT: &str = "\
 
   COMMANDS ───────────────────────────────────
   :filter api,db  pane source filter · :filter
+  :filter =Name   exact match · Tab completes
+  :sources        fuzzy source picker
   :vs :sp :q :qa :only :tabnew [name] :tabclose
   :tail :clear :help          Ctrl-c quits";
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect, theme: &ThemeConfig) {
     let width = 50.min(area.width);
-    let height = 28.min(area.height);
+    let height = 30.min(area.height);
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,

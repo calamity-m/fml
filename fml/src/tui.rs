@@ -212,6 +212,11 @@ fn handle_key(state: &mut AppState, key: KeyEvent) {
         return;
     }
 
+    if state.workspace.picker.is_some() {
+        handle_picker_key(state, key);
+        return;
+    }
+
     if state.workspace.focused_pane().detail_open {
         handle_detail_key(state, key);
         return;
@@ -243,6 +248,128 @@ fn handle_detail_key(state: &mut AppState, key: KeyEvent) {
             pane.detail_scroll = 0;
         }
         _ => {}
+    }
+}
+
+/// Open the source picker, pre-selecting the sources the focused pane's
+/// current filter resolves to.
+fn open_source_picker(state: &mut AppState) {
+    let mut picker = workspace::SourcePicker::default();
+    let pane = state.workspace.focused_pane();
+    if !pane.filter.is_empty()
+        && let Some(ids) = pane.resolve_filter(&state.producer.sources)
+    {
+        picker.selected = ids.into_iter().collect();
+    }
+    state.workspace.picker = Some(picker);
+}
+
+/// Apply the picker: write the chosen sources as exact `=name` filter
+/// patterns on the focused pane and re-dispatch it.
+fn apply_source_picker(state: &mut AppState) {
+    let Some(picker) = state.workspace.picker.take() else {
+        return;
+    };
+    let rows = picker.rows(&state.producer.sources);
+    // Toggled sources win; with nothing toggled, take the highlighted row.
+    let chosen: Vec<&crate::log::Source> = if picker.selected.is_empty() {
+        rows.get(picker.cursor.min(rows.len().saturating_sub(1)))
+            .copied()
+            .into_iter()
+            .collect()
+    } else {
+        state
+            .producer
+            .sources
+            .iter()
+            .filter(|source| picker.selected.contains(&source.id))
+            .collect()
+    };
+    if chosen.is_empty() {
+        return;
+    }
+    let mut patterns: Vec<String> = chosen
+        .iter()
+        .map(|source| format!("={}", source.display_name))
+        .collect();
+    patterns.dedup();
+    let count = chosen.len();
+    {
+        let (ws, ctx) = split_state(state);
+        let pane = ws.focused_pane_mut();
+        pane.filter = patterns;
+        dispatch_pane_current(pane, &ctx);
+    }
+    state.workspace.notice = Some(format!("filter → {count} sources"));
+}
+
+fn handle_picker_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Snapshot the narrowed row ids so the picker can be borrowed mutably.
+    let row_ids: Vec<crate::log::SourceId> = {
+        let Some(picker) = state.workspace.picker.as_ref() else {
+            return;
+        };
+        picker
+            .rows(&state.producer.sources)
+            .iter()
+            .map(|source| source.id.clone())
+            .collect()
+    };
+
+    match (key.code, ctrl) {
+        (KeyCode::Esc, _) => state.workspace.picker = None,
+        (KeyCode::Enter, _) => apply_source_picker(state),
+        _ => {
+            let Some(picker) = state.workspace.picker.as_mut() else {
+                return;
+            };
+            picker.cursor = picker.cursor.min(row_ids.len().saturating_sub(1));
+            match (key.code, ctrl) {
+                // fzf idiom: Tab toggles and advances, Shift-Tab backs up.
+                (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
+                    if let Some(id) = row_ids.get(picker.cursor)
+                        && !picker.selected.remove(id)
+                    {
+                        picker.selected.insert(id.clone());
+                    }
+                    if key.code == KeyCode::Tab {
+                        picker.cursor = (picker.cursor + 1).min(row_ids.len().saturating_sub(1));
+                    } else {
+                        picker.cursor = picker.cursor.saturating_sub(1);
+                    }
+                }
+                (KeyCode::Up, _) | (KeyCode::Char('k'), true) | (KeyCode::Char('p'), true) => {
+                    picker.cursor = picker.cursor.saturating_sub(1);
+                }
+                (KeyCode::Down, _) | (KeyCode::Char('j'), true) | (KeyCode::Char('n'), true) => {
+                    picker.cursor = (picker.cursor + 1).min(row_ids.len().saturating_sub(1));
+                }
+                // Toggle every narrowed row at once.
+                (KeyCode::Char('a'), true) => {
+                    if row_ids.iter().all(|id| picker.selected.contains(id)) {
+                        for id in &row_ids {
+                            picker.selected.remove(id);
+                        }
+                    } else {
+                        picker.selected.extend(row_ids.iter().cloned());
+                    }
+                }
+                (KeyCode::Char('u'), true) => {
+                    picker.query.reset();
+                    picker.cursor = 0;
+                }
+                (KeyCode::Backspace, _) => {
+                    picker.query.backspace();
+                    picker.cursor = 0;
+                }
+                (KeyCode::Char(c), false) => {
+                    picker.query.insert(c);
+                    picker.cursor = 0;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -528,6 +655,10 @@ fn live_search(state: &mut AppState) {
 
 fn handle_command_key(state: &mut AppState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Any key other than Tab/BackTab abandons an in-flight completion.
+    if !matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+        state.workspace.completion = None;
+    }
     match (key.code, ctrl) {
         (KeyCode::Esc, _) => {
             state.workspace.mode = Mode::Normal;
@@ -539,6 +670,8 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) {
             state.workspace.prompt.reset();
             execute_command(state, &line);
         }
+        (KeyCode::Tab, _) => cycle_completion(state, true),
+        (KeyCode::BackTab, _) => cycle_completion(state, false),
         (KeyCode::Char('u'), true) => state.workspace.prompt.reset(),
         (KeyCode::Char(c), false) => state.workspace.prompt.insert(c),
         (KeyCode::Backspace, _) => state.workspace.prompt.backspace(),
@@ -548,6 +681,86 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) {
         (KeyCode::End, _) => state.workspace.prompt.end(),
         _ => {}
     }
+}
+
+/// Command names offered by first-token completion.
+const COMMAND_NAMES: &[&str] = &[
+    "filter", "sources", "vsplit", "split", "tabnew", "tabclose", "tabnext", "tabprev", "tail",
+    "clear", "only", "help", "quit", "qa",
+];
+
+/// Vim-style `:` completion. The first Tab gathers candidates for the
+/// trailing token (command names, or live source names for `:filter`) and
+/// applies the first; further Tabs cycle.
+fn cycle_completion(state: &mut AppState, forward: bool) {
+    if state.workspace.completion.is_none() {
+        let buf = state.workspace.prompt.buf.clone();
+        // Complete the token after the last separator; ',' supports
+        // `:filter a,b<Tab>` and ' ' separates command from args.
+        let token_start = buf.rfind([' ', ',']).map(|idx| idx + 1).unwrap_or(0);
+        let token = &buf[token_start..];
+        let completing_command = token_start == 0;
+
+        let candidates: Vec<String> = if completing_command {
+            COMMAND_NAMES
+                .iter()
+                .filter(|name| name.starts_with(token))
+                .map(|name| name.to_string())
+                .collect()
+        } else if matches!(buf.split_whitespace().next(), Some("filter") | Some("f")) {
+            // `=`-prefixed tokens complete to exact-match patterns.
+            let (prefix, needle) = match token.strip_prefix('=') {
+                Some(rest) => ("=", rest),
+                None => ("", token),
+            };
+            let needle = needle.to_lowercase();
+            let mut names: Vec<String> = state
+                .producer
+                .sources
+                .iter()
+                .flat_map(|source| {
+                    [
+                        Some(source.display_name.clone()),
+                        source.group.clone(),
+                        Some(source.producer.clone()),
+                    ]
+                })
+                .flatten()
+                .filter(|name| name.to_lowercase().starts_with(&needle))
+                .map(|name| format!("{prefix}{name}"))
+                .collect();
+            names.sort();
+            names.dedup();
+            names
+        } else {
+            Vec::new()
+        };
+
+        if candidates.is_empty() {
+            return;
+        }
+        state.workspace.completion = Some(workspace::Completion {
+            candidates,
+            index: 0,
+            token_start,
+        });
+    } else if let Some(completion) = state.workspace.completion.as_mut() {
+        let len = completion.candidates.len();
+        completion.index = if forward {
+            (completion.index + 1) % len
+        } else {
+            (completion.index + len - 1) % len
+        };
+    }
+
+    let Some(completion) = state.workspace.completion.as_ref() else {
+        return;
+    };
+    let candidate = completion.candidates[completion.index].clone();
+    let prompt = &mut state.workspace.prompt;
+    prompt.buf.truncate(completion.token_start);
+    prompt.buf.push_str(&candidate);
+    prompt.end();
 }
 
 fn execute_command(state: &mut AppState, line: &str) {
@@ -610,6 +823,7 @@ fn execute_command(state: &mut AppState, line: &str) {
                 pane.results_to_stream(&ctx);
             }
         }
+        "sources" | "src" | "ls" => open_source_picker(state),
         "help" | "h" => state.workspace.help_open = true,
         unknown => {
             state.workspace.notice = Some(format!("not a command: {unknown}"));
@@ -1085,6 +1299,140 @@ mod tests {
 
         let state = handle_tui_event(input(KeyCode::Esc), state);
         assert!(!state.workspace.focused_pane().detail_open);
+    }
+
+    #[test]
+    fn sources_picker_narrows_toggles_and_applies_exact_filters() {
+        let mut state = state_with_entries(1);
+        for id in ["demo-2", "demo-10"] {
+            state = producer::handle_producer_event(
+                ProducerEvent::SourceFound(Source {
+                    producer: "fake".to_string(),
+                    id: id.to_string(),
+                    display_name: id.replace("demo-", "Demo "),
+                    group: None,
+                }),
+                state,
+            );
+        }
+        drain_search_events(&mut state);
+
+        // `:sources` opens the picker.
+        let mut state = handle_tui_event(input(KeyCode::Char(':')), state);
+        for c in "sources".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(state.workspace.picker.is_some());
+
+        // Typing narrows; "demo 2" matches only the Demo 2 row.
+        let mut state = state;
+        for c in "demo 2".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        {
+            let picker = state.workspace.picker.as_ref().unwrap();
+            let rows = picker.rows(&state.producer.sources);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id, "demo-2");
+        }
+
+        // Tab toggles it; Enter applies an exact pattern and redispatches.
+        let state = handle_tui_event(input(KeyCode::Tab), state);
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert!(state.workspace.picker.is_none());
+        assert_eq!(
+            state.workspace.focused_pane().filter,
+            vec!["=Demo 2".to_string()]
+        );
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search { sources, .. } if sources == &vec!["demo-2".to_string()]
+        )));
+    }
+
+    #[test]
+    fn picker_enter_with_no_toggle_applies_highlighted_row() {
+        let mut state = state_with_entries(1);
+        drain_search_events(&mut state);
+        let mut state = handle_tui_event(input(KeyCode::Char(':')), state);
+        for c in "ls".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert!(state.workspace.picker.is_none());
+        assert_eq!(
+            state.workspace.focused_pane().filter,
+            vec!["=Source A".to_string()]
+        );
+    }
+
+    #[test]
+    fn exact_filter_pattern_does_not_substring_match() {
+        let mut state = state_with_entries(1);
+        for (id, name) in [("demo-2", "Demo 2"), ("demo-20", "Demo 20")] {
+            state = producer::handle_producer_event(
+                ProducerEvent::SourceFound(Source {
+                    producer: "fake".to_string(),
+                    id: id.to_string(),
+                    display_name: name.to_string(),
+                    group: None,
+                }),
+                state,
+            );
+        }
+        let pane = state.workspace.focused_pane_mut();
+        pane.filter = vec!["=Demo 2".to_string()];
+        assert_eq!(
+            pane.resolve_filter(&state.producer.sources),
+            Some(vec!["demo-2".to_string()])
+        );
+        pane.filter = vec!["Demo 2".to_string()];
+        assert_eq!(
+            pane.resolve_filter(&state.producer.sources),
+            Some(vec!["demo-2".to_string(), "demo-20".to_string()])
+        );
+    }
+
+    #[test]
+    fn tab_completes_command_names_and_filter_sources() {
+        let mut state = state_with_entries(1);
+        state = producer::handle_producer_event(
+            ProducerEvent::SourceFound(Source {
+                producer: "fake".to_string(),
+                id: "api-1".to_string(),
+                display_name: "Api One".to_string(),
+                group: Some("backend".to_string()),
+            }),
+            state,
+        );
+        drain_search_events(&mut state);
+
+        // `:fi<Tab>` completes the command name.
+        let mut state = handle_tui_event(input(KeyCode::Char(':')), state);
+        for c in "fi".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        let mut state = handle_tui_event(input(KeyCode::Tab), state);
+        assert_eq!(state.workspace.prompt.buf, "filter");
+
+        // `:filter A<Tab>` completes a source name; Tab cycles candidates.
+        state.workspace.prompt.insert(' ');
+        state.workspace.completion = None;
+        let state = handle_tui_event(input(KeyCode::Char('A')), state);
+        let state = handle_tui_event(input(KeyCode::Tab), state);
+        assert_eq!(state.workspace.prompt.buf, "filter Api One");
+
+        // A comma starts a new token; `b<Tab>` completes the group name.
+        let state = handle_tui_event(input(KeyCode::Char(',')), state);
+        let state = handle_tui_event(input(KeyCode::Char('b')), state);
+        let state = handle_tui_event(input(KeyCode::Tab), state);
+        assert_eq!(state.workspace.prompt.buf, "filter Api One,backend");
     }
 
     #[test]

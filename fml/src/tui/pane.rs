@@ -210,20 +210,9 @@ impl Pane {
         if self.filter.is_empty() {
             return Some(Vec::new());
         }
-        let pats: Vec<String> = self.filter.iter().map(|p| p.to_lowercase()).collect();
         let ids: Vec<SourceId> = sources
             .iter()
-            .filter(|source| {
-                pats.iter().any(|pat| {
-                    source.id.to_lowercase().contains(pat)
-                        || source.display_name.to_lowercase().contains(pat)
-                        || source.producer.to_lowercase().contains(pat)
-                        || source
-                            .group
-                            .as_deref()
-                            .is_some_and(|g| g.to_lowercase().contains(pat))
-                })
-            })
+            .filter(|source| self.filter.iter().any(|pat| pattern_matches(pat, source)))
             .map(|source| source.id.clone())
             .collect();
         (!ids.is_empty()).then_some(ids)
@@ -703,6 +692,28 @@ impl Pane {
 
 /// `((seq, col), (seq, col))` start/end positions of a charwise selection.
 type ColRange = ((u64, usize), (u64, usize));
+
+/// Whether one filter pattern matches a source.
+///
+/// A leading `=` requires a case-insensitive exact match on the source's
+/// display name or id (the form the source picker writes, so `=Demo 1`
+/// cannot also catch a future `Demo 10`). Anything else is a
+/// case-insensitive substring match against the source's id, display name,
+/// producer, and group.
+pub fn pattern_matches(pattern: &str, source: &Source) -> bool {
+    if let Some(exact) = pattern.strip_prefix('=') {
+        return source.display_name.eq_ignore_ascii_case(exact)
+            || source.id.eq_ignore_ascii_case(exact);
+    }
+    let pat = pattern.to_lowercase();
+    source.id.to_lowercase().contains(&pat)
+        || source.display_name.to_lowercase().contains(&pat)
+        || source.producer.to_lowercase().contains(&pat)
+        || source
+            .group
+            .as_deref()
+            .is_some_and(|group| group.to_lowercase().contains(&pat))
+}
 
 /// Index of the entry with seq closest to `seq` in an ascending slice.
 pub fn nearest_index(entries: &[Arc<LogEntry>], seq: u64) -> Option<usize> {

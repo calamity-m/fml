@@ -4,9 +4,12 @@
 //! pane ids plus the panes themselves. Splitting along the same axis extends
 //! the existing split (vim-like even thirds) instead of nesting.
 
+use std::collections::HashSet;
+
 use ratatui::layout::{Direction, Rect};
 
 use crate::event::PaneId;
+use crate::log::{Source, SourceId};
 use crate::tui::pane::Pane;
 
 /// Global input mode. `TAIL` is not a mode: it is the focused pane's
@@ -115,6 +118,47 @@ impl Prompt {
     pub fn end(&mut self) {
         self.cursor = self.buf.chars().count();
     }
+}
+
+/// Modal fuzzy source picker (`:sources`): type to narrow, Tab to toggle,
+/// Enter writes the focused pane's filter as exact `=name` patterns.
+#[derive(Debug, Default)]
+pub struct SourcePicker {
+    pub query: Prompt,
+    /// Highlighted row index within the currently narrowed rows.
+    pub cursor: usize,
+    /// Toggled source ids (kept across query edits).
+    pub selected: HashSet<SourceId>,
+}
+
+impl SourcePicker {
+    /// Live sources narrowed by the query (case-insensitive substring over
+    /// name, id, producer, and group).
+    pub fn rows<'a>(&self, sources: &'a [Source]) -> Vec<&'a Source> {
+        let query = self.query.buf.to_lowercase();
+        sources
+            .iter()
+            .filter(|source| {
+                query.is_empty()
+                    || source.display_name.to_lowercase().contains(&query)
+                    || source.id.to_lowercase().contains(&query)
+                    || source.producer.to_lowercase().contains(&query)
+                    || source
+                        .group
+                        .as_deref()
+                        .is_some_and(|group| group.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+}
+
+/// In-flight Tab completion on the `:` prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub candidates: Vec<String>,
+    pub index: usize,
+    /// Byte offset in the prompt where the completed token starts.
+    pub token_start: usize,
 }
 
 /// One node of a tab's split tree.
@@ -304,6 +348,10 @@ pub struct Workspace {
     /// Transient status message, cleared on the next key press.
     pub notice: Option<String>,
     pub help_open: bool,
+    /// Open source picker, if any. Swallows input while present.
+    pub picker: Option<SourcePicker>,
+    /// Active `:` prompt completion; cleared by any non-Tab edit.
+    pub completion: Option<Completion>,
     next_pane_id: u64,
 }
 
@@ -318,6 +366,8 @@ impl Workspace {
             prompt: Prompt::default(),
             notice: None,
             help_open: false,
+            picker: None,
+            completion: None,
             next_pane_id: 2,
         }
     }

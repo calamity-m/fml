@@ -145,7 +145,13 @@ Render tick ──▶ recursive split layout → per-pane draw → status/prompt
 | any | `Ctrl-c` | quit |
 
 `:filter pat[,pat]` sets the pane's source patterns (substring match against
-producer/group/name/id); bare `:filter` clears. `:clear` drops search
+producer/group/name/id); a `=name` pattern matches a source's name or id
+exactly; bare `:filter` clears. Source discovery is built into the cmdline:
+`Tab` completes command names and, for `:filter`, live source names/groups/
+producers (cycling vim-style), and `:sources` (alias `:ls`) opens a fuzzy
+picker — type to narrow, `Tab` toggles, `Ctrl-a` toggles all narrowed rows,
+`Enter` writes the focused pane's filter as exact `=name` patterns (with
+nothing toggled it takes the highlighted row). `:clear` drops search
 results/hits back to plain stream. `:q` closes the focused pane; closing the
 last pane closes the tab; closing the last tab quits.
 
