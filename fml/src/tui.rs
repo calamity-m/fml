@@ -219,7 +219,11 @@ fn handle_key(state: &mut AppState, key: KeyEvent) {
 
     match state.workspace.mode {
         Mode::Normal => handle_normal_key(state, key),
-        Mode::Visual { anchor } => handle_visual_key(state, key, anchor),
+        Mode::Visual {
+            anchor_seq,
+            anchor_col,
+            linewise,
+        } => handle_visual_key(state, key, anchor_seq, anchor_col, linewise),
         Mode::Search => handle_search_key(state, key),
         Mode::Command => handle_command_key(state, key),
     }
@@ -292,13 +296,18 @@ fn handle_motion_key(state: &mut AppState, key: KeyEvent) -> bool {
     match (key.code, ctrl) {
         (KeyCode::Char('j'), false) | (KeyCode::Down, _) => pane.move_cursor(count, &ctx),
         (KeyCode::Char('k'), false) | (KeyCode::Up, _) => pane.move_cursor(-count, &ctx),
+        (KeyCode::Char('h'), false) | (KeyCode::Left, _) => pane.move_col(-count, &ctx),
+        (KeyCode::Char('l'), false) | (KeyCode::Right, _) => pane.move_col(count, &ctx),
+        (KeyCode::Char('0'), false) | (KeyCode::Home, _) => pane.col_home(&ctx),
+        (KeyCode::Char('$'), false) | (KeyCode::End, _) => pane.col_end(&ctx),
+        (KeyCode::Char('w'), false) => pane.word_forward(&ctx),
+        (KeyCode::Char('b'), false) => pane.word_back(&ctx),
         (KeyCode::Char('d'), true) => pane.move_cursor(half, &ctx),
         (KeyCode::Char('u'), true) => pane.move_cursor(-half, &ctx),
         (KeyCode::Char('f'), true) | (KeyCode::PageDown, _) => pane.move_cursor(page, &ctx),
         (KeyCode::Char('b'), true) | (KeyCode::PageUp, _) => pane.move_cursor(-page, &ctx),
         (KeyCode::Char('g'), false) => ws.pending.prefix = Some(Prefix::G),
-        (KeyCode::Char('G'), false) | (KeyCode::End, _) => pane.goto_bottom(&ctx),
-        (KeyCode::Home, _) => pane.goto_top(&ctx),
+        (KeyCode::Char('G'), false) => pane.goto_bottom(&ctx),
         (KeyCode::Char('n'), false) => {
             if !pane.jump_hit(true, &ctx) {
                 ws.notice = Some("no further hits".to_string());
@@ -345,9 +354,14 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
             state.workspace.mode = Mode::Command;
             state.workspace.prompt.reset();
         }
-        (KeyCode::Char('v'), false) | (KeyCode::Char('V'), false) => {
-            if let Some(anchor) = state.workspace.focused_pane().cursor_seq {
-                state.workspace.mode = Mode::Visual { anchor };
+        (KeyCode::Char(c @ ('v' | 'V')), false) => {
+            let pane = state.workspace.focused_pane();
+            if let Some(anchor_seq) = pane.cursor_seq {
+                state.workspace.mode = Mode::Visual {
+                    anchor_seq,
+                    anchor_col: pane.effective_col(),
+                    linewise: c == 'V',
+                };
             }
         }
         (KeyCode::Char('y'), false) => yank_cursor_entry(state),
@@ -423,18 +437,46 @@ fn close_focused_pane(state: &mut AppState) {
     }
 }
 
-fn handle_visual_key(state: &mut AppState, key: KeyEvent, anchor: u64) {
+fn handle_visual_key(
+    state: &mut AppState,
+    key: KeyEvent,
+    anchor_seq: u64,
+    anchor_col: usize,
+    linewise: bool,
+) {
     if handle_motion_key(state, key) {
         return;
     }
     match key.code {
         KeyCode::Char('y') => {
-            yank_selection(state, anchor);
+            yank_selection(state, anchor_seq, anchor_col, linewise);
             state.workspace.mode = Mode::Normal;
         }
-        KeyCode::Esc | KeyCode::Char('v') | KeyCode::Char('V') => {
-            state.workspace.mode = Mode::Normal;
+        // vim semantics: pressing the current kind's key exits; pressing
+        // the other kind's key switches without losing the anchor.
+        KeyCode::Char('v') => {
+            state.workspace.mode = if linewise {
+                Mode::Visual {
+                    anchor_seq,
+                    anchor_col,
+                    linewise: false,
+                }
+            } else {
+                Mode::Normal
+            };
         }
+        KeyCode::Char('V') => {
+            state.workspace.mode = if linewise {
+                Mode::Normal
+            } else {
+                Mode::Visual {
+                    anchor_seq,
+                    anchor_col,
+                    linewise: true,
+                }
+            };
+        }
+        KeyCode::Esc => state.workspace.mode = Mode::Normal,
         _ => {}
     }
 }
@@ -594,29 +636,22 @@ fn yank_cursor_entry(state: &mut AppState) {
     yank(state, &payload, "entry");
 }
 
-fn yank_selection(state: &mut AppState, anchor: u64) {
+fn yank_selection(state: &mut AppState, anchor_seq: u64, anchor_col: usize, linewise: bool) {
     let pane = state.workspace.focused_pane();
-    let lines: Vec<String> = pane
-        .selection(anchor)
-        .iter()
-        .map(|entry| {
-            format!(
-                "{} {} [{}] {}",
-                entry.ts.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-                entry
-                    .level
-                    .map(|level| level.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                entry.source.display_name,
-                entry.msg
-            )
-        })
-        .collect();
-    if lines.is_empty() {
+    let text = if linewise {
+        pane.linewise_selection_text(anchor_seq)
+    } else {
+        pane.charwise_selection_text(anchor_seq, anchor_col)
+    };
+    if text.is_empty() {
         return;
     }
-    let what = format!("{} lines", lines.len());
-    yank(state, &lines.join("\n"), &what);
+    let what = if linewise {
+        format!("{} lines", text.lines().count())
+    } else {
+        format!("{} chars", text.chars().count())
+    };
+    yank(state, &text, &what);
 }
 
 fn yank(state: &mut AppState, payload: &str, what: &str) {
@@ -905,15 +940,75 @@ mod tests {
         seed_tail(&mut state, &[1, 2, 3, 4, 5]);
 
         let state = handle_tui_event(input(KeyCode::Char('v')), state);
-        assert_eq!(state.workspace.mode, Mode::Visual { anchor: 5 });
+        let charwise = Mode::Visual {
+            anchor_seq: 5,
+            anchor_col: 0,
+            linewise: false,
+        };
+        assert_eq!(state.workspace.mode, charwise);
 
         let state = handle_tui_event(input(KeyCode::Char('k')), state);
         let state = handle_tui_event(input(KeyCode::Char('k')), state);
         assert_eq!(state.workspace.focused_pane().cursor_seq, Some(3));
-        assert_eq!(state.workspace.mode, Mode::Visual { anchor: 5 });
+        assert_eq!(state.workspace.mode, charwise);
 
+        // `V` switches kind in place; `V` again exits.
+        let state = handle_tui_event(input(KeyCode::Char('V')), state);
+        assert_eq!(
+            state.workspace.mode,
+            Mode::Visual {
+                anchor_seq: 5,
+                anchor_col: 0,
+                linewise: true,
+            }
+        );
+        let state = handle_tui_event(input(KeyCode::Char('V')), state);
+        assert_eq!(state.workspace.mode, Mode::Normal);
+
+        let state = handle_tui_event(input(KeyCode::Char('v')), state);
         let state = handle_tui_event(input(KeyCode::Esc), state);
         assert_eq!(state.workspace.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn charwise_motions_move_columns_and_yank_extracts_chars() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+
+        // `w` from column 0 lands on the level field, `l` steps right.
+        let state = handle_tui_event(input(KeyCode::Char('w')), state);
+        let state = handle_tui_event(input(KeyCode::Char('l')), state);
+        let pane = state.workspace.focused_pane();
+        assert!(!pane.follow, "column motion breaks follow");
+        assert_eq!(pane.effective_col(), 10);
+
+        // `$` then `0` jump to line ends.
+        let state = handle_tui_event(input(KeyCode::Char('$')), state);
+        let entry = state.workspace.focused_pane().cursor_entry().unwrap();
+        let len = crate::tui::pane::row_text(entry).chars().count();
+        assert_eq!(state.workspace.focused_pane().effective_col(), len - 1);
+        let state = handle_tui_event(input(KeyCode::Char('0')), state);
+        assert_eq!(state.workspace.focused_pane().effective_col(), 0);
+
+        // Charwise selection text: anchor at col 0, move right 4 -> 5 chars.
+        let state = handle_tui_event(input(KeyCode::Char('v')), state);
+        let state = handle_tui_event(input(KeyCode::Char('4')), state);
+        let state = handle_tui_event(input(KeyCode::Char('l')), state);
+        match state.workspace.mode {
+            Mode::Visual {
+                anchor_seq,
+                anchor_col,
+                linewise,
+            } => {
+                assert!(!linewise);
+                let text = state
+                    .workspace
+                    .focused_pane()
+                    .charwise_selection_text(anchor_seq, anchor_col);
+                assert_eq!(text.chars().count(), 5);
+            }
+            mode => panic!("expected charwise visual, got {mode:?}"),
+        }
     }
 
     #[test]

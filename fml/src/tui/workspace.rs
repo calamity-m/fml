@@ -14,9 +14,12 @@ use crate::tui::pane::Pane;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
-    /// Line-wise visual selection anchored at a seq id in the focused pane.
+    /// Visual selection anchored at a position in the focused pane.
+    /// `v` selects characters; `V` selects whole lines.
     Visual {
-        anchor: u64,
+        anchor_seq: u64,
+        anchor_col: usize,
+        linewise: bool,
     },
     /// Typing into the `/` prompt; results stream live into the pane.
     Search,
@@ -184,19 +187,35 @@ impl Node {
     }
 
     /// Assign rects to leaves by recursive even splitting.
-    pub fn layout(&self, area: Rect, out: &mut Vec<(PaneId, Rect)>) {
+    ///
+    /// Side-by-side (Horizontal) splits get a one-column gutter between
+    /// children, pushed to `gutters`, so the renderer can draw a vim-style
+    /// vsplit bar. Stacked splits need no gap — each pane's statusline
+    /// already separates rows.
+    pub fn layout(&self, area: Rect, out: &mut Vec<(PaneId, Rect)>, gutters: &mut Vec<Rect>) {
         match self {
             Node::Leaf(id) => out.push((*id, area)),
             Node::Split { dir, children } => {
-                let constraints: Vec<ratatui::layout::Constraint> = (0..children.len())
-                    .map(|_| ratatui::layout::Constraint::Ratio(1, children.len() as u32))
-                    .collect();
+                use ratatui::layout::Constraint;
+                let with_gutters = *dir == Direction::Horizontal;
+                let mut constraints: Vec<Constraint> = Vec::new();
+                for idx in 0..children.len() {
+                    if with_gutters && idx > 0 {
+                        constraints.push(Constraint::Length(1));
+                    }
+                    constraints.push(Constraint::Ratio(1, children.len() as u32));
+                }
                 let areas = ratatui::layout::Layout::default()
                     .direction(*dir)
                     .constraints(constraints)
                     .split(area);
-                for (child, child_area) in children.iter().zip(areas.iter()) {
-                    child.layout(*child_area, out);
+                let mut child_iter = children.iter();
+                for (idx, child_area) in areas.iter().enumerate() {
+                    if with_gutters && idx % 2 == 1 {
+                        gutters.push(*child_area);
+                    } else if let Some(child) = child_iter.next() {
+                        child.layout(*child_area, out, gutters);
+                    }
                 }
             }
         }
@@ -543,16 +562,36 @@ mod tests {
     }
 
     #[test]
-    fn layout_splits_area_evenly() {
+    fn layout_splits_area_evenly_with_vsplit_gutter() {
         let mut ws = Workspace::new();
         ws.split(Direction::Horizontal);
         let mut rects = Vec::new();
-        ws.tab().tree.layout(Rect::new(0, 0, 80, 24), &mut rects);
+        let mut gutters = Vec::new();
+        ws.tab()
+            .tree
+            .layout(Rect::new(0, 0, 80, 24), &mut rects, &mut gutters);
 
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].0, PaneId(1));
-        assert_eq!(rects[0].1.width + rects[1].1.width, 80);
+        assert_eq!(gutters.len(), 1);
+        assert_eq!(gutters[0].width, 1);
+        assert_eq!(rects[0].1.width + gutters[0].width + rects[1].1.width, 80);
         assert_eq!(rects[0].1.height, 24);
+    }
+
+    #[test]
+    fn stacked_layout_has_no_gutters() {
+        let mut ws = Workspace::new();
+        ws.split(Direction::Vertical);
+        let mut rects = Vec::new();
+        let mut gutters = Vec::new();
+        ws.tab()
+            .tree
+            .layout(Rect::new(0, 0, 80, 24), &mut rects, &mut gutters);
+
+        assert_eq!(rects.len(), 2);
+        assert!(gutters.is_empty());
+        assert_eq!(rects[0].1.height + rects[1].1.height, 24);
     }
 
     #[test]

@@ -29,8 +29,10 @@ the same logs" — which is the core triage motion.
    each with its own `:filter`, search, and cursor.
 5. Need a separate investigation? `:tabnew` gives a fresh workspace; `gt` /
    `gT` switch tabs.
-6. Visual mode (`V`) + `y` copies log lines out via OSC52; `y` in NORMAL
-   yanks the cursor entry as JSON.
+6. `v` selects exactly the characters you want (a request id, a token) with
+   `h`/`l`/`w`/`b`/`0`/`$`; `V` selects whole lines; `y` copies via OSC52.
+   `y` in NORMAL yanks the cursor entry as JSON. What you see is what you
+   yank: selection and copy both read the same rendered row text.
 
 ## Architecture
 
@@ -97,6 +99,15 @@ seqs; `Enter` on a hit re-enters stream view centered there; `Esc` abandons
 and restores the stream. `n`/`N` jump the stream cursor between recorded
 hits.
 
+### Chrome
+
+Panes are borderless, text-editor style: a one-column `│` gutter separates
+side-by-side splits, and every pane carries a vim-style reversed statusline
+(`[filter] /term TAIL … seq/high`) as its bottom row — stacked splits are
+separated by those statuslines alone. The global bottom line is the cmdline:
+mode badge, `/` and `:` prompts, notices, store stats, pending keys. Only
+the detail/help overlays use borders.
+
 ### Event flow
 
 ```text
@@ -114,11 +125,12 @@ Render tick ──▶ recursive split layout → per-pane draw → status/prompt
 | Mode | Keys | Action |
 |---|---|---|
 | NORMAL | `j` `k` (count ok), `Ctrl-d`/`u`, `Ctrl-f`/`b` | move cursor / half / full page |
+| NORMAL | `h` `l` `0` `$` `w` `b` | column motions within the row |
 | NORMAL | `gg` / `G` | oldest / newest retained entry |
 | NORMAL | `F` | re-enter follow (tail) |
 | NORMAL | `/` | fuzzy search prompt |
 | NORMAL | `n` / `N` | next / previous confirmed hit |
-| NORMAL | `v` / `V` | visual (line) selection |
+| NORMAL | `v` / `V` | charwise / linewise visual selection |
 | NORMAL | `y` | yank cursor entry as JSON (OSC52) |
 | NORMAL | `Enter` | results view: jump to hit in stream; stream: toggle detail overlay |
 | NORMAL | `Ctrl-w` + `v/s` | vertical / horizontal split (clones pane) |
@@ -127,7 +139,7 @@ Render tick ──▶ recursive split layout → per-pane draw → status/prompt
 | NORMAL | `gt` / `gT` | next / previous tab |
 | NORMAL | `?` | help overlay |
 | NORMAL | `Esc` | clear pending / hits / results view |
-| VISUAL | `j`/`k`/`gg`/`G`, `y`, `Esc` | extend, yank lines as text, leave |
+| VISUAL | motions, `y`, `v`/`V`, `Esc` | extend, yank selection, switch kind / leave |
 | SEARCH | text, `Enter`, `Esc` | live fuzzy; confirm; abandon |
 | COMMAND | `:q :qa :sp :vs :only :tabnew :tabclose :tabn :tabp :filter :tail :clear :help` | see below |
 | any | `Ctrl-c` | quit |

@@ -19,6 +19,36 @@ use crate::{
 /// the pane re-centers its history query to pre-fetch more context.
 const PAGE_EDGE: usize = 8;
 
+/// Width the source name is padded/truncated to in a rendered row.
+pub const SOURCE_WIDTH: usize = 10;
+
+/// Char offset where the message starts in [`row_text`]:
+/// `HH:MM:SS` (8) + space + level (5) + space + source + `│ ` (2).
+pub const MSG_CHAR_OFFSET: usize = 8 + 1 + 5 + 1 + SOURCE_WIDTH + 2;
+
+/// The plain text of one rendered log row. This is the single source of
+/// truth shared by rendering, column clamping, and yanking, so what you
+/// select is exactly what you copy.
+pub fn row_text(entry: &LogEntry) -> String {
+    let source: String = entry
+        .source
+        .display_name
+        .chars()
+        .take(SOURCE_WIDTH)
+        .collect();
+    format!(
+        "{} {:<5} {:<width$}│ {}",
+        entry.ts.format("%H:%M:%S"),
+        entry
+            .level
+            .map(|level| level.to_string())
+            .unwrap_or_default(),
+        source,
+        entry.msg,
+        width = SOURCE_WIDTH
+    )
+}
+
 /// Everything a pane needs to (re)dispatch its search, threaded in from
 /// `AppState` by the input/reducer layer so panes stay free of global state.
 pub struct SearchCtx<'a> {
@@ -63,6 +93,9 @@ pub struct Pane {
     /// Cursor anchored to a store sequence id, never a row index, so ring
     /// eviction and live appends cannot silently move it between entries.
     pub cursor_seq: Option<u64>,
+    /// Desired cursor column (char offset into [`row_text`]). Like vim,
+    /// this is sticky across rows; clamp with [`Pane::effective_col`].
+    pub cursor_col: usize,
     /// Follow the newest entry (TAIL). Broken by any cursor motion.
     pub follow: bool,
     /// Last confirmed search term; its hits drive `n`/`N`.
@@ -95,6 +128,7 @@ impl Pane {
             },
             active_query: None,
             cursor_seq: None,
+            cursor_col: 0,
             follow: true,
             last_search: None,
             hits: Vec::new(),
@@ -131,6 +165,7 @@ impl Pane {
             },
             active_query: None,
             cursor_seq: self.cursor_seq,
+            cursor_col: self.cursor_col,
             follow: self.follow,
             last_search: self.last_search.clone(),
             hits: self.hits.clone(),
@@ -512,7 +547,162 @@ impl Pane {
             .filter(|entry| entry.seq >= lo && entry.seq <= hi)
             .collect()
     }
+
+    // ---- column cursor ---------------------------------------------------
+
+    /// The desired column clamped to the cursor row's actual length.
+    pub fn effective_col(&self) -> usize {
+        let len = self.cursor_row_len();
+        self.cursor_col.min(len.saturating_sub(1))
+    }
+
+    fn cursor_row_len(&self) -> usize {
+        self.cursor_entry()
+            .map(|entry| row_text(entry).chars().count())
+            .unwrap_or(0)
+    }
+
+    /// Anchor the pane if it was following; column motions must not ride a
+    /// sliding tail window.
+    fn break_follow(&mut self, ctx: &SearchCtx) {
+        if self.follow {
+            self.follow = false;
+            self.dispatch_stream(ctx);
+        }
+    }
+
+    /// Move the cursor column by `delta` chars within the current row.
+    pub fn move_col(&mut self, delta: i64, ctx: &SearchCtx) {
+        self.break_follow(ctx);
+        let len = self.cursor_row_len();
+        self.cursor_col = self
+            .effective_col()
+            .saturating_add_signed(delta as isize)
+            .min(len.saturating_sub(1));
+    }
+
+    /// `0` — jump to the first column.
+    pub fn col_home(&mut self, ctx: &SearchCtx) {
+        self.break_follow(ctx);
+        self.cursor_col = 0;
+    }
+
+    /// `$` — jump to the last column of the current row.
+    pub fn col_end(&mut self, ctx: &SearchCtx) {
+        self.break_follow(ctx);
+        self.cursor_col = self.cursor_row_len().saturating_sub(1);
+    }
+
+    /// `w` — start of the next whitespace-delimited word in the row.
+    pub fn word_forward(&mut self, ctx: &SearchCtx) {
+        self.break_follow(ctx);
+        let Some(entry) = self.cursor_entry() else {
+            return;
+        };
+        let chars: Vec<char> = row_text(entry).chars().collect();
+        let mut col = self.effective_col();
+        // Skip the rest of the current word, then the gap.
+        while col < chars.len() && !chars[col].is_whitespace() {
+            col += 1;
+        }
+        while col < chars.len() && chars[col].is_whitespace() {
+            col += 1;
+        }
+        self.cursor_col = col.min(chars.len().saturating_sub(1));
+    }
+
+    /// `b` — start of the previous whitespace-delimited word in the row.
+    pub fn word_back(&mut self, ctx: &SearchCtx) {
+        self.break_follow(ctx);
+        let Some(entry) = self.cursor_entry() else {
+            return;
+        };
+        let chars: Vec<char> = row_text(entry).chars().collect();
+        let mut col = self.effective_col();
+        // Step off a word start / out of the gap, then walk to the start.
+        while col > 0 && chars[col.saturating_sub(1)].is_whitespace() {
+            col -= 1;
+        }
+        while col > 0 && !chars[col - 1].is_whitespace() {
+            col -= 1;
+        }
+        self.cursor_col = col;
+    }
+
+    // ---- charwise selection ----------------------------------------------
+
+    /// The ordered `(start, end)` positions of a charwise selection, where a
+    /// position is `(seq, col)`. `None` when the pane has no cursor.
+    fn charwise_bounds(&self, anchor_seq: u64, anchor_col: usize) -> Option<ColRange> {
+        let cursor = (self.cursor_seq?, self.effective_col());
+        let anchor = (anchor_seq, anchor_col);
+        Some(if anchor <= cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        })
+    }
+
+    /// Char range `(from, to_inclusive)` of `entry`'s row covered by the
+    /// charwise selection, or `None` when the row is outside it.
+    pub fn charwise_row_range(
+        &self,
+        entry: &LogEntry,
+        anchor_seq: u64,
+        anchor_col: usize,
+    ) -> Option<(usize, usize)> {
+        let (start, end) = self.charwise_bounds(anchor_seq, anchor_col)?;
+        if entry.seq < start.0 || entry.seq > end.0 {
+            return None;
+        }
+        let last = row_text(entry).chars().count().saturating_sub(1);
+        let from = if entry.seq == start.0 {
+            start.1.min(last)
+        } else {
+            0
+        };
+        let to = if entry.seq == end.0 {
+            end.1.min(last)
+        } else {
+            last
+        };
+        Some((from, to))
+    }
+
+    /// Exactly the selected characters, rows joined with newlines.
+    pub fn charwise_selection_text(&self, anchor_seq: u64, anchor_col: usize) -> String {
+        let Some((start, end)) = self.charwise_bounds(anchor_seq, anchor_col) else {
+            return String::new();
+        };
+        self.view
+            .entries()
+            .iter()
+            .filter(|entry| entry.seq >= start.0 && entry.seq <= end.0)
+            .filter_map(|entry| {
+                let (from, to) = self.charwise_row_range(entry, anchor_seq, anchor_col)?;
+                let text: String = row_text(entry)
+                    .chars()
+                    .skip(from)
+                    .take(to + 1 - from)
+                    .collect();
+                Some(text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Full rows of the linewise selection, exactly as rendered.
+    pub fn linewise_selection_text(&self, anchor_seq: u64) -> String {
+        self.selection(anchor_seq)
+            .iter()
+            .map(|entry| row_text(entry))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
+
+/// `((seq, col), (seq, col))` start/end positions of a charwise selection.
+type ColRange = ((u64, usize), (u64, usize));
 
 /// Index of the entry with seq closest to `seq` in an ascending slice.
 pub fn nearest_index(entries: &[Arc<LogEntry>], seq: u64) -> Option<usize> {
