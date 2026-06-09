@@ -7,20 +7,19 @@
 //!
 //! Searches are latest-wins per target: issuing a new request for one target
 //! cancels only that target's superseded in-flight work, and result messages
-//! are correlated with the active request for the same target.
+//! are correlated with the active request for the same target. A target is a
+//! pane id; results addressed to a pane that no longer exists are dropped
+//! and the orphaned worker is cancelled.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::{
-    event::{Query, SearchEvent, SearchHit, SearchProgress, SearchTarget, TuiEvent},
+    event::{Match, Query, SearchEvent, SearchHit, SearchProgress, SearchTarget},
     log::{LogEntry, SourceId},
-    state::{
-        AppState,
-        tui_state::log_pane_state::{LogPaneState, LogPaneUpdate, SearchKind},
-    },
+    state::AppState,
     store::LogStore,
 };
 
@@ -140,8 +139,8 @@ pub(crate) async fn emit_error(message: String, tx: &mpsc::Sender<SearchEvent>) 
 ///
 /// - start or replace in-flight work for a target when a new
 ///   [`SearchEvent::Search`] request arrives,
-/// - accept [`SearchEvent::Result`] messages produced by background workers and
-///   merge them into the active search state, and
+/// - accept [`SearchEvent::Result`] messages produced by background workers,
+///   fetch the referenced entries, and route them to the owning pane, and
 /// - handle [`SearchEvent::Error`] messages without destabilizing the rest of
 ///   the application loop.
 ///
@@ -167,9 +166,6 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             }
 
             let request_id = state.search.latest_request_id(target) + 1;
-            if target == SearchTarget::LogPane {
-                state.tui.log_pane.on_search_started(&query);
-            }
 
             let tick_rate = match &query {
                 Query::Tail => Duration::from_millis(state.config.search.tail_poll_interval_ms),
@@ -236,8 +232,13 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             progress,
         } => {
             debug!(
-                "received search result - target: {:?}, query: {:?}, request_id: {}, complete: {}, progress: {:?}, results: {:?}",
-                target, query, request_id, complete, progress, results
+                "received search result - target: {:?}, query: {:?}, request_id: {}, complete: {}, progress: {:?}, results: {}",
+                target,
+                query,
+                request_id,
+                complete,
+                progress,
+                results.len()
             );
 
             // Ignore stale request_id responses
@@ -250,75 +251,25 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 return state;
             }
 
-            let kind = LogPaneState::query_kind(&query);
-            let store_stats = state.store.stats();
-            let retained_bounds = store_stats.bounds;
-            state.tui.log_pane.set_store_stats(store_stats);
-            if target == SearchTarget::LogPane {
-                state.tui.log_pane.set_fuzzy_scan_progress(
-                    (kind == SearchKind::Fuzzy).then_some(progress).flatten(),
-                );
-            }
-            let matches_by_seq = (kind == SearchKind::Fuzzy).then(|| {
-                results
-                    .iter()
-                    .map(|hit| (hit.seq_id, hit.matches.clone()))
-                    .collect()
-            });
+            let matches_by_seq: HashMap<u64, Vec<Match>> = results
+                .iter()
+                .filter(|hit| !hit.matches.is_empty())
+                .map(|hit| (hit.seq_id, hit.matches.clone()))
+                .collect();
             let seq_ids: Vec<u64> = results.into_iter().map(|hit| hit.seq_id).collect();
             let mut entries: Vec<Arc<LogEntry>> = Vec::with_capacity(seq_ids.len());
             if let Err(err) = state.store.fetch_requested(&seq_ids, &mut entries) {
                 warn!("failed to fetch search result entries from store: {err}");
             }
-            if target == SearchTarget::PreviewPane {
-                match query {
-                    Query::Surrounding { middle_seq_id, .. } => {
-                        state
-                            .tui
-                            .preview_pane
-                            .apply_surrounding(middle_seq_id, entries);
-                    }
-                    Query::FieldMatched { anchor_seq_id, .. } => {
-                        state.tui.preview_pane.apply_field_matched(
-                            anchor_seq_id,
-                            entries,
-                            retained_bounds,
-                        );
-                    }
-                    _ => {}
-                }
+            let retained_bounds = state.store.bounds();
+
+            let Some(pane) = state.workspace.pane_mut(target) else {
+                // The pane was closed while this worker was in flight.
+                debug!("dropping result for closed pane {target}");
+                state.search.cancel(target);
                 return state;
-            }
-
-            let update = match kind {
-                SearchKind::Tail => LogPaneUpdate::Tail {
-                    entries,
-                    retained_bounds,
-                },
-                SearchKind::History => LogPaneUpdate::History {
-                    entries,
-                    retained_bounds,
-                },
-                SearchKind::Fuzzy => LogPaneUpdate::Fuzzy {
-                    best_first_entries: entries,
-                    retained_bounds,
-                    matches_by_seq: matches_by_seq.unwrap_or_default(),
-                },
             };
-            state
-                .tui
-                .log_pane
-                .apply_update(update, &mut state.tui.log_pane_cursor_row);
-            if let Err(err) = state
-                .event_bus
-                .tui_event_tx
-                .send(TuiEvent::NewSelectedEntry(
-                    state.tui.log_pane.selected_entry(),
-                ))
-            {
-                warn!("failed to send selected entry event after search result: {err}");
-            }
-
+            pane.apply_result(&query, entries, matches_by_seq, progress, retained_bounds);
             state
         }
 
@@ -336,10 +287,10 @@ mod tests {
     use super::*;
     use crate::{
         config::Config,
-        event::{FieldPredicate, Match, ProducerEvent, SearchProgress},
+        event::{FieldPredicate, Match, PaneId, ProducerEvent},
         log::{LogLevel, NewLogEntry, Source},
         producer,
-        state::{AppState, tui_state::preview_pane_state::PreviewStatus},
+        tui::pane::View,
     };
 
     fn state_with_entries(count: u64) -> AppState {
@@ -362,22 +313,10 @@ mod tests {
             );
         }
         state
-            .search
-            .client_mut(SearchTarget::LogPane)
-            .latest_request_id = 1;
-        state
     }
 
-    fn take_selected_entry_event(state: &mut AppState) -> Option<crate::event::SelectedEntry> {
-        match state
-            .event_bus
-            .tui_event_rx
-            .try_recv()
-            .expect("selected entry event")
-        {
-            TuiEvent::NewSelectedEntry(selected_entry) => selected_entry,
-            event => panic!("expected selected entry event, got {event:?}"),
-        }
+    fn focused_pane_id(state: &AppState) -> PaneId {
+        state.workspace.tab().focused
     }
 
     fn hit(seq_id: u64) -> SearchHit {
@@ -387,306 +326,102 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tail_result_emits_selected_entry_event() {
-        let state = state_with_entries(3);
-        let mut state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::LogPane,
-                query: Query::Tail,
-                results: vec![1, 2, 3]
-                    .into_iter()
-                    .map(|seq_id| SearchHit {
-                        seq_id,
-                        matches: Vec::new(),
-                    })
-                    .collect(),
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
-            state,
-        );
-
-        let selected = take_selected_entry_event(&mut state).expect("selected entry");
-
-        assert_eq!(selected.entry.seq, 3);
-        assert!(selected.matches.is_empty());
+    fn result_event(
+        target: PaneId,
+        query: Query,
+        results: Vec<SearchHit>,
+        request_id: u64,
+    ) -> SearchEvent {
+        SearchEvent::Result {
+            target,
+            query,
+            results,
+            request_id,
+            complete: true,
+            progress: None,
+        }
     }
 
     #[test]
-    fn fuzzy_result_emits_selected_entry_with_matches() {
-        let mut state = state_with_entries(2);
-        state
-            .tui
-            .log_pane
-            .on_search_started(&Query::Fuzzy("entry".to_string()));
+    fn tail_result_routes_to_pane_and_pins_cursor() {
+        let mut state = state_with_entries(3);
+        let pane_id = focused_pane_id(&state);
+        state.search.client_mut(pane_id).latest_request_id = 1;
+        state.workspace.focused_pane_mut().active_query = Some(Query::Tail);
 
-        let mut state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::LogPane,
-                query: Query::Fuzzy("entry".to_string()),
-                results: vec![SearchHit {
+        let state = handle_search_event(
+            result_event(pane_id, Query::Tail, vec![hit(1), hit(2), hit(3)], 1),
+            state,
+        );
+
+        let pane = state.workspace.focused_pane();
+        assert_eq!(pane.cursor_seq, Some(3));
+        assert_eq!(pane.view.entries().len(), 3);
+    }
+
+    #[test]
+    fn stale_request_id_is_dropped() {
+        let mut state = state_with_entries(3);
+        let pane_id = focused_pane_id(&state);
+        state.search.client_mut(pane_id).latest_request_id = 2;
+        state.workspace.focused_pane_mut().active_query = Some(Query::Tail);
+
+        let state = handle_search_event(result_event(pane_id, Query::Tail, vec![hit(1)], 1), state);
+
+        assert!(state.workspace.focused_pane().view.entries().is_empty());
+    }
+
+    #[test]
+    fn result_for_closed_pane_is_dropped_and_engine_cancelled() {
+        let mut state = state_with_entries(3);
+        let ghost = PaneId(999);
+        state.search.client_mut(ghost).latest_request_id = 1;
+
+        let state = handle_search_event(result_event(ghost, Query::Tail, vec![hit(1)], 1), state);
+
+        // Nothing routed anywhere; the focused pane is untouched.
+        assert!(state.workspace.focused_pane().view.entries().is_empty());
+    }
+
+    #[test]
+    fn fuzzy_result_carries_match_spans_to_pane() {
+        let mut state = state_with_entries(2);
+        let pane_id = focused_pane_id(&state);
+        state.search.client_mut(pane_id).latest_request_id = 1;
+        let query = Query::Fuzzy("entry".to_string());
+        state.workspace.focused_pane_mut().active_query = Some(query.clone());
+
+        let state = handle_search_event(
+            result_event(
+                pane_id,
+                query,
+                vec![SearchHit {
                     seq_id: 2,
                     matches: vec![Match {
                         key: "msg".to_string(),
                         indices: vec![0, 1],
                     }],
                 }],
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
+                1,
+            ),
             state,
         );
 
-        let selected = take_selected_entry_event(&mut state).expect("selected entry");
-
-        assert_eq!(selected.entry.seq, 2);
-        assert_eq!(selected.matches[0].key, "msg");
-    }
-
-    #[test]
-    fn incomplete_fuzzy_result_records_scan_progress() {
-        let mut state = state_with_entries(3);
-        state
-            .tui
-            .log_pane
-            .on_search_started(&Query::Fuzzy("entry".to_string()));
-
-        let state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::LogPane,
-                query: Query::Fuzzy("entry".to_string()),
-                results: vec![SearchHit {
-                    seq_id: 2,
-                    matches: Vec::new(),
-                }],
-                request_id: 1,
-                complete: false,
-                progress: Some(SearchProgress {
-                    scanned: 1,
-                    total: 3,
-                }),
-            },
-            state,
-        );
-
-        assert_eq!(
-            state.tui.log_pane.fuzzy_scan_progress(),
-            Some(SearchProgress {
-                scanned: 1,
-                total: 3,
-            })
-        );
-    }
-
-    #[test]
-    fn complete_fuzzy_result_records_done_scan_progress() {
-        let mut state = state_with_entries(3);
-        state
-            .tui
-            .log_pane
-            .set_fuzzy_scan_progress(Some(SearchProgress {
-                scanned: 1,
-                total: 3,
-            }));
-
-        let state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::LogPane,
-                query: Query::Fuzzy("entry".to_string()),
-                results: vec![SearchHit {
-                    seq_id: 2,
-                    matches: Vec::new(),
-                }],
-                request_id: 1,
-                complete: true,
-                progress: Some(SearchProgress {
-                    scanned: 3,
-                    total: 3,
-                }),
-            },
-            state,
-        );
-
-        assert_eq!(
-            state.tui.log_pane.fuzzy_scan_progress(),
-            Some(SearchProgress {
-                scanned: 3,
-                total: 3,
-            })
-        );
-    }
-
-    #[test]
-    fn non_fuzzy_result_clears_scan_progress() {
-        let mut state = state_with_entries(3);
-        state
-            .tui
-            .log_pane
-            .set_fuzzy_scan_progress(Some(SearchProgress {
-                scanned: 1,
-                total: 3,
-            }));
-
-        let state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::LogPane,
-                query: Query::Tail,
-                results: vec![1, 2, 3]
-                    .into_iter()
-                    .map(|seq_id| SearchHit {
-                        seq_id,
-                        matches: Vec::new(),
-                    })
-                    .collect(),
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
-            state,
-        );
-
-        assert_eq!(state.tui.log_pane.fuzzy_scan_progress(), None);
-    }
-
-    #[test]
-    fn empty_result_emits_clear_selected_entry_event() {
-        let state = state_with_entries(2);
-        let mut state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::LogPane,
-                query: Query::Tail,
-                results: Vec::new(),
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
-            state,
-        );
-
-        assert!(take_selected_entry_event(&mut state).is_none());
-    }
-
-    #[test]
-    fn preview_surrounding_result_updates_preview_state_only() {
-        let mut state = state_with_entries(5);
-        state.tui.preview_pane.start_surrounding(3);
-        state
-            .search
-            .client_mut(SearchTarget::PreviewPane)
-            .latest_request_id = 1;
-
-        let mut state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::PreviewPane,
-                query: Query::Surrounding {
-                    middle_seq_id: 3,
-                    buffer: 2,
-                },
-                results: vec![2, 3, 4]
-                    .into_iter()
-                    .map(|seq_id| SearchHit {
-                        seq_id,
-                        matches: Vec::new(),
-                    })
-                    .collect(),
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
-            state,
-        );
-
-        assert_eq!(
-            state
-                .tui
-                .preview_pane
-                .items()
-                .iter()
-                .map(|entry| entry.seq)
-                .collect::<Vec<_>>(),
-            vec![2, 3, 4]
-        );
-        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn preview_field_matched_result_updates_preview_state_only() {
-        let mut state = state_with_entries(5);
-        state.tui.preview_pane.start_active_mode(3);
-        state
-            .search
-            .client_mut(SearchTarget::PreviewPane)
-            .latest_request_id = 1;
-
-        let mut state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::PreviewPane,
-                query: Query::FieldMatched {
-                    anchor_seq_id: 3,
-                    buffer: 2,
-                    predicates: vec![FieldPredicate {
-                        key: "request_id".to_string(),
-                        value: json!("abc"),
-                    }],
-                },
-                results: vec![hit(2), hit(3), hit(5)],
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
-            state,
-        );
-
-        assert_eq!(state.tui.preview_pane.status, PreviewStatus::Ready);
-        assert_eq!(
-            state
-                .tui
-                .preview_pane
-                .items()
-                .iter()
-                .map(|entry| entry.seq)
-                .collect::<Vec<_>>(),
-            vec![2, 3, 5]
-        );
-        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn preview_field_matched_result_reports_no_matches() {
-        let mut state = state_with_entries(5);
-        state.tui.preview_pane.start_active_mode(3);
-        state
-            .search
-            .client_mut(SearchTarget::PreviewPane)
-            .latest_request_id = 1;
-
-        let state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::PreviewPane,
-                query: Query::FieldMatched {
-                    anchor_seq_id: 3,
-                    buffer: 2,
-                    predicates: vec![FieldPredicate {
-                        key: "request_id".to_string(),
-                        value: json!("abc"),
-                    }],
-                },
-                results: Vec::new(),
-                request_id: 1,
-                complete: true,
-                progress: None,
-            },
-            state,
-        );
-
-        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoMatches);
+        let pane = state.workspace.focused_pane();
+        match &pane.view {
+            View::Results {
+                entries, matches, ..
+            } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(matches.get(&2).map(|m| m[0].key.as_str()), Some("msg"));
+            }
+            View::Stream { .. } => panic!("expected results view"),
+        }
+        assert_eq!(pane.cursor_seq, Some(2));
     }
 
     #[tokio::test]
-    async fn field_matched_search_event_routes_to_worker_with_preview_request_id() {
+    async fn field_matched_search_event_routes_to_worker() {
         let mut state = AppState::new(Config::default()).expect("app state");
         for (seq, source_id, fields) in [
             (
@@ -717,10 +452,11 @@ mod tests {
                 state,
             );
         }
+        let pane_id = focused_pane_id(&state);
 
         let mut state = handle_search_event(
             SearchEvent::Search {
-                target: SearchTarget::PreviewPane,
+                target: pane_id,
                 query: Query::FieldMatched {
                     anchor_seq_id: 3,
                     buffer: 4,
@@ -741,7 +477,7 @@ mod tests {
         .await
         .expect("timed out awaiting field-matched result")
         .expect("search event");
-        state.search.cancel(SearchTarget::PreviewPane);
+        state.search.cancel(pane_id);
 
         match event {
             SearchEvent::Result {
@@ -752,7 +488,7 @@ mod tests {
                 complete,
                 progress,
             } => {
-                assert_eq!(target, SearchTarget::PreviewPane);
+                assert_eq!(target, pane_id);
                 assert!(matches!(
                     query,
                     Query::FieldMatched {
@@ -775,33 +511,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stale_preview_result_is_dropped_per_target() {
-        let mut state = state_with_entries(5);
-        state.tui.preview_pane.start_surrounding(3);
-        state
-            .search
-            .client_mut(SearchTarget::PreviewPane)
-            .latest_request_id = 2;
+    #[tokio::test]
+    async fn new_search_for_same_target_bumps_request_id() {
+        let state = state_with_entries(3);
+        let pane_id = focused_pane_id(&state);
 
         let state = handle_search_event(
-            SearchEvent::Result {
-                target: SearchTarget::PreviewPane,
-                query: Query::Surrounding {
-                    middle_seq_id: 3,
-                    buffer: 2,
-                },
-                results: vec![SearchHit {
-                    seq_id: 3,
-                    matches: Vec::new(),
-                }],
-                request_id: 1,
-                complete: true,
-                progress: None,
+            SearchEvent::Search {
+                target: pane_id,
+                query: Query::Tail,
+                sources: Vec::new(),
+            },
+            state,
+        );
+        let mut state = handle_search_event(
+            SearchEvent::Search {
+                target: pane_id,
+                query: Query::Tail,
+                sources: Vec::new(),
             },
             state,
         );
 
-        assert!(state.tui.preview_pane.items().is_empty());
+        assert_eq!(state.search.latest_request_id(pane_id), 2);
+        state.search.cancel(pane_id);
     }
 }

@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::{Query, SearchEvent, SearchHit, SearchTarget},
+        event::{Query, SearchEvent, SearchHit},
         log::{LogLevel, NewLogEntry, Source},
         search::SearchContext,
         store::{LogStore, RingBufferStore},
@@ -147,7 +147,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Tail,
                 sources: vec![],
                 request_id: 1,
@@ -175,7 +175,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Tail,
                 sources: vec![],
                 request_id: 7,
@@ -213,7 +213,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Tail,
                 sources: vec![],
                 request_id: 42,
@@ -265,7 +265,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Tail,
                 sources: vec!["slow".to_string()],
                 request_id: 1,
@@ -299,7 +299,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Tail,
                 sources: vec!["slow".to_string()],
                 request_id: 1,
@@ -344,7 +344,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_tail_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Tail,
                 sources: vec!["s1".to_string()],
                 request_id: 1,

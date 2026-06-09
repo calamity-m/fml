@@ -153,7 +153,7 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::{Query, SearchEvent, SearchHit, SearchTarget},
+        event::{Query, SearchEvent, SearchHit},
         log::{LogLevel, NewLogEntry, Source},
         store::RingBufferStore,
     };
@@ -328,7 +328,7 @@ mod tests {
         };
         let handle = start_field_matched_search(
             SearchContext {
-                target: SearchTarget::PreviewPane,
+                target: crate::event::PaneId(1),
                 query,
                 sources: vec!["ignored".to_string()],
                 request_id: 42,

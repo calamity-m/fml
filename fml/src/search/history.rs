@@ -150,7 +150,7 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::{Query, SearchEvent, SearchHit, SearchTarget},
+        event::{Query, SearchEvent, SearchHit},
         log::{LogLevel, NewLogEntry, Source},
         search::SearchContext,
         store::RingBufferStore,
@@ -210,7 +210,7 @@ mod tests {
     ) -> JoinHandle<()> {
         start_history_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::History {
                     middle_seq_id,
                     buffer,

@@ -5,7 +5,6 @@ use std::{
 
 use crossterm::{
     ExecutableCommand as _,
-    event::EnableMouseCapture,
     terminal::{EnterAlternateScreen, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::Backend, prelude::CrosstermBackend};
@@ -23,7 +22,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 use crate::{
     error::FmlError,
-    event::{Query, TuiEvent},
+    event::TuiEvent,
     log::Source,
     producer::{
         self, LogProducer, ProducerSpec, ResolvedProducer, docker::DockerProducer,
@@ -134,16 +133,10 @@ impl<B: Backend> App<B> {
     /// This keeps shutdown predictable for tests that queue events ahead of
     /// the loop and avoids dropping a queued render on quit in production.
     pub(crate) async fn event_loop(mut self) -> Self {
-        // Kick off a continuous tail search so the log pane starts rendering
-        // live entries as soon as producers begin emitting.
-        if let Err(err) = self
-            .state
-            .event_bus
-            .tui_event_tx
-            .send(TuiEvent::DispatchLogPaneSearch(Query::Tail))
-        {
-            tracing::warn!("failed to dispatch initial tail search: {err}");
-        }
+        // Kick off each pane's initial search (a tail for the startup pane)
+        // so the workspace starts rendering live entries as soon as
+        // producers begin emitting.
+        tui::dispatch_startup(&mut self.state);
 
         let mut heartbeat = interval(HEARTBEAT_INTERVAL);
         // Delay (rather than burst) after a stall so the heartbeat doesn't
@@ -206,10 +199,10 @@ impl<B: Backend> App<B> {
 
 impl App<CrosstermBackend<Stdout>> {
     pub async fn run(mut self) -> Result<(), FmlError> {
-        // Setup the ratatui terminal tui
+        // Setup the ratatui terminal tui. Mouse capture is intentionally not
+        // enabled: native terminal selection/copy should keep working.
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
-        stdout().execute(EnableMouseCapture)?;
 
         // Spawn our TUI before we get to our
         // blocking event loop

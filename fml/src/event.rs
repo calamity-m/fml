@@ -3,9 +3,7 @@
 //! These values are sent over channels to keep terminal input, rendering,
 //! shutdown, and background search processing loosely coupled.
 
-use std::sync::Arc;
-
-use crate::log::{LogEntry, NewLogEntry, Source, SourceId};
+use crate::log::{NewLogEntry, Source, SourceId};
 
 /// Marker event used to request application shutdown.
 ///
@@ -27,22 +25,10 @@ pub enum TuiEvent {
     Resize(u16, u16),
     /// Text was pasted from the clipboard.
     Paste(String),
-    /// A scroll action was requested in the given direction.
-    Scroll(ratatui::widgets::ScrollDirection),
-    /// A request to jump the scroll position to the start of the buffer.
-    ScrollHead,
-    /// A request to jump the scroll position to the end of the buffer.
-    ScrollTail,
-    /// Dispatch a log-pane search after applying the current source filter.
-    DispatchLogPaneSearch(Query),
-    /// Redispatch the active log-pane search after source-filter changes.
-    RedispatchLogPaneSearch,
     /// A user input key event was received.
     Input(crossterm::event::KeyEvent),
     /// An error occurred in the event stream.
     Error(String),
-    /// The log pane selected entry changed.
-    NewSelectedEntry(Option<SelectedEntry>),
 }
 
 /// A single field match within a search result.
@@ -54,13 +40,6 @@ pub struct Match {
     pub key: String,
     /// Character indice highlights.
     pub indices: Vec<u32>,
-}
-
-/// Snapshot of the log entry currently selected by the log pane.
-#[derive(Debug, Clone)]
-pub struct SelectedEntry {
-    pub entry: Arc<LogEntry>,
-    pub matches: Vec<Match>,
 }
 
 /// A search result for one stored log entry.
@@ -84,7 +63,7 @@ pub struct SearchProgress {
     pub total: usize,
 }
 
-/// Exact key/value predicate used by field-matched preview searches.
+/// Exact key/value predicate used by field-matched searches.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct FieldPredicate {
     /// Field key to compare.
@@ -104,7 +83,7 @@ pub enum Query {
         middle_seq_id: u64,
         buffer: u64,
     },
-    /// Preview query for entries whose fields exactly match all predicates.
+    /// Query for entries whose fields exactly match all predicates.
     FieldMatched {
         anchor_seq_id: u64,
         buffer: u64,
@@ -113,24 +92,30 @@ pub enum Query {
     Fuzzy(String),
 }
 
+/// Identity of a single workspace pane.
+///
+/// Ids are allocated monotonically by the workspace and never reused within
+/// a run, so a stale search result addressed to a closed pane can simply be
+/// dropped during routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PaneId(pub u64);
+
+impl std::fmt::Display for PaneId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Routing key identifying which search engine instance a [`SearchEvent`]
 /// belongs to.
 ///
-/// Each variant corresponds to a distinct, independently-running search engine
-/// (one per pane). The reason this is an enum rather than a unit-less event
-/// stream is that engines are addressable: every [`SearchEvent::Search`] and
-/// [`SearchEvent::Cancel`] must be dispatched to exactly one engine, and every
-/// [`SearchEvent::Result`] must be attributable back to the engine that
-/// produced it so consumers can update the correct pane.
-///
-/// Engines are independent: starting or cancelling work for one target has no
-/// effect on the other. Within a single target, a new `Search` cancels that
-/// target's previous in-flight query (one query at a time per engine).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SearchTarget {
-    LogPane,
-    PreviewPane,
-}
+/// Every pane owns exactly one search engine slot, so the routing key *is*
+/// the pane id. Engines are independent: starting or cancelling work for one
+/// pane has no effect on any other. Within a single pane, a new `Search`
+/// cancels that pane's previous in-flight query (one query at a time per
+/// engine), and every [`SearchEvent::Result`] is attributed back to the pane
+/// that requested it.
+pub type SearchTarget = PaneId;
 
 /// Messages exchanged with the search subsystem.
 #[derive(Debug)]

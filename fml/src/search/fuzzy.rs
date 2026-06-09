@@ -628,7 +628,7 @@ mod tests {
     use super::*;
     use crate::{
         config::store::StoreConfig,
-        event::{SearchEvent, SearchTarget},
+        event::SearchEvent,
         log::{LogLevel, NewLogEntry, Source, SourceId},
         store::{LogStore, RingBufferStore},
     };
@@ -739,7 +739,7 @@ mod tests {
     ) -> JoinHandle<()> {
         start_fuzzy_search(
             SearchContext {
-                target: SearchTarget::LogPane,
+                target: crate::event::PaneId(1),
                 query: Query::Fuzzy(term),
                 sources,
                 request_id,

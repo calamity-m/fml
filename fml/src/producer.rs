@@ -116,8 +116,10 @@ pub trait LogProducer: Send + Sync {
 /// Apply a single [`ProducerEvent`] to the application state.
 ///
 /// `SourceFound` and `SourceLost` mutate `state.producer.sources` so the
-/// rest of the app sees an up-to-date list of live sources. `StoreEvent`
-/// is inserted directly into the [`LogStore`].
+/// rest of the app sees an up-to-date list of live sources, then re-dispatch
+/// any pane whose source filter depends on that list (worker source-id
+/// snapshots are frozen at dispatch time). `StoreEvent` is inserted directly
+/// into the [`LogStore`].
 ///
 /// [`LogStore`]: crate::store::LogStore
 pub fn handle_producer_event(event: ProducerEvent, mut state: AppState) -> AppState {
@@ -125,22 +127,18 @@ pub fn handle_producer_event(event: ProducerEvent, mut state: AppState) -> AppSt
         ProducerEvent::SourceFound(source) => {
             debug!("received source found event - {:?}", source);
             if !state.producer.sources.iter().any(|s| s.id == source.id) {
-                // Keep newly discovered sources visible by default even while
-                // the popup is open. The popup's open_sources snapshot is left
-                // untouched, so the new row appears only after reopening.
-                state.tui.enable_source_id(source.id.clone());
                 state.producer.sources.push(source);
+                crate::tui::redispatch_filtered_panes(&mut state);
             }
         }
         ProducerEvent::SourceLost(source_id) => {
             debug!("received source lost event - {}", source_id);
-            state.tui.remove_source_id(&source_id);
             state.producer.sources.retain(|s| s.id != source_id);
+            crate::tui::redispatch_filtered_panes(&mut state);
         }
         ProducerEvent::StoreEvent(entry) => {
             debug!("received new entry store event - {:?}", entry);
             state.store.insert(entry);
-            state.tui.log_pane.set_store_stats(state.store.stats());
         }
     }
 
@@ -212,128 +210,36 @@ mod tests {
 
     #[test]
     #[serial]
-    fn source_found_enables_new_source_id() {
-        let state = test_state();
+    fn source_found_redispatches_filtered_panes() {
+        let mut state = test_state();
+        state.workspace.focused_pane_mut().filter = vec!["src".to_string()];
 
-        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
-
-        assert!(
-            state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-a")
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn duplicate_source_found_does_not_reenable_disabled_source() {
-        let state = test_state();
         let mut state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
-        state.tui.source_selector.enabled_source_ids.remove("src-a");
 
-        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
-
-        assert!(
-            !state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-a"),
-            "duplicate SourceFound should not undo an explicit user disable"
-        );
+        match state
+            .event_bus
+            .search_event_rx
+            .try_recv()
+            .expect("redispatch")
+        {
+            crate::event::SearchEvent::Search { sources, .. } => {
+                assert_eq!(sources, vec!["src-a".to_string()]);
+            }
+            event => panic!("expected filtered redispatch, got {event:?}"),
+        }
     }
 
     #[test]
     #[serial]
-    fn source_lost_removes_enabled_source_id() {
+    fn source_changes_do_not_redispatch_unfiltered_panes() {
         let state = test_state();
+
         let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
+        let mut state =
+            handle_producer_event(ProducerEvent::SourceLost("src-a".to_string()), state);
 
-        let state = handle_producer_event(ProducerEvent::SourceLost("src-a".to_string()), state);
-
-        assert!(
-            !state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-a")
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn source_lost_while_popup_open_keeps_snapshot_but_removes_enabled_id() {
-        let state = test_state();
-        let state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
-        let mut state = handle_producer_event(ProducerEvent::SourceFound(source("src-b")), state);
-        state.tui.open_source_selector(&state.producer.sources);
-
-        let state = handle_producer_event(ProducerEvent::SourceLost("src-a".to_string()), state);
-
-        assert!(
-            state
-                .producer
-                .sources
-                .iter()
-                .all(|source| source.id != "src-a")
-        );
-        assert!(
-            state
-                .tui
-                .source_selector
-                .open_sources
-                .iter()
-                .any(|source| source.id == "src-a"),
-            "the open popup renders from its open-time snapshot"
-        );
-        assert!(
-            !state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-a")
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn source_found_while_popup_open_enables_but_does_not_change_snapshot_until_reopen() {
-        let state = test_state();
-        let mut state = handle_producer_event(ProducerEvent::SourceFound(source("src-a")), state);
-        state.tui.open_source_selector(&state.producer.sources);
-
-        let mut state = handle_producer_event(ProducerEvent::SourceFound(source("src-b")), state);
-
-        assert!(
-            state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-b")
-        );
-        assert!(
-            state
-                .tui
-                .source_selector
-                .open_sources
-                .iter()
-                .all(|source| source.id != "src-b"),
-            "the current popup snapshot is intentionally stable"
-        );
-
-        state.tui.close_source_selector();
-        state.tui.open_source_selector(&state.producer.sources);
-
-        assert!(
-            state
-                .tui
-                .source_selector
-                .open_sources
-                .iter()
-                .any(|source| source.id == "src-b")
-        );
+        assert!(state.event_bus.search_event_rx.try_recv().is_err());
+        assert!(state.producer.sources.is_empty());
     }
 
     #[test]
@@ -347,8 +253,6 @@ mod tests {
         );
 
         assert_eq!(state.store.bounds(), (1, 1));
-        assert_eq!(state.tui.log_pane.store_stats.retained, 1);
-        assert_eq!(state.tui.log_pane.store_stats.bounds, (1, 1));
 
         let mut entries = Vec::new();
         state

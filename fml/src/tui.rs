@@ -1,70 +1,67 @@
-use std::{io::stdout, time::Duration};
+//! Modal TUI: terminal lifecycle, the input reader task, and the key →
+//! workspace reducer.
+//!
+//! Input follows a vim-like grammar (see `docs/MODAL_REDESIGN.md`): a global
+//! [`Mode`] plus per-pane follow state, counts and multi-key prefixes, and a
+//! single-line prompt for `/` and `:`. Mouse capture is intentionally never
+//! enabled so the terminal's native selection/copy keeps working.
 
-pub mod keybinds;
-pub mod layout;
-pub mod widgets;
+use std::io::stdout;
 
 use crossterm::{
     ExecutableCommand as _,
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode,
-        KeyEventKind, KeyModifiers,
-    },
+    event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{LeaveAlternateScreen, disable_raw_mode},
 };
 use futures_util::{FutureExt as _, StreamExt as _};
-use ratatui::{Terminal, backend::Backend};
+use ratatui::{Terminal, backend::Backend, layout::Direction};
 use tokio::{sync::mpsc, time::interval};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
+
+pub mod pane;
+pub mod render;
+pub mod workspace;
 
 use crate::{
     clipboard::OSC52_WARN_BYTES,
     config::tui::TuiConfig,
     error::FmlError,
-    event::{Query, QuitEvent, SearchEvent, SearchTarget, TuiEvent},
-    log::SourceId,
-    state::{
-        AppState,
-        tui_state::{ActivePopup, preview_pane_state::PreviewModeCycle},
-    },
+    event::{Query, QuitEvent, TuiEvent},
+    state::AppState,
     tui::{
-        keybinds::{CustomizedKeyAction, StaticKeyAction},
-        layout::Slot,
+        pane::{Pane, SearchCtx, View},
+        workspace::{Mode, Prefix, Workspace},
     },
 };
 
-/// Start the TUI
+/// Start the TUI input reader task and install panic hooks that restore the
+/// terminal before unwinding.
 pub fn spawn(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
-    // Setup panic hooks
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = stdout().execute(DisableMouseCapture);
         let _ = stdout().execute(LeaveAlternateScreen);
         original_hook(panic_info);
     }));
 
-    // Create the tokio async task with an infinite loop
     tui_loop(config, event_tx);
 }
 
-/// Stop the TUI
+/// Restore the terminal.
 pub fn kill() -> Result<(), FmlError> {
     disable_raw_mode()?;
-    stdout().execute(DisableMouseCapture)?;
     stdout().execute(LeaveAlternateScreen)?;
     Ok(())
 }
 
-/// Start a tokio async task which handles crossterm events
-/// and render timing
+/// Spawn the task that forwards crossterm events and render ticks.
 fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
     let frame_rate = config.frame_rate;
 
     tokio::spawn(async move {
         debug!(frame_rate, "tui event reader task started");
         let mut reader = EventStream::new();
-        let mut render_interval = interval(Duration::from_secs_f64(1.0 / frame_rate));
+        let mut render_interval = interval(std::time::Duration::from_secs_f64(1.0 / frame_rate));
 
         loop {
             let event = tokio::select! {
@@ -72,13 +69,12 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
                 crossterm_event = reader.next().fuse() => match crossterm_event {
                     Some(Ok(event)) => match event {
                         CrosstermEvent::Key(key) => {
-                            // If we don't have a key press ignore
-                            // the event. We don't want to action on
-                            // key up, etc.
+                            // Only act on presses. Terminals that report
+                            // release/repeat events (kitty protocol) must not
+                            // tear down the reader task here.
                             if key.kind != KeyEventKind::Press {
-                                return
+                                continue;
                             }
-
                             TuiEvent::Input(key)
                         },
                         CrosstermEvent::Mouse(mouse) => TuiEvent::Mouse(mouse),
@@ -108,559 +104,567 @@ fn tui_loop(config: &TuiConfig, event_tx: mpsc::UnboundedSender<TuiEvent>) {
     });
 }
 
-/// Process a TUI event
-///
-/// Render events are intentionally a no-op here — rendering is an output
-/// side-effect that the app loop performs directly via [`render`] so it can
-/// thread the active terminal through. This keeps `AppState` backend-agnostic
-/// and lets tests drive the same handlers against a `TestBackend`.
-pub fn handle_tui_event(event: TuiEvent, state: AppState) -> AppState {
-    let mut new_state = match event {
-        TuiEvent::NewSelectedEntry(selected_entry) => {
-            let mut state = state;
-            let prev_seq = state.tui.selected_entry.as_ref().map(|e| e.entry.seq);
-            let next_seq = selected_entry.as_ref().map(|e| e.entry.seq);
-            state.tui.selected_entry = selected_entry.clone();
-            if prev_seq != next_seq {
-                state.tui.info_pane_scroll_offset = 0;
-            }
-            if state.tui.field_picker_is_open() {
-                state.tui.prune_field_picker_selection_to_selected_entry();
-            }
-            state.tui.preview_pane.selected_entry_changed(
-                selected_entry.as_ref(),
-                state.config.search.tail_size as u64,
-                &state.event_bus.search_event_tx,
-            );
-            return state;
-        }
-        TuiEvent::Render => {
-            trace!("received render event");
-
-            state
-        }
-        TuiEvent::DispatchLogPaneSearch(ref query) => {
-            let mut state = state;
-            dispatch_log_pane_search(query.clone(), &mut state);
-            state
-        }
-        TuiEvent::RedispatchLogPaneSearch => {
-            let mut state = state;
-            if let Some(query) = state.tui.log_pane.active_query.clone() {
-                dispatch_log_pane_search(query, &mut state);
-            }
-            state
-        }
-        TuiEvent::Error(ref err) => {
-            error!("received error event - {}", err);
-
-            state
-        }
-        TuiEvent::Input(key) => {
-            let mut state = state;
-            let (static_key, custom_key) =
-                keybinds::match_key(&key, &state.tui.focused, &state.tui.keybindings);
-
-            if static_key == StaticKeyAction::Quit {
-                if let Err(err) = state.event_bus.quit_tx.try_send(QuitEvent {}) {
-                    // We have failed to send out quit here, which to be frank
-                    // is pretty bad. So, what can we do? PANIC PANIC PANIC.
-                    panic!("failed to quit - {}", err);
-                }
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::TogglePreviewMode {
-                handle_preview_mode_toggle(&mut state);
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::ToggleLineWrap {
-                state.tui.line_wrap = !state.tui.line_wrap;
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::ToggleSelectMode {
-                state.tui.select_mode = !state.tui.select_mode;
-                // No widget currently consumes TuiEvent::Mouse, so releasing
-                // capture has no in-app functional regression today. The toggle
-                // is the first way users can get terminal wheel scrollback.
-                let mut out = stdout();
-                if state.tui.select_mode {
-                    let _ = out.execute(DisableMouseCapture);
-                } else {
-                    let _ = out.execute(EnableMouseCapture);
-                }
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::YankSelectedEntry
-                && state.tui.focused == Slot::Main
-                && state.tui.active_popup().is_none()
-            {
-                handle_yank_selected_entry(&mut state);
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::ShowInfo
-                && state.tui.focused == Slot::Main
-                && state.tui.active_popup().is_none()
-            {
-                state.tui.open_field_picker();
-                return state;
-            }
-
-            if matches!(key.code, KeyCode::Esc | KeyCode::Backspace)
-                && state.tui.field_picker_is_open()
-            {
-                state.tui.preview_pane.cancel_field_selection();
-                state.tui.close_field_picker();
-                return state;
-            }
-
-            if matches!(key.code, KeyCode::Esc | KeyCode::Backspace)
-                && state.tui.active_popup().is_some()
-            {
-                state.tui.close_popup();
-                return state;
-            }
-
-            if handle_popup_input(&key, custom_key, &mut state) {
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::ToggleHelp {
-                state.tui.toggle_help();
-                return state;
-            }
-
-            if custom_key == CustomizedKeyAction::ToggleSourceSelector {
-                state.tui.toggle_source_selector(&state.producer.sources);
-                return state;
-            }
-
-            if key.modifiers.contains(KeyModifiers::CONTROL) && state.tui.focused != Slot::QueryBox
-            {
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        state.tui.info_pane_scroll_offset =
-                            state.tui.info_pane_scroll_offset.saturating_sub(1);
-                        return state;
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        state.tui.info_pane_scroll_offset =
-                            state.tui.info_pane_scroll_offset.saturating_add(1);
-                        return state;
-                    }
-                    _ => {}
-                }
-            }
-
-            // `Enter` toggles focus between log navigation and the query box
-            // without passing the key to the textarea.
-            if key.code == KeyCode::Enter {
-                match state.tui.focused {
-                    Slot::Main => {
-                        state.tui.focused = Slot::QueryBox;
-                        return state;
-                    }
-                    Slot::QueryBox => {
-                        state.tui.focused = Slot::Main;
-                        return state;
-                    }
-                    _ => {}
-                }
-            }
-
-            state
-        }
-        _ => state,
-    };
-
-    for widget in new_state.widgets.iter_mut() {
-        if new_state.tui.focused == widget.slot() {
-            // Propagate the event to the focused
-            // widget, not any further
-            widget.handle_event(event, &mut new_state.tui, &mut new_state.event_bus);
-            break;
-        }
-    }
-
-    new_state
-}
-
-fn handle_popup_input(
-    key: &crossterm::event::KeyEvent,
-    custom_key: CustomizedKeyAction,
-    state: &mut AppState,
-) -> bool {
-    match state.tui.active_popup() {
-        Some(ActivePopup::FieldPicker) => handle_field_picker_input(key, custom_key, state),
-        Some(ActivePopup::Help) => handle_help_popup_input(custom_key, state),
-        Some(ActivePopup::SourceSelector) => handle_source_selector_input(key, custom_key, state),
-        None => false,
-    }
-}
-
-fn handle_field_picker_input(
-    key: &crossterm::event::KeyEvent,
-    custom_key: CustomizedKeyAction,
-    state: &mut AppState,
-) -> bool {
-    if custom_key == CustomizedKeyAction::ToggleHelp {
-        state.tui.preview_pane.cancel_field_selection();
-        state.tui.toggle_help();
-        return true;
-    }
-    if custom_key == CustomizedKeyAction::ToggleSourceSelector {
-        state.tui.preview_pane.cancel_field_selection();
-        state.tui.open_source_selector(&state.producer.sources);
-        return true;
-    }
-
-    match key.code {
-        KeyCode::Enter => {
-            let selected_keys = state.tui.selected_field_picker_keys();
-            if selected_keys.is_empty() {
-                return true;
-            }
-            if let Some(selected_entry) = state.tui.selected_entry.clone() {
-                state.tui.preview_pane.apply_field_selection(
-                    &selected_entry,
-                    &selected_keys,
-                    state.config.search.tail_size as u64,
-                    &state.event_bus.search_event_tx,
-                );
-                state.tui.close_field_picker();
-            }
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            let row_count = widgets::field_picker::field_picker_row_count(&state.tui);
-            state.tui.field_picker_cursor_up(row_count);
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            let row_count = widgets::field_picker::field_picker_row_count(&state.tui);
-            state.tui.field_picker_cursor_down(row_count);
-        }
-        KeyCode::Char(' ') => {
-            widgets::field_picker::toggle_selected_row(&mut state.tui);
-        }
-        _ => {}
-    }
-
-    true
-}
-
-fn handle_help_popup_input(custom_key: CustomizedKeyAction, state: &mut AppState) -> bool {
-    match custom_key {
-        CustomizedKeyAction::ToggleHelp => state.tui.close_popup(),
-        CustomizedKeyAction::ToggleSourceSelector => {
-            state.tui.open_source_selector(&state.producer.sources);
-        }
-        _ => {}
-    }
-    true
-}
-
-fn handle_source_selector_input(
-    key: &crossterm::event::KeyEvent,
-    custom_key: CustomizedKeyAction,
-    state: &mut AppState,
-) -> bool {
-    if custom_key == CustomizedKeyAction::ToggleSourceSelector {
-        state.tui.close_source_selector();
-        return true;
-    }
-    if custom_key == CustomizedKeyAction::ToggleHelp {
-        state.tui.toggle_help();
-        return true;
-    }
-
-    match key.code {
-        KeyCode::Enter => state.tui.close_source_selector(),
-        KeyCode::Up | KeyCode::Char('k') => {
-            let row_count = widgets::source_selector::source_selector_row_count(&state.tui);
-            state.tui.source_selector_cursor_up(row_count);
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            let row_count = widgets::source_selector::source_selector_row_count(&state.tui);
-            state.tui.source_selector_cursor_down(row_count);
-        }
-        KeyCode::Char(' ') => {
-            widgets::source_selector::toggle_selected_row(&mut state.tui);
-            handle_source_selection_changed(state);
-        }
-        KeyCode::Char('a') => {
-            widgets::source_selector::enable_all_open_sources(&mut state.tui);
-            handle_source_selection_changed(state);
-        }
-        KeyCode::Char('n') => {
-            widgets::source_selector::disable_all_open_sources(&mut state.tui);
-            handle_source_selection_changed(state);
-        }
-        _ => {}
-    }
-
-    true
-}
-
-fn handle_preview_mode_toggle(state: &mut AppState) {
-    if state.tui.field_picker_is_open() {
-        state.tui.preview_pane.skip_field_selection_cycle();
-        state.tui.close_field_picker();
-        if let Some(selected_entry) = state.tui.selected_entry.as_ref() {
-            state.tui.preview_pane.selected_entry_changed(
-                Some(selected_entry),
-                state.config.search.tail_size as u64,
-                &state.event_bus.search_event_tx,
-            );
-        }
-        return;
-    } else if state.tui.active_popup().is_some() {
-        state.tui.close_popup();
-    }
-
-    let result = state.tui.preview_pane.cycle_mode(
-        state.tui.selected_entry.as_ref(),
-        state.config.search.tail_size as u64,
-        &state.event_bus.search_event_tx,
-    );
-    match result {
-        PreviewModeCycle::NeedsFieldSelection => state.tui.open_field_picker(),
-        PreviewModeCycle::NoSelection => state
-            .tui
-            .queue_status_message("Select a log to cycle preview mode".to_string()),
-        PreviewModeCycle::Applied => {}
-    }
-}
-
-fn handle_source_selection_changed(state: &mut AppState) {
-    if state.tui.source_selector.enabled_source_ids.is_empty() && !state.producer.sources.is_empty()
-    {
-        apply_no_sources_selected(state);
-        return;
-    }
-
-    schedule_source_filter_redispatch(state);
-}
-
-fn schedule_source_filter_redispatch(state: &mut AppState) {
-    if let Some(handle) = state.tui.source_filter_debounce_handle.take() {
-        handle.abort();
-    }
-
-    let tx = state.event_bus.tui_event_tx.clone();
-    let debounce_ms = state.tui.fuzzy_debounce_ms;
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        state.tui.source_filter_debounce_handle = Some(handle.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(debounce_ms)).await;
-            if let Err(err) = tx.send(TuiEvent::RedispatchLogPaneSearch) {
-                debug!("failed to schedule source-filter search redispatch - {err}");
-            }
-        }));
-    } else if let Err(err) = tx.send(TuiEvent::RedispatchLogPaneSearch) {
-        debug!("failed to schedule source-filter search redispatch - {err}");
-    }
-}
-
-fn dispatch_log_pane_search(query: Query, state: &mut AppState) {
-    let Some(sources) = filtered_log_pane_sources(state) else {
-        apply_no_sources_selected(state);
-        return;
-    };
-
-    if let Err(err) = state
-        .event_bus
-        .search_event_tx
-        .try_send(SearchEvent::Search {
-            target: SearchTarget::LogPane,
-            query,
-            sources,
-        })
-    {
-        error!("failed to dispatch filtered log pane search - {err}");
-    }
-}
-
-fn filtered_log_pane_sources(state: &AppState) -> Option<Vec<SourceId>> {
-    let live_sources = &state.producer.sources;
-    if live_sources.is_empty() {
-        return Some(Vec::new());
-    }
-
-    let enabled = &state.tui.source_selector.enabled_source_ids;
-    if enabled.is_empty() {
-        return None;
-    }
-
-    if live_sources
-        .iter()
-        .all(|source| enabled.contains(&source.id))
-    {
-        return Some(Vec::new());
-    }
-
-    let source_ids: Vec<SourceId> =
-        widgets::source_selector::source_ids_in_tree_order(live_sources)
-            .into_iter()
-            .filter(|source_id| enabled.contains(source_id))
-            .collect();
-
-    (!source_ids.is_empty()).then_some(source_ids)
-}
-
-fn handle_yank_selected_entry(state: &mut AppState) {
-    let Some(selected) = state.tui.selected_entry.as_ref() else {
-        return; // silent no-op when nothing is selected
-    };
-    let json = serde_json::to_string(&*selected.entry).unwrap_or_default();
-    let mut out = stdout().lock();
-    let msg = match crate::clipboard::yank_osc52(&mut out, &json) {
-        Ok(n) if n > OSC52_WARN_BYTES => {
-            format!("sent yank ({n} bytes) — exceeds 8KB; xterm/vte may drop it")
-        }
-        Ok(n) => format!("sent yank ({n} bytes) — check clipboard"),
-        Err(e) => format!("yank failed: {e}"),
-    };
-    drop(out);
-    state.tui.set_status_message(msg);
-
-    if let Some(hint) = multiplexer_hint() {
-        if !state.tui.multiplexer_clipboard_hint_shown {
-            state.tui.multiplexer_clipboard_hint_shown = true;
-            state.tui.queue_status_message(hint);
-        }
-    }
-}
-
-/// Returns a one-time hint string when running inside a known multiplexer,
-/// or `None` when no multiplexer is detected.
-fn multiplexer_hint() -> Option<String> {
-    let in_tmux = std::env::var("TMUX").is_ok();
-    let in_zellij = std::env::var("ZELLIJ").is_ok();
-    match (in_tmux, in_zellij) {
-        (true, true) | (true, false) => {
-            Some("tmux: run `set -g set-clipboard on` to enable OSC52 yank".into())
-        }
-        (false, true) => {
-            Some("zellij: OSC52 yank needs an OSC52-capable host terminal or copy_command".into())
-        }
-        (false, false) => None,
-    }
-}
-
-fn apply_no_sources_selected(state: &mut AppState) {
-    if let Some(handle) = state.tui.source_filter_debounce_handle.take() {
-        handle.abort();
-    }
-
-    if let Err(err) = state
-        .event_bus
-        .search_event_tx
-        .try_send(SearchEvent::Cancel {
-            target: SearchTarget::LogPane,
-        })
-    {
-        error!("failed to cancel log pane search after disabling all sources - {err}");
-    }
-
-    state
-        .tui
-        .log_pane
-        .show_no_sources_selected(&mut state.tui.log_pane_cursor_row);
-    if let Err(err) = state
-        .event_bus
-        .tui_event_tx
-        .send(TuiEvent::NewSelectedEntry(None))
-    {
-        error!("failed to clear selected entry after disabling all sources - {err}");
-    }
-}
-
-// Render the current state into `terminal`. Generic over the backend so
-// production runs against a `CrosstermBackend` and tests render into a
-// `TestBackend` without further plumbing.
+/// Render the current state into `terminal`. Generic over the backend so
+/// production runs against a `CrosstermBackend` and tests render into a
+/// `TestBackend`.
 pub fn render<B: Backend>(state: &mut AppState, terminal: &mut Terminal<B>) {
-    let result = terminal.draw(|frame| {
-        let areas = layout::build_layout(frame.area(), state.config.tui.sidebar_width_percent);
-
-        for widget in state.widgets.iter_mut() {
-            if let Some(&area) = areas.get(&widget.slot()) {
-                widget.render(frame, area, &mut state.tui);
-            }
-        }
-        // Reassign the areas to our state to cache them for next render
-        state.tui.areas = areas;
-        for widget in state.popup_widgets.iter() {
-            widget.render(frame, frame.area(), &mut state.tui);
-        }
-    });
-
+    let result = terminal.draw(|frame| render::draw(state, frame));
     if let Err(err) = result
         && let Err(err) = state
             .event_bus
             .tui_event_tx
             .send(TuiEvent::Error(err.to_string()))
     {
-        // If we failed to send even the error that we errored, we
-        // can't really do anything but either panic or log and try
-        // again in the render event.
-        error!(
-            "failed to send tui_event error after failed render - {}",
-            err
+        error!("failed to send tui_event error after failed render - {err}");
+    }
+}
+
+/// Apply a single [`TuiEvent`] to the application state.
+///
+/// Render events are a no-op here — rendering is an output side-effect that
+/// the app loop performs directly via [`render`].
+pub fn handle_tui_event(event: TuiEvent, mut state: AppState) -> AppState {
+    match event {
+        TuiEvent::Input(key) => handle_key(&mut state, key),
+        TuiEvent::Paste(text) => handle_paste(&mut state, &text),
+        TuiEvent::Error(err) => error!("received error event - {err}"),
+        TuiEvent::Render
+        | TuiEvent::Mouse(_)
+        | TuiEvent::Resize(_, _)
+        | TuiEvent::FocusGained
+        | TuiEvent::FocusLost => {}
+    }
+    state
+}
+
+/// Dispatch the initial searches for every pane (called once at startup).
+pub fn dispatch_startup(state: &mut AppState) {
+    let (ws, ctx) = split_state(state);
+    for tab in &mut ws.tabs {
+        for pane in &mut tab.panes {
+            dispatch_pane_current(pane, &ctx);
+        }
+    }
+}
+
+/// Re-dispatch panes whose filter resolution depends on the live source
+/// list. Called when sources appear or disappear so worker source-id
+/// snapshots stay correct.
+pub fn redispatch_filtered_panes(state: &mut AppState) {
+    let (ws, ctx) = split_state(state);
+    for tab in &mut ws.tabs {
+        for pane in &mut tab.panes {
+            if !pane.filter.is_empty() {
+                dispatch_pane_current(pane, &ctx);
+            }
+        }
+    }
+}
+
+/// Borrow the workspace mutably alongside a search context built from the
+/// other (disjoint) `AppState` fields.
+fn split_state(state: &mut AppState) -> (&mut Workspace, SearchCtx<'_>) {
+    let bounds = state.store.bounds();
+    (
+        &mut state.workspace,
+        SearchCtx {
+            sources: &state.producer.sources,
+            tx: &state.event_bus.search_event_tx,
+            buffer: state.config.search.tail_size as u64,
+            bounds,
+        },
+    )
+}
+
+/// Re-dispatch whatever the pane is currently showing (stream or search).
+fn dispatch_pane_current(pane: &mut Pane, ctx: &SearchCtx) {
+    match &pane.view {
+        View::Results { term, .. } if !term.is_empty() => {
+            pane.dispatch(Query::Fuzzy(term.clone()), ctx)
+        }
+        _ => pane.dispatch_stream(ctx),
+    }
+}
+
+fn quit(state: &mut AppState) {
+    if let Err(err) = state.event_bus.quit_tx.try_send(QuitEvent {}) {
+        // A second quit while one is queued is harmless.
+        warn!("failed to send quit event - {err}");
+    }
+}
+
+fn handle_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if ctrl && key.code == KeyCode::Char('c') {
+        quit(state);
+        return;
+    }
+
+    state.workspace.notice = None;
+
+    if state.workspace.help_open {
+        if matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?')
+        ) {
+            state.workspace.help_open = false;
+        }
+        return;
+    }
+
+    if state.workspace.focused_pane().detail_open {
+        handle_detail_key(state, key);
+        return;
+    }
+
+    match state.workspace.mode {
+        Mode::Normal => handle_normal_key(state, key),
+        Mode::Visual { anchor } => handle_visual_key(state, key, anchor),
+        Mode::Search => handle_search_key(state, key),
+        Mode::Command => handle_command_key(state, key),
+    }
+}
+
+fn handle_detail_key(state: &mut AppState, key: KeyEvent) {
+    let pane = state.workspace.focused_pane_mut();
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            pane.detail_scroll = pane.detail_scroll.saturating_add(1)
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            pane.detail_scroll = pane.detail_scroll.saturating_sub(1)
+        }
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+            pane.detail_open = false;
+            pane.detail_scroll = 0;
+        }
+        _ => {}
+    }
+}
+
+/// Shared cursor motions for NORMAL and VISUAL. Returns true when consumed.
+fn handle_motion_key(state: &mut AppState, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Count accumulation: `12j`-style prefixes.
+    if let KeyCode::Char(c) = key.code
+        && !ctrl
+        && c.is_ascii_digit()
+        && (c != '0' || state.workspace.pending.count.is_some())
+    {
+        let count = state.workspace.pending.count.unwrap_or(0);
+        state.workspace.pending.count = Some(
+            count
+                .saturating_mul(10)
+                .saturating_add(c as u32 - '0' as u32)
+                .min(99_999),
         );
+        return true;
+    }
+
+    // `g` prefix: gg / gt / gT.
+    if state.workspace.pending.prefix == Some(Prefix::G) {
+        state.workspace.pending.clear();
+        match key.code {
+            KeyCode::Char('g') => {
+                let (ws, ctx) = split_state(state);
+                ws.focused_pane_mut().goto_top(&ctx);
+            }
+            KeyCode::Char('t') => {
+                state.workspace.mode = Mode::Normal;
+                state.workspace.next_tab();
+            }
+            KeyCode::Char('T') => {
+                state.workspace.mode = Mode::Normal;
+                state.workspace.prev_tab();
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    let (ws, ctx) = split_state(state);
+    let count = ws.pending.take_count() as i64;
+    let pane = ws.focused_pane_mut();
+    let half = (pane.page_rows() / 2).max(1) as i64;
+    let page = pane.page_rows() as i64;
+
+    match (key.code, ctrl) {
+        (KeyCode::Char('j'), false) | (KeyCode::Down, _) => pane.move_cursor(count, &ctx),
+        (KeyCode::Char('k'), false) | (KeyCode::Up, _) => pane.move_cursor(-count, &ctx),
+        (KeyCode::Char('d'), true) => pane.move_cursor(half, &ctx),
+        (KeyCode::Char('u'), true) => pane.move_cursor(-half, &ctx),
+        (KeyCode::Char('f'), true) | (KeyCode::PageDown, _) => pane.move_cursor(page, &ctx),
+        (KeyCode::Char('b'), true) | (KeyCode::PageUp, _) => pane.move_cursor(-page, &ctx),
+        (KeyCode::Char('g'), false) => ws.pending.prefix = Some(Prefix::G),
+        (KeyCode::Char('G'), false) | (KeyCode::End, _) => pane.goto_bottom(&ctx),
+        (KeyCode::Home, _) => pane.goto_top(&ctx),
+        (KeyCode::Char('n'), false) => {
+            if !pane.jump_hit(true, &ctx) {
+                ws.notice = Some("no further hits".to_string());
+            }
+        }
+        (KeyCode::Char('N'), false) => {
+            if !pane.jump_hit(false, &ctx) {
+                ws.notice = Some("no previous hits".to_string());
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if state.workspace.pending.prefix == Some(Prefix::Window) {
+        state.workspace.pending.clear();
+        handle_window_key(state, key);
+        return;
+    }
+
+    if handle_motion_key(state, key) {
+        return;
+    }
+
+    match (key.code, ctrl) {
+        (KeyCode::Char('w'), true) => state.workspace.pending.prefix = Some(Prefix::Window),
+        (KeyCode::Char('F'), false) => {
+            let (ws, ctx) = split_state(state);
+            ws.focused_pane_mut().enter_follow(&ctx);
+        }
+        (KeyCode::Char('/'), false) => {
+            state.workspace.mode = Mode::Search;
+            state.workspace.prompt.reset();
+            let (ws, ctx) = split_state(state);
+            let pane = ws.focused_pane_mut();
+            pane.begin_search();
+            pane.update_search("", &ctx);
+        }
+        (KeyCode::Char(':'), false) => {
+            state.workspace.mode = Mode::Command;
+            state.workspace.prompt.reset();
+        }
+        (KeyCode::Char('v'), false) | (KeyCode::Char('V'), false) => {
+            if let Some(anchor) = state.workspace.focused_pane().cursor_seq {
+                state.workspace.mode = Mode::Visual { anchor };
+            }
+        }
+        (KeyCode::Char('y'), false) => yank_cursor_entry(state),
+        (KeyCode::Char('?'), false) => state.workspace.help_open = true,
+        (KeyCode::Enter, _) => {
+            let (ws, ctx) = split_state(state);
+            let pane = ws.focused_pane_mut();
+            match &pane.view {
+                View::Results { .. } => pane.results_to_stream(&ctx),
+                View::Stream { .. } => {
+                    if pane.cursor_entry().is_some() {
+                        pane.detail_open = true;
+                        pane.detail_scroll = 0;
+                    }
+                }
+            }
+        }
+        (KeyCode::Esc, _) => {
+            if !state.workspace.pending.is_empty() {
+                state.workspace.pending.clear();
+                return;
+            }
+            let (ws, ctx) = split_state(state);
+            let pane = ws.focused_pane_mut();
+            match &pane.view {
+                View::Results { .. } => pane.results_to_stream(&ctx),
+                View::Stream { .. } => pane.clear_search(),
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_window_key(state: &mut AppState, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('v') => split_pane(state, Direction::Horizontal),
+        KeyCode::Char('s') => split_pane(state, Direction::Vertical),
+        KeyCode::Char('h') | KeyCode::Left => state.workspace.tab_mut().focus_direction(-1, 0),
+        KeyCode::Char('l') | KeyCode::Right => state.workspace.tab_mut().focus_direction(1, 0),
+        KeyCode::Char('j') | KeyCode::Down => state.workspace.tab_mut().focus_direction(0, 1),
+        KeyCode::Char('k') | KeyCode::Up => state.workspace.tab_mut().focus_direction(0, -1),
+        KeyCode::Char('w') => {
+            // Cycle focus through the tab's panes in creation order.
+            let tab = state.workspace.tab_mut();
+            if let Some(pos) = tab.panes.iter().position(|pane| pane.id == tab.focused) {
+                tab.focused = tab.panes[(pos + 1) % tab.panes.len()].id;
+            }
+        }
+        KeyCode::Char('q') => close_focused_pane(state),
+        KeyCode::Char('o') => {
+            let closed = state.workspace.only_focused_pane();
+            for id in closed {
+                state.search.cancel(id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn split_pane(state: &mut AppState, dir: Direction) {
+    state.workspace.split(dir);
+    let (ws, ctx) = split_state(state);
+    dispatch_pane_current(ws.focused_pane_mut(), &ctx);
+}
+
+fn close_focused_pane(state: &mut AppState) {
+    let (closed, empty) = state.workspace.close_focused_pane();
+    for id in closed {
+        state.search.cancel(id);
+    }
+    if empty {
+        quit(state);
+    }
+}
+
+fn handle_visual_key(state: &mut AppState, key: KeyEvent, anchor: u64) {
+    if handle_motion_key(state, key) {
+        return;
+    }
+    match key.code {
+        KeyCode::Char('y') => {
+            yank_selection(state, anchor);
+            state.workspace.mode = Mode::Normal;
+        }
+        KeyCode::Esc | KeyCode::Char('v') | KeyCode::Char('V') => {
+            state.workspace.mode = Mode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_search_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match (key.code, ctrl) {
+        (KeyCode::Esc, _) => {
+            state.workspace.mode = Mode::Normal;
+            state.workspace.prompt.reset();
+            let (ws, ctx) = split_state(state);
+            ws.focused_pane_mut().abandon_search(&ctx);
+        }
+        (KeyCode::Enter, _) => {
+            state.workspace.mode = Mode::Normal;
+            let hits = state.workspace.focused_pane_mut().confirm_search();
+            state.workspace.notice = Some(if hits == 0 {
+                "no matches".to_string()
+            } else {
+                format!("{hits} matches — Enter opens in context, n/N jumps")
+            });
+            state.workspace.prompt.reset();
+        }
+        (KeyCode::Char('u'), true) => {
+            state.workspace.prompt.reset();
+            live_search(state);
+        }
+        (KeyCode::Char(c), false) => {
+            state.workspace.prompt.insert(c);
+            live_search(state);
+        }
+        (KeyCode::Backspace, _) => {
+            state.workspace.prompt.backspace();
+            live_search(state);
+        }
+        (KeyCode::Left, _) => state.workspace.prompt.left(),
+        (KeyCode::Right, _) => state.workspace.prompt.right(),
+        (KeyCode::Home, _) => state.workspace.prompt.home(),
+        (KeyCode::End, _) => state.workspace.prompt.end(),
+        _ => {}
+    }
+}
+
+fn live_search(state: &mut AppState) {
+    let term = state.workspace.prompt.buf.clone();
+    let (ws, ctx) = split_state(state);
+    ws.focused_pane_mut().update_search(&term, &ctx);
+}
+
+fn handle_command_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match (key.code, ctrl) {
+        (KeyCode::Esc, _) => {
+            state.workspace.mode = Mode::Normal;
+            state.workspace.prompt.reset();
+        }
+        (KeyCode::Enter, _) => {
+            let line = state.workspace.prompt.buf.clone();
+            state.workspace.mode = Mode::Normal;
+            state.workspace.prompt.reset();
+            execute_command(state, &line);
+        }
+        (KeyCode::Char('u'), true) => state.workspace.prompt.reset(),
+        (KeyCode::Char(c), false) => state.workspace.prompt.insert(c),
+        (KeyCode::Backspace, _) => state.workspace.prompt.backspace(),
+        (KeyCode::Left, _) => state.workspace.prompt.left(),
+        (KeyCode::Right, _) => state.workspace.prompt.right(),
+        (KeyCode::Home, _) => state.workspace.prompt.home(),
+        (KeyCode::End, _) => state.workspace.prompt.end(),
+        _ => {}
+    }
+}
+
+fn execute_command(state: &mut AppState, line: &str) {
+    let mut parts = line.split_whitespace();
+    let cmd = parts.next().unwrap_or("");
+    let args: Vec<&str> = parts.collect();
+
+    match cmd {
+        "" => {}
+        "q" | "quit" => close_focused_pane(state),
+        "qa" | "qall" | "quitall" => quit(state),
+        "vs" | "vsplit" => split_pane(state, Direction::Horizontal),
+        "sp" | "split" => split_pane(state, Direction::Vertical),
+        "only" | "on" => {
+            let closed = state.workspace.only_focused_pane();
+            for id in closed {
+                state.search.cancel(id);
+            }
+        }
+        "tabnew" => {
+            state
+                .workspace
+                .new_tab((!args.is_empty()).then(|| args.join(" ")));
+            let (ws, ctx) = split_state(state);
+            dispatch_pane_current(ws.focused_pane_mut(), &ctx);
+        }
+        "tabclose" | "tabc" => {
+            let (closed, empty) = state.workspace.close_tab();
+            for id in closed {
+                state.search.cancel(id);
+            }
+            if empty {
+                quit(state);
+            }
+        }
+        "tabn" | "tabnext" => state.workspace.next_tab(),
+        "tabp" | "tabprev" => state.workspace.prev_tab(),
+        "filter" | "f" => {
+            let patterns: Vec<String> = args
+                .join(" ")
+                .split(',')
+                .map(str::trim)
+                .filter(|pat| !pat.is_empty())
+                .map(str::to_string)
+                .collect();
+            let (ws, ctx) = split_state(state);
+            let pane = ws.focused_pane_mut();
+            pane.filter = patterns;
+            dispatch_pane_current(pane, &ctx);
+        }
+        "tail" => {
+            let (ws, ctx) = split_state(state);
+            ws.focused_pane_mut().enter_follow(&ctx);
+        }
+        "clear" | "noh" => {
+            let (ws, ctx) = split_state(state);
+            let pane = ws.focused_pane_mut();
+            pane.clear_search();
+            if matches!(pane.view, View::Results { .. }) {
+                pane.results_to_stream(&ctx);
+            }
+        }
+        "help" | "h" => state.workspace.help_open = true,
+        unknown => {
+            state.workspace.notice = Some(format!("not a command: {unknown}"));
+        }
+    }
+}
+
+fn handle_paste(state: &mut AppState, text: &str) {
+    match state.workspace.mode {
+        Mode::Search => {
+            state.workspace.prompt.insert_str(text);
+            live_search(state);
+        }
+        Mode::Command => state.workspace.prompt.insert_str(text),
+        _ => {}
+    }
+}
+
+fn yank_cursor_entry(state: &mut AppState) {
+    let Some(entry) = state.workspace.focused_pane().cursor_entry() else {
+        return;
+    };
+    let payload = serde_json::to_string(&**entry).unwrap_or_default();
+    yank(state, &payload, "entry");
+}
+
+fn yank_selection(state: &mut AppState, anchor: u64) {
+    let pane = state.workspace.focused_pane();
+    let lines: Vec<String> = pane
+        .selection(anchor)
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} {} [{}] {}",
+                entry.ts.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+                entry
+                    .level
+                    .map(|level| level.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                entry.source.display_name,
+                entry.msg
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    let what = format!("{} lines", lines.len());
+    yank(state, &lines.join("\n"), &what);
+}
+
+fn yank(state: &mut AppState, payload: &str, what: &str) {
+    let mut out = stdout().lock();
+    let msg = match crate::clipboard::yank_osc52(&mut out, payload) {
+        Ok(n) if n > OSC52_WARN_BYTES => {
+            format!("yanked {what} ({n} bytes) — exceeds 8KB; xterm/vte may drop it")
+        }
+        Ok(n) => format!("yanked {what} ({n} bytes)"),
+        Err(err) => format!("yank failed: {err}"),
+    };
+    drop(out);
+    state.workspace.notice = Some(msg);
+
+    // Append rather than replace so the byte-count outcome stays visible.
+    if let Some(hint) = multiplexer_hint()
+        && let Some(notice) = &mut state.workspace.notice
+    {
+        notice.push_str(" · ");
+        notice.push_str(&hint);
+    }
+}
+
+/// Returns a hint string when running inside a known multiplexer whose
+/// clipboard forwarding usually needs configuration.
+fn multiplexer_hint() -> Option<String> {
+    let in_tmux = std::env::var("TMUX").is_ok();
+    let in_zellij = std::env::var("ZELLIJ").is_ok();
+    match (in_tmux, in_zellij) {
+        (true, _) => Some("tmux: `set -g set-clipboard on` enables OSC52".into()),
+        (false, true) => Some("zellij: OSC52 needs a capable host terminal".into()),
+        (false, false) => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::collections::HashMap;
 
     use chrono::Utc;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::widgets::ScrollDirection;
-    use serde_json::json;
 
     use super::*;
     use crate::{
         config::Config,
-        event::{FieldPredicate, SelectedEntry, TuiEvent},
-        log::{LogEntry, LogLevel, Source},
-        state::tui_state::preview_pane_state::{PreviewMode, PreviewStatus},
+        event::{PaneId, ProducerEvent, SearchEvent},
+        log::{LogLevel, NewLogEntry, Source},
+        producer,
     };
-
-    fn entry(seq: u64) -> Arc<LogEntry> {
-        entry_with_fields(seq, HashMap::new())
-    }
-
-    fn entry_with_fields(seq: u64, fields: HashMap<String, serde_json::Value>) -> Arc<LogEntry> {
-        Arc::new(LogEntry {
-            seq,
-            msg: format!("entry {seq}"),
-            ts: Utc::now(),
-            level: Some(LogLevel::Info),
-            source: Source {
-                producer: "fake".to_string(),
-                id: "src-a".to_string(),
-                display_name: "src-a".to_string(),
-                group: None,
-            },
-            fields,
-        })
-    }
-
-    fn source(id: &str) -> Source {
-        source_with_group(id, None)
-    }
-
-    fn source_with_group(id: &str, group: Option<&str>) -> Source {
-        Source {
-            producer: "fake".to_string(),
-            id: id.to_string(),
-            display_name: format!("Source {id}"),
-            group: group.map(str::to_string),
-        }
-    }
 
     fn input(code: KeyCode) -> TuiEvent {
         TuiEvent::Input(KeyEvent::new(code, KeyModifiers::NONE))
@@ -670,1187 +674,335 @@ mod tests {
         TuiEvent::Input(KeyEvent::new(code, KeyModifiers::CONTROL))
     }
 
-    fn recv_search_event(state: &mut AppState) -> SearchEvent {
-        state
-            .event_bus
-            .search_event_rx
-            .try_recv()
-            .expect("search event")
-    }
-
-    #[test]
-    fn new_selected_entry_event_updates_tui_state() {
+    fn state_with_entries(count: u64) -> AppState {
         let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.info_pane_scroll_offset = 4;
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry(7),
-                matches: Vec::new(),
-            })),
-            state,
-        );
-
-        assert_eq!(
-            state
-                .tui
-                .selected_entry
-                .as_ref()
-                .map(|selected| selected.entry.seq),
-            Some(7)
-        );
-        assert_eq!(state.tui.info_pane_scroll_offset, 0);
-        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
-        assert_eq!(state.tui.preview_pane.anchor_seq, None);
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query:
-                    Query::Surrounding {
-                        middle_seq_id,
-                        buffer,
-                    },
-                sources,
-            } => {
-                assert_eq!(target, SearchTarget::PreviewPane);
-                assert_eq!(middle_seq_id, 7);
-                assert_eq!(buffer, state.config.search.tail_size as u64);
-                assert_eq!(sources, vec!["src-a".to_string()]);
-            }
-            event => panic!("expected preview surrounding search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn new_selected_entry_preserves_ready_preview_until_result_applies() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.preview_pane.start_surrounding(3);
-        state
-            .tui
-            .preview_pane
-            .apply_surrounding(3, vec![entry(2), entry(3), entry(4)]);
-
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry(7),
-                matches: Vec::new(),
-            })),
-            state,
-        );
-
-        assert_eq!(state.tui.preview_pane.status, PreviewStatus::Ready);
-        assert_eq!(state.tui.preview_pane.anchor_seq, Some(3));
-        assert_eq!(
-            state
-                .tui
-                .preview_pane
-                .items()
-                .iter()
-                .map(|entry| entry.seq)
-                .collect::<Vec<_>>(),
-            vec![2, 3, 4]
-        );
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query:
-                    Query::Surrounding {
-                        middle_seq_id,
-                        buffer,
-                    },
-                sources,
-            } => {
-                assert_eq!(target, SearchTarget::PreviewPane);
-                assert_eq!(middle_seq_id, 7);
-                assert_eq!(buffer, state.config.search.tail_size as u64);
-                assert_eq!(sources, vec!["src-a".to_string()]);
-            }
-            event => panic!("expected preview surrounding search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn stale_preview_result_is_ignored_while_new_anchor_is_pending() {
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry(7),
-                matches: Vec::new(),
-            })),
-            AppState::new(Config::default()).expect("app state"),
-        );
-
-        state
-            .tui
-            .preview_pane
-            .apply_surrounding(6, vec![entry(5), entry(6), entry(7)]);
-
-        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
-        assert_eq!(state.tui.preview_pane.anchor_seq, None);
-    }
-
-    #[test]
-    fn new_selected_entry_event_clears_tui_state() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: entry(7),
-            matches: Vec::new(),
-        });
-        state.tui.info_pane_scroll_offset = 4;
-
-        let mut state = handle_tui_event(TuiEvent::NewSelectedEntry(None), state);
-
-        assert!(state.tui.selected_entry.is_none());
-        assert_eq!(state.tui.info_pane_scroll_offset, 0);
-        assert_eq!(state.tui.preview_pane.status, PreviewStatus::NoSelection);
-        assert_eq!(state.tui.preview_pane.anchor_seq, None);
-        assert!(matches!(
-            state.event_bus.search_event_rx.try_recv(),
-            Ok(SearchEvent::Cancel {
-                target: SearchTarget::PreviewPane
-            })
-        ));
-    }
-
-    #[test]
-    fn ctrl_down_scrolls_info_pane_globally() {
-        let state = AppState::new(Config::default()).expect("app state");
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)),
-            state,
-        );
-
-        assert_eq!(state.tui.info_pane_scroll_offset, 1);
-    }
-
-    #[test]
-    fn ctrl_j_scrolls_info_pane_globally() {
-        let state = AppState::new(Config::default()).expect("app state");
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
-            state,
-        );
-
-        assert_eq!(state.tui.info_pane_scroll_offset, 1);
-    }
-
-    #[test]
-    fn ctrl_up_scrolls_info_pane_and_saturates_at_zero() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.info_pane_scroll_offset = 2;
-
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
-            state,
-        );
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
-            state,
-        );
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
-            state,
-        );
-
-        assert_eq!(state.tui.info_pane_scroll_offset, 0);
-    }
-
-    #[test]
-    fn ctrl_k_scrolls_info_pane_and_saturates_at_zero() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.info_pane_scroll_offset = 1;
-
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
-            state,
-        );
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
-            state,
-        );
-
-        assert_eq!(state.tui.info_pane_scroll_offset, 0);
-    }
-
-    #[test]
-    fn new_selected_entry_same_seq_preserves_info_pane_scroll() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: entry(7),
-            matches: Vec::new(),
-        });
-        state.tui.info_pane_scroll_offset = 3;
-
-        let state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry(7),
-                matches: Vec::new(),
-            })),
-            state,
-        );
-
-        assert_eq!(state.tui.info_pane_scroll_offset, 3);
-    }
-
-    #[test]
-    fn regular_down_still_dispatches_to_focused_widget() {
-        let mut state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-            AppState::new(Config::default()).expect("app state"),
-        );
-
-        assert_eq!(state.tui.info_pane_scroll_offset, 0);
-        assert!(matches!(
-            state.event_bus.tui_event_rx.try_recv(),
-            Ok(TuiEvent::Scroll(ScrollDirection::Forward))
-        ));
-    }
-
-    #[test]
-    fn ctrl_s_opens_and_closes_source_selector_without_changing_focus() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-        assert_eq!(state.tui.source_selector.cursor, 0);
-        assert_eq!(state.tui.source_selector.open_sources.len(), 2);
-
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-    }
-
-    #[test]
-    fn question_mark_opens_and_closes_help_without_changing_focus() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-    }
-
-    #[test]
-    fn opening_help_replaces_source_selector() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a")];
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
-    }
-
-    #[test]
-    fn opening_source_selector_replaces_help() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a")];
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
-        assert_eq!(state.tui.source_selector.open_sources.len(), 1);
-    }
-
-    #[test]
-    fn escape_closes_active_popup() {
-        let state = AppState::new(Config::default()).expect("app state");
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        let state = handle_tui_event(input(KeyCode::Esc), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-    }
-
-    #[test]
-    fn help_swallows_tab_and_text_input() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        let state = handle_tui_event(input(KeyCode::Tab), state);
-        let state = handle_tui_event(input(KeyCode::Char('x')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-        assert_eq!(state.tui.query_box_textarea.lines().join("\n").trim(), "");
-    }
-
-    #[test]
-    fn ctrl_c_still_quits_when_help_is_open() {
-        let state = AppState::new(Config::default()).expect("app state");
-        let mut state = handle_tui_event(input(KeyCode::Char('?')), state);
-
-        state = handle_tui_event(ctrl_input(KeyCode::Char('c')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
-        assert!(state.event_bus.quit_rx.try_recv().is_ok());
-    }
-
-    #[test]
-    fn source_selector_navigation_updates_cursor_and_swallows_scroll() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        state = handle_tui_event(input(KeyCode::Down), state);
-
-        assert_eq!(state.tui.source_selector.cursor, 1);
-        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
-
-        state = handle_tui_event(input(KeyCode::Up), state);
-
-        assert_eq!(state.tui.source_selector.cursor, 0);
-        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn source_selector_navigation_scrolls_when_visible_window_is_full() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-        state.tui.set_source_selector_visible_row_count(4, 2);
-
-        state = handle_tui_event(input(KeyCode::Down), state);
-        state = handle_tui_event(input(KeyCode::Down), state);
-        state = handle_tui_event(input(KeyCode::Down), state);
-
-        assert_eq!(state.tui.source_selector.cursor, 1);
-        assert_eq!(state.tui.source_selector.scroll_offset, 2);
-
-        state = handle_tui_event(input(KeyCode::Up), state);
-        state = handle_tui_event(input(KeyCode::Up), state);
-
-        assert_eq!(state.tui.source_selector.cursor, 0);
-        assert_eq!(state.tui.source_selector.scroll_offset, 1);
-    }
-
-    #[test]
-    fn source_selector_swallows_non_local_keys_and_preserves_focus() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        let state = handle_tui_event(input(KeyCode::Tab), state);
-        let state = handle_tui_event(input(KeyCode::Char('x')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-        assert_eq!(state.tui.query_box_textarea.lines().join("\n").trim(), "");
-    }
-
-    #[test]
-    fn source_selector_escape_and_enter_close_popup() {
-        let state = AppState::new(Config::default()).expect("app state");
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-        let state = handle_tui_event(input(KeyCode::Esc), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-        let state = handle_tui_event(input(KeyCode::Enter), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-    }
-
-    #[test]
-    fn ctrl_c_still_quits_when_source_selector_is_open() {
-        let state = AppState::new(Config::default()).expect("app state");
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        state = handle_tui_event(ctrl_input(KeyCode::Char('c')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::SourceSelector));
-        assert!(state.event_bus.quit_rx.try_recv().is_ok());
-    }
-
-    #[test]
-    fn dispatch_log_pane_search_uses_wildcard_before_live_sources_exist() {
-        let state = AppState::new(Config::default()).expect("app state");
-
-        let mut state = handle_tui_event(TuiEvent::DispatchLogPaneSearch(Query::Tail), state);
-
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query: Query::Tail,
-                sources,
-            } => {
-                assert_eq!(target, SearchTarget::LogPane);
-                assert!(sources.is_empty());
-            }
-            event => panic!("expected wildcard tail search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn dispatch_log_pane_search_uses_wildcard_when_enabled_covers_live_sources() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        state.tui.enable_source_id("src-a".to_string());
-        state.tui.enable_source_id("src-b".to_string());
-        state.tui.enable_source_id("src-c".to_string());
-
-        let mut state = handle_tui_event(TuiEvent::DispatchLogPaneSearch(Query::Tail), state);
-
-        match recv_search_event(&mut state) {
-            SearchEvent::Search { sources, .. } => assert!(sources.is_empty()),
-            event => panic!("expected wildcard search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn dispatch_log_pane_tail_search_uses_filtered_source_ids() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![
-            source_with_group("src-b", Some("backend")),
-            source_with_group("src-a", Some("backend")),
-            source_with_group("src-c", Some("frontend")),
-        ];
-        state.tui.enable_source_id("src-b".to_string());
-        state.tui.enable_source_id("src-c".to_string());
-
-        let mut state = handle_tui_event(TuiEvent::DispatchLogPaneSearch(Query::Tail), state);
-
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query: Query::Tail,
-                sources,
-            } => {
-                assert_eq!(target, SearchTarget::LogPane);
-                assert_eq!(sources, vec!["src-b".to_string(), "src-c".to_string()]);
-            }
-            event => panic!("expected filtered tail search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn dispatch_log_pane_history_search_uses_filtered_source_ids() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        state.tui.enable_source_id("src-b".to_string());
-
-        let mut state = handle_tui_event(
-            TuiEvent::DispatchLogPaneSearch(Query::History {
-                middle_seq_id: 42,
-                buffer: 10,
+        state = producer::handle_producer_event(
+            ProducerEvent::SourceFound(Source {
+                producer: "fake".to_string(),
+                id: "src-a".to_string(),
+                display_name: "Source A".to_string(),
+                group: None,
             }),
             state,
         );
-
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                query:
-                    Query::History {
-                        middle_seq_id,
-                        buffer,
+        for seq in 1..=count {
+            state = producer::handle_producer_event(
+                ProducerEvent::StoreEvent(NewLogEntry {
+                    msg: format!("entry {seq}"),
+                    ts: Utc::now(),
+                    level: Some(LogLevel::Info),
+                    source: Source {
+                        producer: "fake".to_string(),
+                        id: "src-a".to_string(),
+                        display_name: "Source A".to_string(),
+                        group: None,
                     },
-                sources,
-                ..
-            } => {
-                assert_eq!(middle_seq_id, 42);
-                assert_eq!(buffer, 10);
-                assert_eq!(sources, vec!["src-b".to_string()]);
-            }
-            event => panic!("expected filtered history search, got {event:?}"),
+                    fields: HashMap::new(),
+                }),
+                state,
+            );
         }
-    }
-
-    #[test]
-    fn redispatch_active_fuzzy_query_uses_filtered_source_ids() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        state.tui.enable_source_id("src-b".to_string());
-        state.tui.log_pane.active_query = Some(Query::Fuzzy("error".to_string()));
-
-        let mut state = handle_tui_event(TuiEvent::RedispatchLogPaneSearch, state);
-
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                query: Query::Fuzzy(term),
-                sources,
-                ..
-            } => {
-                assert_eq!(term, "error");
-                assert_eq!(sources, vec!["src-b".to_string()]);
-            }
-            event => panic!("expected filtered fuzzy search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn dispatch_log_pane_search_with_no_enabled_sources_shows_empty_state() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-
-        let mut state = handle_tui_event(TuiEvent::DispatchLogPaneSearch(Query::Tail), state);
-
-        assert_eq!(
-            state.tui.log_pane.empty_message(),
-            Some("No sources selected")
-        );
-        assert!(matches!(
-            recv_search_event(&mut state),
-            SearchEvent::Cancel {
-                target: SearchTarget::LogPane
-            }
-        ));
-        assert!(matches!(
-            state.event_bus.tui_event_rx.try_recv(),
-            Ok(TuiEvent::NewSelectedEntry(None))
-        ));
-    }
-
-    #[test]
-    fn new_source_arrival_while_filtered_stays_explicit_not_wildcard() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b"), source("src-c")];
-        state.tui.enable_source_id("src-b".to_string());
-        state.tui.enable_source_id("src-c".to_string());
-
-        let mut state = handle_tui_event(TuiEvent::DispatchLogPaneSearch(Query::Tail), state);
-
-        match recv_search_event(&mut state) {
-            SearchEvent::Search { sources, .. } => {
-                assert_eq!(sources, vec!["src-b".to_string(), "src-c".to_string()]);
-            }
-            event => panic!("expected explicit source list, got {event:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn source_filter_redispatch_is_debounced() {
-        let mut config = Config::default();
-        config.search.fuzzy_debounce_ms = 10;
-        let mut state = AppState::new(config).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        state.tui.enable_source_id("src-a".to_string());
-        state.tui.enable_source_id("src-b".to_string());
-        state.tui.log_pane.active_query = Some(Query::Tail);
-
-        state.tui.source_selector.enabled_source_ids.remove("src-a");
-        handle_source_selection_changed(&mut state);
-        state.tui.enable_source_id("src-a".to_string());
-        handle_source_selection_changed(&mut state);
-
-        tokio::time::sleep(Duration::from_millis(30)).await;
-
-        assert!(matches!(
-            state.event_bus.tui_event_rx.try_recv(),
-            Ok(TuiEvent::RedispatchLogPaneSearch)
-        ));
-        assert!(state.event_bus.tui_event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn source_selector_space_toggles_source_row() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![
-            source_with_group("src-a", Some("backend")),
-            source_with_group("src-b", Some("backend")),
-        ];
-        state.tui.enable_source_id("src-a".to_string());
-        state.tui.enable_source_id("src-b".to_string());
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-        state.tui.source_selector.cursor = 2;
-
-        state = handle_tui_event(input(KeyCode::Char(' ')), state);
-
-        assert!(
-            !state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-a")
-        );
-        assert!(
-            state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains("src-b")
-        );
-        let rows = widgets::source_selector::source_selector_rows(&state.tui);
-        assert_eq!(
-            rows[0].checkbox,
-            widgets::source_selector::CheckboxState::Mixed
-        );
-        assert_eq!(
-            rows[1].checkbox,
-            widgets::source_selector::CheckboxState::Mixed
-        );
-    }
-
-    #[test]
-    fn source_selector_space_toggles_group_row() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![
-            source_with_group("src-a", Some("backend")),
-            source_with_group("src-b", Some("backend")),
-            source_with_group("src-c", Some("frontend")),
-        ];
-        state.tui.enable_source_id("src-b".to_string());
-        state.tui.enable_source_id("src-c".to_string());
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-        state.tui.source_selector.cursor = 1;
-
-        state = handle_tui_event(input(KeyCode::Char(' ')), state);
-
-        assert!(
-            ["src-a", "src-b", "src-c"].iter().all(|id| state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains(*id))
-        );
-    }
-
-    #[test]
-    fn source_selector_space_toggles_producer_row_to_all_disabled() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![
-            source_with_group("src-a", Some("backend")),
-            source_with_group("src-b", Some("backend")),
-        ];
-        state.tui.enable_source_id("src-a".to_string());
-        state.tui.enable_source_id("src-b".to_string());
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        let mut state = handle_tui_event(input(KeyCode::Char(' ')), state);
-
-        assert!(state.tui.source_selector.enabled_source_ids.is_empty());
-        assert_eq!(
-            state.tui.log_pane.empty_message(),
-            Some("No sources selected")
-        );
-        assert!(matches!(
-            state.event_bus.search_event_rx.try_recv(),
-            Ok(SearchEvent::Cancel {
-                target: SearchTarget::LogPane
-            })
-        ));
-        assert!(matches!(
-            state.event_bus.tui_event_rx.try_recv(),
-            Ok(TuiEvent::NewSelectedEntry(None))
-        ));
-    }
-
-    #[test]
-    fn source_selector_a_and_n_enable_or_disable_all_open_sources() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.producer.sources = vec![source("src-a"), source("src-b")];
-        let state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
-
-        let state = handle_tui_event(input(KeyCode::Char('a')), state);
-        assert!(
-            ["src-a", "src-b"].iter().all(|id| state
-                .tui
-                .source_selector
-                .enabled_source_ids
-                .contains(*id))
-        );
-
-        let mut state = handle_tui_event(input(KeyCode::Char('n')), state);
-        assert!(state.tui.source_selector.enabled_source_ids.is_empty());
-        assert_eq!(
-            state.tui.log_pane.empty_message(),
-            Some("No sources selected")
-        );
-        assert!(matches!(
-            state.event_bus.search_event_rx.try_recv(),
-            Ok(SearchEvent::Cancel {
-                target: SearchTarget::LogPane
-            })
-        ));
-    }
-
-    #[test]
-    fn field_picker_enter_applies_selected_fields_and_closes() {
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry_with_fields(
-                    7,
-                    HashMap::from([
-                        ("status".to_string(), json!(500)),
-                        ("trace".to_string(), json!("abc")),
-                    ]),
-                ),
-                matches: Vec::new(),
-            })),
-            AppState::new(Config::default()).expect("app state"),
-        );
-        let _ = recv_search_event(&mut state);
-        state.tui.preview_pane.open_field_selection();
-        state.tui.open_field_picker();
-        state.tui.toggle_field_picker_key("trace");
-
-        let mut state = handle_tui_event(input(KeyCode::Enter), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(
-            state.tui.preview_pane.mode,
-            PreviewMode::FieldMatched {
-                predicates: vec![FieldPredicate {
-                    key: "trace".to_string(),
-                    value: json!("abc"),
-                }],
-            }
-        );
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query:
-                    Query::FieldMatched {
-                        anchor_seq_id,
-                        predicates,
-                        ..
-                    },
-                sources,
-            } => {
-                assert_eq!(target, SearchTarget::PreviewPane);
-                assert_eq!(anchor_seq_id, 7);
-                assert_eq!(
-                    predicates,
-                    vec![FieldPredicate {
-                        key: "trace".to_string(),
-                        value: json!("abc"),
-                    }]
-                );
-                assert!(sources.is_empty());
-            }
-            event => panic!("expected field-matched preview search, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn field_picker_escape_cancels_without_losing_previous_mode() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.preview_pane.open_field_selection();
-        state.tui.open_field_picker();
-
-        let state = handle_tui_event(input(KeyCode::Esc), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
-    }
-
-    #[test]
-    fn field_picker_enter_with_no_selection_keeps_previous_mode() {
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry_with_fields(7, HashMap::from([("trace".to_string(), json!("abc"))])),
-                matches: Vec::new(),
-            })),
-            AppState::new(Config::default()).expect("app state"),
-        );
-        let _ = recv_search_event(&mut state);
-        state.tui.preview_pane.open_field_selection();
-        state.tui.open_field_picker();
-
-        let mut state = handle_tui_event(input(KeyCode::Enter), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
-        assert!(state.event_bus.search_event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn selected_entry_change_rebuilds_open_field_picker_selection() {
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry_with_fields(
-                    7,
-                    HashMap::from([
-                        ("status".to_string(), json!(500)),
-                        ("trace".to_string(), json!("abc")),
-                    ]),
-                ),
-                matches: Vec::new(),
-            })),
-            AppState::new(Config::default()).expect("app state"),
-        );
-        let _ = recv_search_event(&mut state);
-        state.tui.preview_pane.open_field_selection();
-        state.tui.open_field_picker();
-        state.tui.toggle_field_picker_key("status");
-        state.tui.toggle_field_picker_key("trace");
-
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry_with_fields(
-                    8,
-                    HashMap::from([
-                        ("trace".to_string(), json!("abc")),
-                        ("user".to_string(), json!("calam")),
-                    ]),
-                ),
-                matches: Vec::new(),
-            })),
-            state,
-        );
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
-        assert_eq!(
-            state.tui.selected_field_picker_keys(),
-            vec!["trace".to_string()]
-        );
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                query:
-                    Query::Surrounding {
-                        middle_seq_id: 8, ..
-                    },
-                ..
-            } => {}
-            event => panic!("expected surrounding preview redispatch, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn ctrl_p_cycles_preview_modes_and_opens_field_picker() {
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry_with_fields(7, HashMap::from([("trace".to_string(), json!("abc"))])),
-                matches: Vec::new(),
-            })),
-            AppState::new(Config::default()).expect("app state"),
-        );
-        let _ = recv_search_event(&mut state);
-
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
-
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
-        assert!(state.event_bus.search_event_rx.try_recv().is_err());
-
-        state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
-
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
-        match recv_search_event(&mut state) {
-            SearchEvent::Search {
-                target,
-                query:
-                    Query::Surrounding {
-                        middle_seq_id: 7, ..
-                    },
-                ..
-            } => assert_eq!(target, SearchTarget::PreviewPane),
-            event => panic!("expected surrounding preview search after picker skip, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn pressing_w_toggles_line_wrap_globally() {
-        let state = AppState::new(Config::default()).expect("app state");
-        assert!(!state.tui.line_wrap);
-
-        let state = handle_tui_event(input(KeyCode::Char('w')), state);
-        assert!(state.tui.line_wrap);
-
-        let state = handle_tui_event(input(KeyCode::Char('w')), state);
-        assert!(!state.tui.line_wrap);
-    }
-
-    #[test]
-    fn toggle_select_mode_flips_state() {
-        let state = AppState::new(Config::default()).expect("app state");
-        assert!(!state.tui.select_mode);
-
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
-            state,
-        );
-        assert!(state.tui.select_mode);
-
-        let state = handle_tui_event(
-            TuiEvent::Input(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
-            state,
-        );
-        assert!(!state.tui.select_mode);
-    }
-
-    #[test]
-    fn yank_with_no_selection_is_silent_noop() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::Main;
-        assert!(state.tui.selected_entry.is_none());
-
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
-
-        assert!(state.tui.status_message.is_none());
-    }
-
-    #[tokio::test]
-    async fn yank_with_query_box_focused_does_not_trigger() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: entry(1),
-            matches: Vec::new(),
-        });
-
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
-
-        assert!(state.tui.status_message.is_none());
-    }
-
-    #[test]
-    fn yank_with_selection_sets_status_message() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::Main;
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: entry(42),
-            matches: Vec::new(),
-        });
-
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
-
-        let msg = state.tui.status_message.as_ref().map(|(m, _)| m.as_str());
-        assert!(
-            msg.is_some_and(|m| m.contains("sent yank") && m.contains("bytes")),
-            "expected 'sent yank ... bytes' message, got {msg:?}"
-        );
-    }
-
-    #[test]
-    fn yank_with_popup_open_does_not_trigger() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::Main;
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: entry(1),
-            matches: Vec::new(),
-        });
         state
-            .tui
-            .open_popup(crate::state::tui_state::ActivePopup::Help);
+    }
 
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+    /// Feed a tail result into the focused pane so motions have entries.
+    fn seed_tail(state: &mut AppState, seqs: &[u64]) {
+        let mut entries = Vec::new();
+        state.store.fetch_requested(seqs, &mut entries).unwrap();
+        let bounds = state.store.bounds();
+        let pane = state.workspace.focused_pane_mut();
+        pane.active_query = Some(Query::Tail);
+        pane.apply_result(&Query::Tail, entries, HashMap::new(), None, bounds);
+    }
 
-        assert!(state.tui.status_message.is_none());
+    fn drain_search_events(state: &mut AppState) -> Vec<SearchEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = state.event_bus.search_event_rx.try_recv() {
+            events.push(event);
+        }
+        events
     }
 
     #[test]
-    fn multiplexer_hint_shown_flag_prevents_repeat() {
-        // Simulate multiplexer detection by pre-setting the shown flag. When the
-        // flag is already true, queue_status_message is never called regardless
-        // of $TMUX / $ZELLIJ env vars.
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::Main;
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: entry(1),
-            matches: Vec::new(),
-        });
-        state.tui.multiplexer_clipboard_hint_shown = true;
-
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
-        assert!(state.tui.status_message_pending.is_none());
+    fn ctrl_c_sends_quit_from_any_mode() {
+        let mut state = state_with_entries(3);
+        state.workspace.mode = Mode::Command;
+        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('c')), state);
+        assert!(state.event_bus.quit_rx.try_recv().is_ok());
     }
 
     #[test]
-    fn yank_status_message_normal_when_payload_is_small() {
-        // Small entry → well below the 8KB base64 threshold
-        let small_entry = entry_with_fields(
-            99,
-            std::collections::HashMap::from([("k".to_string(), json!("v"))]),
-        );
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::Main;
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: small_entry,
-            matches: Vec::new(),
-        });
+    fn motion_breaks_follow_into_history_anchor() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+        assert!(state.workspace.focused_pane().follow);
 
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+        let mut state = handle_tui_event(input(KeyCode::Char('k')), state);
 
-        let msg = state
-            .tui
-            .status_message
-            .as_ref()
-            .map(|(m, _)| m.as_str())
-            .unwrap_or("");
-        assert!(
-            !msg.contains("exceeds 8KB"),
-            "expected normal message for small payload, got: {msg}"
-        );
+        let pane = state.workspace.focused_pane();
+        assert!(!pane.follow);
+        assert_eq!(pane.cursor_seq, Some(4));
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::History {
+                    middle_seq_id: 4,
+                    ..
+                },
+                ..
+            }
+        )));
     }
 
     #[test]
-    fn yank_status_message_warns_when_payload_exceeds_8kb_threshold() {
-        // Large pad field → well above the 8KB base64 threshold for any overhead
-        let large_entry = entry_with_fields(
-            99,
-            std::collections::HashMap::from([(
-                "pad".to_string(),
-                serde_json::Value::String("x".repeat(100_000)),
-            )]),
-        );
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::Main;
-        state.tui.selected_entry = Some(SelectedEntry {
-            entry: large_entry,
-            matches: Vec::new(),
-        });
+    fn count_prefix_multiplies_motion() {
+        let mut state = state_with_entries(20);
+        seed_tail(&mut state, &(1..=20).collect::<Vec<_>>());
 
-        let state = handle_tui_event(input(KeyCode::Char('y')), state);
+        let state = handle_tui_event(input(KeyCode::Char('1')), state);
+        let state = handle_tui_event(input(KeyCode::Char('2')), state);
+        let state = handle_tui_event(input(KeyCode::Char('k')), state);
 
-        let msg = state
-            .tui
-            .status_message
-            .as_ref()
-            .map(|(m, _)| m.as_str())
-            .unwrap_or("");
-        assert!(
-            msg.contains("exceeds 8KB"),
-            "expected 8KB warning message, got: {msg}"
-        );
+        assert_eq!(state.workspace.focused_pane().cursor_seq, Some(8));
     }
 
     #[test]
-    fn ctrl_p_closes_existing_popup_then_switches_preview_mode() {
-        let mut state = handle_tui_event(
-            TuiEvent::NewSelectedEntry(Some(SelectedEntry {
-                entry: entry(7),
-                matches: Vec::new(),
-            })),
-            AppState::new(Config::default()).expect("app state"),
-        );
-        let _ = recv_search_event(&mut state);
-        state.producer.sources = vec![source("src-a")];
-        state = handle_tui_event(ctrl_input(KeyCode::Char('s')), state);
+    fn gg_jumps_to_oldest_and_g_to_newest() {
+        let mut state = state_with_entries(10);
+        seed_tail(&mut state, &(1..=10).collect::<Vec<_>>());
 
-        let mut state = handle_tui_event(ctrl_input(KeyCode::Char('p')), state);
+        let state = handle_tui_event(input(KeyCode::Char('g')), state);
+        let mut state = handle_tui_event(input(KeyCode::Char('g')), state);
 
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::FieldPicker));
-        assert_eq!(state.tui.preview_pane.mode, PreviewMode::Surrounding);
-        assert!(state.event_bus.search_event_rx.try_recv().is_err());
+        assert_eq!(state.workspace.focused_pane().cursor_seq, Some(1));
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::History {
+                    middle_seq_id: 1,
+                    ..
+                },
+                ..
+            }
+        )));
+
+        let state = handle_tui_event(input(KeyCode::Char('G')), state);
+        assert_eq!(state.workspace.focused_pane().cursor_seq, Some(10));
     }
 
     #[test]
-    fn enter_focuses_query_box_and_does_not_insert() {
-        let state = AppState::new(Config::default()).expect("app state");
-        assert_eq!(state.tui.focused, Slot::Main);
+    fn capital_f_reenters_tail() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+        let state = handle_tui_event(input(KeyCode::Char('k')), state);
+        assert!(!state.workspace.focused_pane().follow);
 
-        let state = handle_tui_event(input(KeyCode::Enter), state);
+        let mut state = handle_tui_event(input(KeyCode::Char('F')), state);
 
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-        assert_eq!(state.tui.query_box_textarea.lines().join("").trim(), "");
+        assert!(state.workspace.focused_pane().follow);
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::Tail,
+                ..
+            }
+        )));
     }
 
-    #[tokio::test]
-    async fn slash_when_query_box_already_focused_inserts_into_query() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
+    #[test]
+    fn slash_enters_search_and_typing_dispatches_fuzzy() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
 
         let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        assert_eq!(state.workspace.mode, Mode::Search);
 
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-        assert_eq!(state.tui.query_box_textarea.lines().join(""), "/");
+        let state = handle_tui_event(input(KeyCode::Char('e')), state);
+        let mut state = handle_tui_event(input(KeyCode::Char('r')), state);
+
+        let events = drain_search_events(&mut state);
+        let terms: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SearchEvent::Search {
+                    query: Query::Fuzzy(term),
+                    ..
+                } => Some(term.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(terms, vec!["e".to_string(), "er".to_string()]);
     }
 
     #[test]
-    fn enter_returns_focus_from_query_box_to_main_and_preserves_query() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-        // Pre-type a query into the textarea.
-        state.tui.query_box_textarea.insert_str("error");
+    fn search_enter_confirms_hits_and_esc_restores_stream() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+
+        // Type a search and inject a fuzzy result as the engine would.
+        let mut state = handle_tui_event(input(KeyCode::Char('/')), state);
+        state.workspace.prompt.insert('e');
+        let term = Query::Fuzzy("e".to_string());
+        let mut entries = Vec::new();
+        state.store.fetch_requested(&[2, 4], &mut entries).unwrap();
+        {
+            let pane = state.workspace.focused_pane_mut();
+            pane.active_query = Some(term.clone());
+            pane.apply_result(&term, entries, HashMap::new(), None, (1, 5));
+        }
 
         let state = handle_tui_event(input(KeyCode::Enter), state);
 
-        assert_eq!(state.tui.focused, Slot::Main);
-        assert_eq!(
-            state.tui.query_box_textarea.lines().join("").trim(),
-            "error"
-        );
+        assert_eq!(state.workspace.mode, Mode::Normal);
+        let pane = state.workspace.focused_pane();
+        assert_eq!(pane.hits, vec![2, 4]);
+        assert!(matches!(pane.view, View::Results { .. }));
+
+        // Esc drops back to a stream centered on the cursor.
+        let mut state = handle_tui_event(input(KeyCode::Esc), state);
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::History { .. },
+                ..
+            }
+        )));
     }
 
     #[test]
-    fn tab_does_not_cycle_focus() {
-        let state = AppState::new(Config::default()).expect("app state");
-        assert_eq!(state.tui.focused, Slot::Main);
+    fn ctrl_w_v_splits_and_dispatches_clone() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
 
-        let state = handle_tui_event(input(KeyCode::Tab), state);
+        let state = handle_tui_event(ctrl_input(KeyCode::Char('w')), state);
+        let mut state = handle_tui_event(input(KeyCode::Char('v')), state);
 
-        assert_eq!(state.tui.focused, Slot::Main);
+        assert_eq!(state.workspace.tab().panes.len(), 2);
+        let new_id = state.workspace.tab().focused;
+        assert_eq!(new_id, PaneId(2));
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search { target, .. } if *target == new_id
+        )));
     }
 
     #[test]
-    fn after_enter_enter_j_dispatches_scroll_to_log_pane() {
-        let state = AppState::new(Config::default()).expect("app state");
-
-        let state = handle_tui_event(input(KeyCode::Enter), state);
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-
-        let state = handle_tui_event(input(KeyCode::Enter), state);
-        assert_eq!(state.tui.focused, Slot::Main);
-
-        let mut state = handle_tui_event(input(KeyCode::Char('j')), state);
-
-        assert!(matches!(
-            state.event_bus.tui_event_rx.try_recv(),
-            Ok(TuiEvent::Scroll(ratatui::widgets::ScrollDirection::Forward))
-        ));
+    fn ctrl_w_q_on_last_pane_quits() {
+        let state = state_with_entries(1);
+        let state = handle_tui_event(ctrl_input(KeyCode::Char('w')), state);
+        let mut state = handle_tui_event(input(KeyCode::Char('q')), state);
+        assert!(state.event_bus.quit_rx.try_recv().is_ok());
     }
 
     #[test]
-    fn log_pane_action_keys_do_not_mutate_query_text() {
-        // j, k, g, G, w, y should not insert into the query box while focused is Main.
-        let state = AppState::new(Config::default()).expect("app state");
-        assert_eq!(state.tui.focused, Slot::Main);
+    fn visual_selection_tracks_anchor_and_yields_to_normal_on_esc() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
 
-        let state = handle_tui_event(input(KeyCode::Char('j')), state);
+        let state = handle_tui_event(input(KeyCode::Char('v')), state);
+        assert_eq!(state.workspace.mode, Mode::Visual { anchor: 5 });
+
         let state = handle_tui_event(input(KeyCode::Char('k')), state);
-        let state = handle_tui_event(input(KeyCode::Char('g')), state);
-        let state = handle_tui_event(input(KeyCode::Char('G')), state);
-        let state = handle_tui_event(input(KeyCode::Char('w')), state);
-
-        assert_eq!(state.tui.query_box_textarea.lines().join("").trim(), "");
-    }
-
-    #[test]
-    fn esc_while_query_box_focused_does_not_clear_query() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-        state.tui.query_box_textarea.insert_str("error");
+        let state = handle_tui_event(input(KeyCode::Char('k')), state);
+        assert_eq!(state.workspace.focused_pane().cursor_seq, Some(3));
+        assert_eq!(state.workspace.mode, Mode::Visual { anchor: 5 });
 
         let state = handle_tui_event(input(KeyCode::Esc), state);
+        assert_eq!(state.workspace.mode, Mode::Normal);
+    }
 
-        // Esc should not return focus (that's Enter) and should not clear query.
-        assert_eq!(state.tui.focused, Slot::QueryBox);
+    #[test]
+    fn filter_command_sets_patterns_and_redispatches() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+
+        let mut state = handle_tui_event(input(KeyCode::Char(':')), state);
+        for c in "filter src-a".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.workspace.mode, Mode::Normal);
         assert_eq!(
-            state.tui.query_box_textarea.lines().join("").trim(),
-            "error"
+            state.workspace.focused_pane().filter,
+            vec!["src-a".to_string()]
         );
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search { sources, .. } if sources == &vec!["src-a".to_string()]
+        )));
     }
 
     #[test]
-    fn query_box_focus_preserved_across_help_popup_open_close() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        state.tui.focused = Slot::QueryBox;
-
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-        assert_eq!(state.tui.active_popup(), Some(ActivePopup::Help));
-        assert_eq!(state.tui.focused, Slot::QueryBox);
-
-        let state = handle_tui_event(input(KeyCode::Char('?')), state);
-        assert_eq!(state.tui.active_popup(), None);
-        assert_eq!(state.tui.focused, Slot::QueryBox);
+    fn unknown_command_sets_notice() {
+        let state = state_with_entries(1);
+        let state = handle_tui_event(input(KeyCode::Char(':')), state);
+        let state = handle_tui_event(input(KeyCode::Char('x')), state);
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+        assert_eq!(state.workspace.notice.as_deref(), Some("not a command: x"));
     }
 
     #[test]
-    fn startup_focus_is_main() {
-        let state = AppState::new(Config::default()).expect("app state");
-        assert_eq!(state.tui.focused, Slot::Main);
+    fn tabnew_creates_focused_tailing_tab_and_gt_cycles() {
+        let mut state = state_with_entries(1);
+        state = handle_tui_event(input(KeyCode::Char(':')), state);
+        for c in "tabnew errors".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.workspace.tabs.len(), 2);
+        assert_eq!(state.workspace.active_tab, 1);
+        assert_eq!(state.workspace.tab().name, "errors");
+        assert!(state.workspace.focused_pane().follow);
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::Tail,
+                ..
+            }
+        )));
+
+        let state = handle_tui_event(input(KeyCode::Char('g')), state);
+        let state = handle_tui_event(input(KeyCode::Char('t')), state);
+        assert_eq!(state.workspace.active_tab, 0);
+    }
+
+    #[test]
+    fn enter_on_stream_opens_detail_and_esc_closes() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(state.workspace.focused_pane().detail_open);
+
+        // Keys are swallowed by the overlay except scroll/close.
+        let state = handle_tui_event(input(KeyCode::Char('j')), state);
+        assert_eq!(state.workspace.focused_pane().detail_scroll, 1);
+        assert_eq!(state.workspace.focused_pane().cursor_seq, Some(3));
+
+        let state = handle_tui_event(input(KeyCode::Esc), state);
+        assert!(!state.workspace.focused_pane().detail_open);
+    }
+
+    #[test]
+    fn help_overlay_swallows_input_until_closed() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+        let state = handle_tui_event(input(KeyCode::Char('?')), state);
+        assert!(state.workspace.help_open);
+
+        let state = handle_tui_event(input(KeyCode::Char('k')), state);
+        assert_eq!(state.workspace.focused_pane().cursor_seq, Some(3));
+
+        let state = handle_tui_event(input(KeyCode::Esc), state);
+        assert!(!state.workspace.help_open);
     }
 }
