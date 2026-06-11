@@ -42,7 +42,10 @@ type ContainerKey = (String, String);
 /// current-container startup history, then live follow output. Previous logs
 /// are startup-only history: they are not rediscovered after startup, and
 /// the reconnect loop still has its existing catch-up limitation during
-/// disconnected windows.
+/// disconnected windows. Re-tracking a key this process already tailed
+/// (crash loops, recreated pods with stable names) skips the previous-log
+/// fetch — that instance was captured live — while still fetching the new
+/// instance's startup history.
 pub struct KubernetesProducer {
     client: Arc<Client>,
     namespace: String,
@@ -139,6 +142,12 @@ async fn run_kubernetes_producer(
     let pods: Api<Pod> = Api::namespaced((*client).clone(), &namespace);
     let mut events = watcher::watcher(pods.clone(), watcher::Config::default()).boxed();
     let mut tracked: HashMap<ContainerKey, CancellationToken> = HashMap::new();
+    // Keys this process has ever tracked. A crash-looping container is
+    // re-tracked on every restart; its `previous=true` logs are then the
+    // instance fml already tailed live, so previous-log backfill must run
+    // only on the first track of a key. Entries are tiny and bounded by pod
+    // churn, so this set is never pruned.
+    let mut previously_tracked: HashSet<ContainerKey> = HashSet::new();
     let mut init_buffer: Vec<Pod> = Vec::new();
 
     loop {
@@ -149,7 +158,7 @@ async fn run_kubernetes_producer(
                 let Some(event) = event else { break };
                 match event {
                     Ok(Event::Apply(pod)) => {
-                        track_running_containers(&pod, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked, &source_block, ingest).await;
+                        track_running_containers(&pod, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked, &mut previously_tracked, &source_block, ingest).await;
                     }
                     Ok(Event::Delete(pod)) => {
                         untrack_pod(&pod.name_any(), &namespace, &tx, &mut tracked).await;
@@ -163,7 +172,7 @@ async fn run_kubernetes_producer(
                             let _ = tx.send(ProducerEvent::SourceLost(source_id_for_key(&namespace, &key))).await;
                         }
                         for running in additions {
-                            track_container(running, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked, &source_block, ingest).await;
+                            track_container(running, &namespace, &pods, &normalizer, &tx, &cancel, &mut tracked, &mut previously_tracked, &source_block, ingest).await;
                         }
                     }
                     Err(err) => warn!("kubernetes watcher error in namespace {namespace}: {err}"),
@@ -193,6 +202,7 @@ async fn track_running_containers(
     tx: &mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
     tracked: &mut HashMap<ContainerKey, CancellationToken>,
+    previously_tracked: &mut HashSet<ContainerKey>,
     source_block: &SourceBlock,
     ingest: IngestConfig,
 ) {
@@ -229,6 +239,7 @@ async fn track_running_containers(
             tx,
             parent_cancel,
             tracked,
+            previously_tracked,
             source_block,
             ingest,
         )
@@ -245,6 +256,7 @@ async fn track_container(
     tx: &mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
     tracked: &mut HashMap<ContainerKey, CancellationToken>,
+    previously_tracked: &mut HashSet<ContainerKey>,
     source_block: &SourceBlock,
     ingest: IngestConfig,
 ) {
@@ -279,6 +291,11 @@ async fn track_container(
         return;
     }
 
+    // First track of this key in this process: re-tracks (crash loops, pod
+    // recreation under the same name) skip previous-log backfill because the
+    // previous instance was already tailed live.
+    let first_track = previously_tracked.insert(key.clone());
+
     let child = parent_cancel.child_token();
     tokio::spawn(tail_pod_container(
         api.clone(),
@@ -288,6 +305,7 @@ async fn track_container(
         *normalizer,
         child.clone(),
         ingest,
+        first_track,
     ));
     tracked.insert(key, child);
 }
@@ -388,6 +406,11 @@ async fn emit_backfill_text(
 /// first, then current-container startup logs, both bounded by the ingest
 /// policy. Failures are logged and non-fatal so live follow still starts.
 /// Returns `false` when the event channel is closed.
+///
+/// `include_previous` is false on re-tracks: the previous instance is then
+/// the one this process already tailed live, so re-fetching it would
+/// duplicate entries. The current-instance fetch always runs — a re-tracked
+/// container is a fresh instance whose startup lines are genuinely new.
 async fn backfill_pod_container(
     api: &Api<Pod>,
     key: &ContainerKey,
@@ -395,23 +418,26 @@ async fn backfill_pod_container(
     tx: &mpsc::Sender<ProducerEvent>,
     normalizer: &Normalizer,
     ingest: IngestConfig,
+    include_previous: bool,
 ) -> bool {
-    match api
-        .logs(&key.0, &backfill_log_params(&key.1, ingest, true))
-        .await
-    {
-        Ok(text) => {
-            if !emit_backfill_text(&text, source, tx, normalizer).await {
-                return false;
+    if include_previous {
+        match api
+            .logs(&key.0, &backfill_log_params(&key.1, ingest, true))
+            .await
+        {
+            Ok(text) => {
+                if !emit_backfill_text(&text, source, tx, normalizer).await {
+                    return false;
+                }
             }
+            Err(err) if is_missing_previous_logs(&err) => {
+                debug!("no previous container logs for {}: {err}", source.id);
+            }
+            Err(err) => warn!(
+                "kubernetes previous-log backfill failed for {}: {err}",
+                source.id
+            ),
         }
-        Err(err) if is_missing_previous_logs(&err) => {
-            debug!("no previous container logs for {}: {err}", source.id);
-        }
-        Err(err) => warn!(
-            "kubernetes previous-log backfill failed for {}: {err}",
-            source.id
-        ),
     }
 
     match api
@@ -432,6 +458,7 @@ async fn backfill_pod_container(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tail_pod_container(
     api: Api<Pod>,
     key: ContainerKey,
@@ -440,6 +467,7 @@ async fn tail_pod_container(
     normalizer: Normalizer,
     cancel: CancellationToken,
     ingest: IngestConfig,
+    include_previous: bool,
 ) {
     let mut backoff = ReconnectBackoff::new();
 
@@ -452,7 +480,7 @@ async fn tail_pod_container(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return,
-            open = backfill_pod_container(&api, &key, &source, &tx, &normalizer, ingest) => {
+            open = backfill_pod_container(&api, &key, &source, &tx, &normalizer, ingest, include_previous) => {
                 if !open {
                     return;
                 }
@@ -1031,6 +1059,7 @@ mod tests {
             &tx,
             &cancel,
             &mut tracked,
+            &mut HashSet::new(),
             &block,
             IngestConfig::default(),
         )
@@ -1070,6 +1099,7 @@ mod tests {
             &tx,
             &cancel,
             &mut tracked,
+            &mut HashSet::new(),
             &block,
             IngestConfig::default(),
         )
@@ -1109,6 +1139,7 @@ mod tests {
             &tx,
             &cancel,
             &mut tracked,
+            &mut HashSet::new(),
             &block,
             IngestConfig::default(),
         )
@@ -1244,6 +1275,101 @@ mod tests {
         assert!(!open);
     }
 
+    /// Kube client backed by a mock service that records request URIs and
+    /// answers every request with `body`.
+    fn recording_api(requests: Arc<std::sync::Mutex<Vec<String>>>, body: &'static str) -> Api<Pod> {
+        let service = tower::service_fn(move |req: http::Request<kube::client::Body>| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push(req.uri().to_string());
+                Ok::<_, std::convert::Infallible>(
+                    http::Response::builder()
+                        .status(200)
+                        .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                            body.as_bytes(),
+                        )))
+                        .expect("mock response"),
+                )
+            }
+        });
+        Api::namespaced(Client::new(service, "default"), "default")
+    }
+
+    #[tokio::test]
+    async fn first_track_backfill_requests_previous_then_current() {
+        let requests: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let api = recording_api(requests.clone(), "line-a\nline-b\n");
+        let normalizer = Normalizer::new();
+        let source = Source {
+            producer: "default".to_string(),
+            id: "default/web-123/web".to_string(),
+            display_name: "web-123/web".to_string(),
+            group: None,
+        };
+        let key = ("web-123".to_string(), "web".to_string());
+        let (tx, mut rx) = mpsc::channel(16);
+
+        let open = backfill_pod_container(
+            &api,
+            &key,
+            &source,
+            &tx,
+            &normalizer,
+            IngestConfig::default(),
+            true,
+        )
+        .await;
+        assert!(open);
+
+        let uris = requests.lock().unwrap().clone();
+        assert_eq!(uris.len(), 2, "previous then current fetch: {uris:?}");
+        assert!(uris[0].contains("previous=true"), "first: {}", uris[0]);
+        assert!(!uris[1].contains("previous=true"), "second: {}", uris[1]);
+        for uri in &uris {
+            assert!(uri.contains("sinceSeconds=1800"), "bounded: {uri}");
+            assert!(uri.contains("tailLines=5000"), "capped: {uri}");
+        }
+
+        // Both bounded responses emit in order: previous lines, then current.
+        let mut messages = Vec::new();
+        while let Ok(ProducerEvent::StoreEvent(entry)) = rx.try_recv() {
+            messages.push(entry.msg);
+        }
+        assert_eq!(messages, ["line-a", "line-b", "line-a", "line-b"]);
+    }
+
+    #[tokio::test]
+    async fn re_track_backfill_skips_previous_instance_fetch() {
+        let requests: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let api = recording_api(requests.clone(), "line-a\n");
+        let normalizer = Normalizer::new();
+        let source = Source {
+            producer: "default".to_string(),
+            id: "default/web-123/web".to_string(),
+            display_name: "web-123/web".to_string(),
+            group: None,
+        };
+        let key = ("web-123".to_string(), "web".to_string());
+        let (tx, _rx) = mpsc::channel(16);
+
+        let open = backfill_pod_container(
+            &api,
+            &key,
+            &source,
+            &tx,
+            &normalizer,
+            IngestConfig::default(),
+            false,
+        )
+        .await;
+        assert!(open);
+
+        // Re-track: only the (genuinely new) current instance is fetched.
+        let uris = requests.lock().unwrap().clone();
+        assert_eq!(uris.len(), 1, "current fetch only: {uris:?}");
+        assert!(!uris[0].contains("previous=true"), "got: {}", uris[0]);
+    }
+
     #[tokio::test]
     async fn backfill_failure_is_non_fatal_for_the_tail_task() {
         // With an unreachable API both backfill requests fail; the helper
@@ -1266,6 +1392,7 @@ mod tests {
             &tx,
             &normalizer,
             IngestConfig::default(),
+            true,
         )
         .await;
 

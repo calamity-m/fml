@@ -103,11 +103,18 @@ async fn run_docker_producer(
 
     let containers = list_running_containers(&docker).await?;
     let mut tracked: HashMap<SourceId, CancellationToken> = HashMap::new();
+    // When a container was already tailed live in this process, re-tracking
+    // it (restart under the same id) must not re-fetch the history fml just
+    // delivered: docker log history survives restarts, so the full backfill
+    // window would duplicate the previous run. Entries are tiny and bounded
+    // by container churn, so this map is never pruned.
+    let mut last_seen: HashMap<SourceId, i64> = HashMap::new();
 
     for container in containers {
         let source = container_summary_to_source(&container);
         track_container(
             &mut tracked,
+            &last_seen,
             source,
             docker.clone(),
             normalizer.clone(),
@@ -132,6 +139,7 @@ async fn run_docker_producer(
                 handle_docker_event(
                     event,
                     &mut tracked,
+                    &mut last_seen,
                     docker.clone(),
                     normalizer.clone(),
                     tx.clone(),
@@ -212,6 +220,7 @@ fn events_options() -> bollard::query_parameters::EventsOptions {
 async fn handle_docker_event(
     event: EventMessage,
     tracked: &mut HashMap<SourceId, CancellationToken>,
+    last_seen: &mut HashMap<SourceId, i64>,
     docker: Arc<Docker>,
     normalizer: Normalizer,
     tx: mpsc::Sender<ProducerEvent>,
@@ -240,6 +249,7 @@ async fn handle_docker_event(
             let source = source_from_parts(&container_id, &[name.to_string()], image, &labels);
             track_container(
                 tracked,
+                last_seen,
                 source,
                 docker,
                 normalizer,
@@ -253,6 +263,7 @@ async fn handle_docker_event(
         "die" | "destroy" => {
             if let Some(child) = tracked.remove(&container_id) {
                 child.cancel();
+                last_seen.insert(container_id.clone(), chrono::Utc::now().timestamp());
                 let _ = tx.send(ProducerEvent::SourceLost(container_id)).await;
             }
         }
@@ -263,6 +274,7 @@ async fn handle_docker_event(
 #[allow(clippy::too_many_arguments)]
 async fn track_container(
     tracked: &mut HashMap<SourceId, CancellationToken>,
+    last_seen: &HashMap<SourceId, i64>,
     source: Source,
     docker: Arc<Docker>,
     normalizer: Normalizer,
@@ -308,6 +320,7 @@ async fn track_container(
         normalizer,
         child.clone(),
         ingest,
+        last_seen.get(&source.id).copied(),
     ));
     tracked.insert(source.id, child);
 }
@@ -326,7 +339,19 @@ async fn track_container(
 /// With backfill disabled (`backfill_max_lines_per_source == 0`) this
 /// preserves the previous live-only behavior: `tail("0")` skips all existing
 /// output.
-fn tail_log_options(ingest: IngestConfig, now_secs: i64) -> bollard::query_parameters::LogsOptions {
+///
+/// `resume_since` is the time this container was last tracked in this
+/// process. Docker log history survives container restarts, so a re-track
+/// must not re-fetch the run fml already tailed live: `since` is clamped
+/// forward to the resume point, leaving only the new run (and the empty
+/// down-window) in scope. Timestamps are whole seconds, so up to one second
+/// of boundary overlap is possible; duplicates there are preferred over
+/// dropping the new run's first lines.
+fn tail_log_options(
+    ingest: IngestConfig,
+    now_secs: i64,
+    resume_since: Option<i64>,
+) -> bollard::query_parameters::LogsOptions {
     let builder = LogsOptionsBuilder::default()
         .follow(true)
         .stdout(true)
@@ -335,7 +360,8 @@ fn tail_log_options(ingest: IngestConfig, now_secs: i64) -> bollard::query_param
     if ingest.backfill_enabled() {
         // bollard models `since` as i32 seconds; saturate rather than wrap
         // for absurd windows.
-        let since = now_secs.saturating_sub(ingest.backfill_window_secs as i64);
+        let window_start = now_secs.saturating_sub(ingest.backfill_window_secs as i64);
+        let since = resume_since.map_or(window_start, |resume| resume.max(window_start));
         builder
             .since(since.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
             .tail(&ingest.backfill_max_lines_per_source.to_string())
@@ -345,6 +371,7 @@ fn tail_log_options(ingest: IngestConfig, now_secs: i64) -> bollard::query_param
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tail_container(
     docker: Arc<Docker>,
     container_id: SourceId,
@@ -353,10 +380,15 @@ async fn tail_container(
     normalizer: Normalizer,
     cancel: CancellationToken,
     ingest: IngestConfig,
+    resume_since: Option<i64>,
 ) {
     let mut logs = docker.logs(
         &container_id,
-        Some(tail_log_options(ingest, chrono::Utc::now().timestamp())),
+        Some(tail_log_options(
+            ingest,
+            chrono::Utc::now().timestamp(),
+            resume_since,
+        )),
     );
     let mut buffer = LineBuffer::default();
 
@@ -580,6 +612,7 @@ mod tests {
 
         track_container(
             &mut tracked,
+            &HashMap::new(),
             source,
             docker,
             normalizer,
@@ -622,6 +655,7 @@ mod tests {
 
         track_container(
             &mut tracked,
+            &HashMap::new(),
             source,
             docker,
             normalizer,
@@ -644,7 +678,7 @@ mod tests {
             backfill_max_lines_per_source: 5000,
         };
 
-        let options = tail_log_options(ingest, 1_000_000);
+        let options = tail_log_options(ingest, 1_000_000, None);
 
         assert!(options.follow);
         assert!(options.stdout);
@@ -654,13 +688,31 @@ mod tests {
     }
 
     #[test]
+    fn tail_log_options_resume_clamps_since_past_already_tailed_run() {
+        let ingest = IngestConfig {
+            backfill_window_secs: 1800,
+            backfill_max_lines_per_source: 5000,
+        };
+
+        // Re-track 60s after the container was last tailed: since must start
+        // at the resume point, not re-fetch the previous run via the window.
+        let options = tail_log_options(ingest, 1_000_000, Some(1_000_000 - 60));
+        assert_eq!(options.since, 1_000_000 - 60);
+        assert_eq!(options.tail, "5000");
+
+        // A resume point older than the window must not widen the fetch.
+        let options = tail_log_options(ingest, 1_000_000, Some(1_000_000 - 10_000));
+        assert_eq!(options.since, 1_000_000 - 1800);
+    }
+
+    #[test]
     fn tail_log_options_disabled_backfill_keeps_live_only_tail_zero() {
         let ingest = IngestConfig {
             backfill_max_lines_per_source: 0,
             ..IngestConfig::default()
         };
 
-        let options = tail_log_options(ingest, 1_000_000);
+        let options = tail_log_options(ingest, 1_000_000, None);
 
         assert!(options.follow);
         assert_eq!(options.tail, "0");
