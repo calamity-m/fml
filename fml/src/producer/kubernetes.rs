@@ -354,13 +354,22 @@ fn follow_log_params(container: &str) -> LogParams {
 /// (`tailLines`: "the number of lines from the end of the logs to show";
 /// `sinceSeconds` filters by relative time — both constraints apply when
 /// both are set). `follow: false` keeps these requests one-shot.
-fn backfill_log_params(container: &str, ingest: IngestConfig, previous: bool) -> LogParams {
+///
+/// `max_lines` is the request's share of the per-source cap, not the raw
+/// configured cap: the previous and current fetches for one source split a
+/// single allowance (see [`backfill_pod_container`]).
+fn backfill_log_params(
+    container: &str,
+    ingest: IngestConfig,
+    max_lines: usize,
+    previous: bool,
+) -> LogParams {
     LogParams {
         container: Some(container.to_string()),
         follow: false,
         previous,
         since_seconds: Some(ingest.backfill_window_secs as i64),
-        tail_lines: Some(ingest.backfill_max_lines_per_source as i64),
+        tail_lines: Some(max_lines as i64),
         ..LogParams::default()
     }
 }
@@ -381,13 +390,15 @@ fn is_missing_previous_logs(err: &kube::Error) -> bool {
 }
 
 /// Emit one bounded backfill response line-by-line in server order
-/// (oldest-to-newest). Returns `false` when the event channel is closed.
+/// (oldest-to-newest). Returns the number of lines emitted, or `None` when
+/// the event channel is closed.
 async fn emit_backfill_text(
     text: &str,
     source: &Source,
     tx: &mpsc::Sender<ProducerEvent>,
     normalizer: &Normalizer,
-) -> bool {
+) -> Option<usize> {
+    let mut emitted = 0;
     for line in text.lines() {
         let line = decode_line(line.strip_suffix('\r').unwrap_or(line).as_bytes());
         let entry = normalizer.normalize(&line, source.clone());
@@ -396,16 +407,19 @@ async fn emit_backfill_text(
                 "kubernetes backfill {} aborting: event channel closed",
                 source.id
             );
-            return false;
+            return None;
         }
+        emitted += 1;
     }
-    true
+    Some(emitted)
 }
 
 /// Startup-only history for one pod container: previous-container logs
-/// first, then current-container startup logs, both bounded by the ingest
-/// policy. Failures are logged and non-fatal so live follow still starts.
-/// Returns `false` when the event channel is closed.
+/// first, then current-container startup logs. Both fetches share one
+/// `backfill_max_lines_per_source` allowance — the current fetch only gets
+/// whatever the previous logs left, so the documented per-source cap holds
+/// across the pair. Failures are logged and non-fatal so live follow still
+/// starts. Returns `false` when the event channel is closed.
 ///
 /// `include_previous` is false on re-tracks: the previous instance is then
 /// the one this process already tailed live, so re-fetching it would
@@ -420,16 +434,17 @@ async fn backfill_pod_container(
     ingest: IngestConfig,
     include_previous: bool,
 ) -> bool {
+    let mut budget = ingest.backfill_max_lines_per_source;
+
     if include_previous {
         match api
-            .logs(&key.0, &backfill_log_params(&key.1, ingest, true))
+            .logs(&key.0, &backfill_log_params(&key.1, ingest, budget, true))
             .await
         {
-            Ok(text) => {
-                if !emit_backfill_text(&text, source, tx, normalizer).await {
-                    return false;
-                }
-            }
+            Ok(text) => match emit_backfill_text(&text, source, tx, normalizer).await {
+                Some(emitted) => budget = budget.saturating_sub(emitted),
+                None => return false,
+            },
             Err(err) if is_missing_previous_logs(&err) => {
                 debug!("no previous container logs for {}: {err}", source.id);
             }
@@ -440,12 +455,23 @@ async fn backfill_pod_container(
         }
     }
 
+    if budget == 0 {
+        debug!(
+            "previous logs consumed the backfill cap for {}; skipping current startup history",
+            source.id
+        );
+        return true;
+    }
+
     match api
-        .logs(&key.0, &backfill_log_params(&key.1, ingest, false))
+        .logs(&key.0, &backfill_log_params(&key.1, ingest, budget, false))
         .await
     {
         Ok(text) => {
-            if !emit_backfill_text(&text, source, tx, normalizer).await {
+            if emit_backfill_text(&text, source, tx, normalizer)
+                .await
+                .is_none()
+            {
                 return false;
             }
         }
@@ -1194,17 +1220,21 @@ mod tests {
             backfill_max_lines_per_source: 5000,
         };
 
-        let current = backfill_log_params("web", ingest, false);
+        let current = backfill_log_params("web", ingest, 5000, false);
         assert_eq!(current.container.as_deref(), Some("web"));
         assert!(!current.follow);
         assert!(!current.previous);
         assert_eq!(current.since_seconds, Some(1800));
         assert_eq!(current.tail_lines, Some(5000));
 
-        let previous = backfill_log_params("web", ingest, true);
+        let previous = backfill_log_params("web", ingest, 5000, true);
         assert!(previous.previous);
         assert_eq!(previous.since_seconds, Some(1800));
         assert_eq!(previous.tail_lines, Some(5000));
+
+        // A request's share of the cap drives tail_lines, not the raw config.
+        let remainder = backfill_log_params("web", ingest, 1200, false);
+        assert_eq!(remainder.tail_lines, Some(1200));
     }
 
     fn api_error(code: u16, message: &str) -> kube::Error {
@@ -1245,9 +1275,10 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::channel(8);
 
-        let open = emit_backfill_text("first\r\nsecond\nthird\n", &source, &tx, &normalizer).await;
+        let emitted =
+            emit_backfill_text("first\r\nsecond\nthird\n", &source, &tx, &normalizer).await;
 
-        assert!(open);
+        assert_eq!(emitted, Some(3));
         let mut messages = Vec::new();
         while let Ok(event) = rx.try_recv() {
             match event {
@@ -1270,9 +1301,9 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         drop(rx);
 
-        let open = emit_backfill_text("first\n", &source, &tx, &normalizer).await;
+        let emitted = emit_backfill_text("first\n", &source, &tx, &normalizer).await;
 
-        assert!(!open);
+        assert!(emitted.is_none());
     }
 
     /// Kube client backed by a mock service that records request URIs and
@@ -1327,8 +1358,11 @@ mod tests {
         assert!(!uris[1].contains("previous=true"), "second: {}", uris[1]);
         for uri in &uris {
             assert!(uri.contains("sinceSeconds=1800"), "bounded: {uri}");
-            assert!(uri.contains("tailLines=5000"), "capped: {uri}");
         }
+        // One per-source allowance across both fetches: previous gets the
+        // full cap, current gets what the two previous lines left over.
+        assert!(uris[0].contains("tailLines=5000"), "capped: {}", uris[0]);
+        assert!(uris[1].contains("tailLines=4998"), "remainder: {}", uris[1]);
 
         // Both bounded responses emit in order: previous lines, then current.
         let mut messages = Vec::new();
@@ -1336,6 +1370,47 @@ mod tests {
             messages.push(entry.msg);
         }
         assert_eq!(messages, ["line-a", "line-b", "line-a", "line-b"]);
+    }
+
+    #[tokio::test]
+    async fn previous_logs_consuming_the_cap_skip_the_current_fetch() {
+        let requests: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let api = recording_api(requests.clone(), "line-a\nline-b\n");
+        let normalizer = Normalizer::new();
+        let source = Source {
+            producer: "default".to_string(),
+            id: "default/web-123/web".to_string(),
+            display_name: "web-123/web".to_string(),
+            group: None,
+        };
+        let key = ("web-123".to_string(), "web".to_string());
+        let (tx, mut rx) = mpsc::channel(16);
+
+        let open = backfill_pod_container(
+            &api,
+            &key,
+            &source,
+            &tx,
+            &normalizer,
+            IngestConfig {
+                backfill_max_lines_per_source: 2,
+                ..IngestConfig::default()
+            },
+            true,
+        )
+        .await;
+        assert!(open);
+
+        // The two previous lines exhaust the per-source cap, so no current
+        // fetch is issued and exactly cap lines were emitted.
+        let uris = requests.lock().unwrap().clone();
+        assert_eq!(uris.len(), 1, "previous fetch only: {uris:?}");
+        assert!(uris[0].contains("previous=true"), "got: {}", uris[0]);
+        let mut emitted = 0;
+        while rx.try_recv().is_ok() {
+            emitted += 1;
+        }
+        assert_eq!(emitted, 2);
     }
 
     #[tokio::test]
