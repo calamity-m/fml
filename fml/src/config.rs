@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::FmlError;
 
+pub mod ingest;
 pub mod producer;
 pub mod profile;
 pub mod search;
@@ -13,6 +14,7 @@ pub mod store;
 pub mod themes;
 pub mod tui;
 
+pub use ingest::IngestConfig;
 pub use producer::{ProducerConfig, SourceBlockConfig};
 pub use profile::ProfileConfig;
 
@@ -62,6 +64,10 @@ pub struct Config {
     #[serde(default)]
     pub search: search::SearchConfig,
 
+    /// Startup backfill policy for real producers (file/docker/kubernetes).
+    #[serde(default)]
+    pub ingest: IngestConfig,
+
     /// Name of the profile to activate at startup. May be overridden by the
     /// `--profile` CLI flag. When `None`, no profile is applied.
     #[serde(default)]
@@ -85,6 +91,7 @@ impl Default for Config {
             themes: BTreeMap::new(),
             store: store::StoreConfig::default(),
             search: search::SearchConfig::default(),
+            ingest: IngestConfig::default(),
             profile: None,
             profiles: BTreeMap::new(),
         }
@@ -321,6 +328,53 @@ mod tests {
         let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
 
         assert_eq!(config.search.fuzzy_matcher, FuzzyMatcherKind::Frizbee);
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_config_dir_reads_ingest_backfill() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            [ingest]
+            backfill_window_secs = 600
+            backfill_max_lines_per_source = 100
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(config.ingest.backfill_window_secs, 600);
+        assert_eq!(config.ingest.backfill_max_lines_per_source, 100);
+    }
+
+    #[test]
+    #[serial]
+    fn fml_ingest_env_overrides_backfill_line_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+            [ingest]
+            backfill_max_lines_per_source = 100
+            "#,
+        )
+        .unwrap();
+
+        let orig = env::var("FML__INGEST__BACKFILL_MAX_LINES_PER_SOURCE").ok();
+        unsafe { env::set_var("FML__INGEST__BACKFILL_MAX_LINES_PER_SOURCE", "0") };
+
+        let config = Config::load_with_config_dir(dir.path().to_str().unwrap()).unwrap();
+
+        match orig {
+            Some(v) => unsafe { env::set_var("FML__INGEST__BACKFILL_MAX_LINES_PER_SOURCE", v) },
+            None => unsafe { env::remove_var("FML__INGEST__BACKFILL_MAX_LINES_PER_SOURCE") },
+        }
+
+        assert_eq!(config.ingest.backfill_max_lines_per_source, 0);
+        assert!(!config.ingest.backfill_enabled());
     }
 
     #[test]

@@ -44,6 +44,9 @@ impl App<CrosstermBackend<Stdout>> {
         config: crate::config::Config,
         resolved: Vec<ResolvedProducer>,
     ) -> Result<Self, FmlError> {
+        // Copied out before `config` moves into AppState: producers receive
+        // the narrow ingest settings rather than the whole config.
+        let ingest = config.ingest;
         let mut app = Self {
             state: AppState::new(config)?,
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
@@ -64,9 +67,9 @@ impl App<CrosstermBackend<Stdout>> {
                     app.register_producer(Box::new(FakeProducer::new(source)));
                 }
                 ProducerSpec::File(path) => {
-                    app.register_producer(Box::new(FileProducer::new(path)));
+                    app.register_producer(Box::new(FileProducer::new(path, ingest)));
                 }
-                ProducerSpec::Docker => match DockerProducer::new(block) {
+                ProducerSpec::Docker => match DockerProducer::new(block, ingest) {
                     Ok(producer) => app.register_producer(Box::new(producer)),
                     Err(err) => tracing::warn!("failed to construct docker producer: {err}"),
                 },
@@ -74,7 +77,7 @@ impl App<CrosstermBackend<Stdout>> {
                     match ns
                         .map(Ok)
                         .unwrap_or_else(KubernetesProducer::resolve_namespace)
-                        .map(|ns| KubernetesProducer::new(ns, block.clone()))
+                        .map(|ns| KubernetesProducer::new(ns, block.clone(), ingest))
                         .and_then(|r| r)
                     {
                         Ok(producer) => app.register_producer(Box::new(producer)),
