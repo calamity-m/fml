@@ -24,6 +24,7 @@ use tracing::{debug, warn};
 #[cfg(test)]
 use crate::producer::file::decode_line;
 use crate::{
+    config::IngestConfig,
     error::ProducerError,
     event::ProducerEvent,
     log::{Source, SourceId},
@@ -35,28 +36,34 @@ pub struct DockerProducer {
     normalizer: Normalizer,
     cancel: CancellationToken,
     source_block: Arc<SourceBlock>,
+    ingest: IngestConfig,
 }
 
 impl DockerProducer {
-    pub fn new(source_block: SourceBlock) -> Result<Self, ProducerError> {
+    pub fn new(source_block: SourceBlock, ingest: IngestConfig) -> Result<Self, ProducerError> {
         let docker = Docker::connect_with_local_defaults()?;
 
-        Ok(DockerProducer::new_seeded(docker, source_block))
+        Ok(DockerProducer::new_seeded(docker, source_block, ingest))
     }
 
     #[cfg(test)]
     fn new_with_socket_path(path: &str) -> Result<Self, ProducerError> {
         let docker = Docker::connect_with_socket(path, 120, API_DEFAULT_VERSION)?;
 
-        Ok(DockerProducer::new_seeded(docker, SourceBlock::none()))
+        Ok(DockerProducer::new_seeded(
+            docker,
+            SourceBlock::none(),
+            IngestConfig::default(),
+        ))
     }
 
-    pub fn new_seeded(docker: Docker, source_block: SourceBlock) -> Self {
+    pub fn new_seeded(docker: Docker, source_block: SourceBlock, ingest: IngestConfig) -> Self {
         DockerProducer {
             docker: Arc::new(docker),
             normalizer: Normalizer::new(),
             cancel: CancellationToken::new(),
             source_block: Arc::new(source_block),
+            ingest,
         }
     }
 }
@@ -67,10 +74,11 @@ impl LogProducer for DockerProducer {
         let normalizer = self.normalizer.clone();
         let cancel = self.cancel.clone();
         let source_block = self.source_block.clone();
+        let ingest = self.ingest;
 
         tokio::spawn(async move {
             if let Err(err) =
-                run_docker_producer(docker, normalizer, tx, cancel, source_block).await
+                run_docker_producer(docker, normalizer, tx, cancel, source_block, ingest).await
             {
                 warn!("docker producer exited with error: {err}");
             }
@@ -88,6 +96,7 @@ async fn run_docker_producer(
     tx: mpsc::Sender<ProducerEvent>,
     cancel: CancellationToken,
     source_block: Arc<SourceBlock>,
+    ingest: IngestConfig,
 ) -> Result<(), ProducerError> {
     let (event_tx, mut event_rx) = mpsc::channel(64);
     tokio::spawn(pump_docker_events(docker.clone(), event_tx, cancel.clone()));
@@ -105,6 +114,7 @@ async fn run_docker_producer(
             tx.clone(),
             &cancel,
             &source_block,
+            ingest,
         )
         .await;
     }
@@ -127,6 +137,7 @@ async fn run_docker_producer(
                     tx.clone(),
                     &cancel,
                     &source_block,
+                    ingest,
                 ).await;
             }
         }
@@ -197,6 +208,7 @@ fn events_options() -> bollard::query_parameters::EventsOptions {
     EventsOptionsBuilder::default().filters(&filters).build()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_docker_event(
     event: EventMessage,
     tracked: &mut HashMap<SourceId, CancellationToken>,
@@ -205,6 +217,7 @@ async fn handle_docker_event(
     tx: mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
     source_block: &SourceBlock,
+    ingest: IngestConfig,
 ) {
     let Some(action) = event.action.as_deref() else {
         return;
@@ -233,6 +246,7 @@ async fn handle_docker_event(
                 tx,
                 parent_cancel,
                 source_block,
+                ingest,
             )
             .await;
         }
@@ -246,6 +260,7 @@ async fn handle_docker_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn track_container(
     tracked: &mut HashMap<SourceId, CancellationToken>,
     source: Source,
@@ -254,6 +269,7 @@ async fn track_container(
     tx: mpsc::Sender<ProducerEvent>,
     parent_cancel: &CancellationToken,
     source_block: &SourceBlock,
+    ingest: IngestConfig,
 ) {
     if tracked.contains_key(&source.id) {
         return;
@@ -291,8 +307,42 @@ async fn track_container(
         tx,
         normalizer,
         child.clone(),
+        ingest,
     ));
     tracked.insert(source.id, child);
+}
+
+/// Build the log options for one container tail.
+///
+/// With backfill enabled this is a single `follow(true)` stream that opens
+/// with bounded history: the daemon selects the last `tail` lines, filters
+/// them to those at or after `since`, returns that history in stream order,
+/// then keeps streaming live output. One stream means there is no
+/// backfill-to-live handoff gap. Verified against the Docker Engine API
+/// (`GET /containers/{id}/logs`) semantics for bollard 0.20 / API 1.52:
+/// `tail` and `since` compose as select-then-filter and both apply before
+/// `follow` continues the stream.
+///
+/// With backfill disabled (`backfill_max_lines_per_source == 0`) this
+/// preserves the previous live-only behavior: `tail("0")` skips all existing
+/// output.
+fn tail_log_options(ingest: IngestConfig, now_secs: i64) -> bollard::query_parameters::LogsOptions {
+    let builder = LogsOptionsBuilder::default()
+        .follow(true)
+        .stdout(true)
+        .stderr(true);
+
+    if ingest.backfill_enabled() {
+        // bollard models `since` as i32 seconds; saturate rather than wrap
+        // for absurd windows.
+        let since = now_secs.saturating_sub(ingest.backfill_window_secs as i64);
+        builder
+            .since(since.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+            .tail(&ingest.backfill_max_lines_per_source.to_string())
+            .build()
+    } else {
+        builder.tail("0").build()
+    }
 }
 
 async fn tail_container(
@@ -302,17 +352,11 @@ async fn tail_container(
     tx: mpsc::Sender<ProducerEvent>,
     normalizer: Normalizer,
     cancel: CancellationToken,
+    ingest: IngestConfig,
 ) {
     let mut logs = docker.logs(
         &container_id,
-        Some(
-            LogsOptionsBuilder::default()
-                .follow(true)
-                .stdout(true)
-                .stderr(true)
-                .tail("0")
-                .build(),
-        ),
+        Some(tail_log_options(ingest, chrono::Utc::now().timestamp())),
     );
     let mut buffer = LineBuffer::default();
 
@@ -486,7 +530,8 @@ mod tests {
     async fn start_returns_promptly_when_docker_api_is_unreachable() {
         let docker = Docker::connect_with_http("127.0.0.1:9", 1, API_DEFAULT_VERSION)
             .expect("http docker handle");
-        let producer = DockerProducer::new_seeded(docker, SourceBlock::none());
+        let producer =
+            DockerProducer::new_seeded(docker, SourceBlock::none(), IngestConfig::default());
         let (tx, _rx) = mpsc::channel(8);
 
         let start = Instant::now();
@@ -541,6 +586,7 @@ mod tests {
             tx,
             &cancel,
             &block,
+            IngestConfig::default(),
         )
         .await;
 
@@ -582,11 +628,43 @@ mod tests {
             tx,
             &cancel,
             &block,
+            IngestConfig::default(),
         )
         .await;
 
         cancel.cancel();
         assert!(tracked.is_empty());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn tail_log_options_with_backfill_sets_since_and_tail_cap() {
+        let ingest = IngestConfig {
+            backfill_window_secs: 1800,
+            backfill_max_lines_per_source: 5000,
+        };
+
+        let options = tail_log_options(ingest, 1_000_000);
+
+        assert!(options.follow);
+        assert!(options.stdout);
+        assert!(options.stderr);
+        assert_eq!(options.since, 1_000_000 - 1800);
+        assert_eq!(options.tail, "5000");
+    }
+
+    #[test]
+    fn tail_log_options_disabled_backfill_keeps_live_only_tail_zero() {
+        let ingest = IngestConfig {
+            backfill_max_lines_per_source: 0,
+            ..IngestConfig::default()
+        };
+
+        let options = tail_log_options(ingest, 1_000_000);
+
+        assert!(options.follow);
+        assert_eq!(options.tail, "0");
+        // Default `since` of 0 means no server-side time filtering.
+        assert_eq!(options.since, 0);
     }
 }
