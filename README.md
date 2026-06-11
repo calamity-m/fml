@@ -88,18 +88,33 @@ cargo run -p fml -- \
 
 Supported kinds:
 
-- `demo` starts a synthetic demo source. Repeat it to create multiple demo sources.
-- `file:<path>` tails one file from EOF and follows common rotation patterns.
-- `docker` discovers currently running containers, tails stdout/stderr, and tracks container start/stop events. Requires access to the local Docker daemon.
+- `demo` starts a synthetic demo source. Repeat it to create multiple demo sources. Demo sources are live-only and never backfill.
+- `file:<path>` tails one file and follows common rotation patterns. With startup backfill enabled (the default), an existing file contributes its most recent complete lines before live following begins; raw files have no trustworthy per-line timestamps, so only the line cap (not the time window) bounds file backfill. A file that is missing at startup is read from the beginning when it is later created.
+- `docker` discovers currently running containers, tails stdout/stderr, and tracks container start/stop events. Requires access to the local Docker daemon. With startup backfill enabled, each running container's log stream opens with bounded history (`since` the configured window, capped at the configured line count) and then continues live in the same stream. Stopped containers are never browsed.
 
-  > **Note on Docker log delivery:** the Docker daemon delivers container logs in batches over its HTTP API, not as a continuous byte stream. On native Linux this batching is usually small enough to feel real-time. On WSL2 / Docker Desktop the additional VM boundary amplifies it noticeably — high-volume containers may appear to pause for 1–2 seconds and then deliver thousands of entries at once. This is a property of the Docker / bollard log stream and cannot be smoothed out in the producer.
+  > **Note on Docker log delivery:** the Docker daemon delivers container logs in batches over its HTTP API, not as a continuous byte stream. On native Linux this batching is usually small enough to feel real-time. On WSL2 / Docker Desktop the additional VM boundary amplifies it noticeably — high-volume containers may appear to pause for 1–2 seconds and then deliver thousands of entries at once. This is a property of the Docker / bollard log stream and cannot be smoothed out in the producer. It is distinct from intentional startup backfill, which is a one-time bounded history burst when a container is first tracked.
 
-- `kubernetes[:namespace]` watches running pod containers in one namespace and tails each container. Without `:namespace`, fml uses the active kubeconfig context namespace, falling back to `default`. Requires a working local kubeconfig; in-cluster service-account config and explicit context selection are not currently supported.
+- `kubernetes[:namespace]` watches running pod containers in one namespace and tails each container. Without `:namespace`, fml uses the active kubeconfig context namespace, falling back to `default`. Requires a working local kubeconfig; in-cluster service-account config and explicit context selection are not currently supported. With startup backfill enabled, each newly tracked pod container first emits bounded logs from the terminated *previous* instance of that same pod/container (when one exists), then bounded current-container startup history, then live output. Previous logs are startup-only history attached to the same source; they are not rediscovered after startup, and lines logged in the brief window between the history fetch and the live stream opening can be missed.
 
 If a producer cannot be constructed, fml logs a warning and continues with the other producers.
 Repeated identical real producers are allowed but may duplicate log entries.
 
 For local showcase setups, see `examples/file` and `examples/docker`.
+
+### Startup backfill
+
+When a `file`, `docker`, or `kubernetes` producer first tracks a live source, it emits bounded existing logs for that source before following live output. The policy is configured under `[ingest]`:
+
+```toml
+[ingest]
+backfill_window_secs = 1800           # provider-side time window (docker/kubernetes)
+backfill_max_lines_per_source = 5000  # hard cap per source; 0 disables backfill
+```
+
+- `backfill_window_secs` (default `1800`, 30 minutes) applies where the backend supports server-side time filtering: Docker `since` and Kubernetes `since_seconds`. It is not applied to raw files.
+- `backfill_max_lines_per_source` (default `5000`) is a hard safety cap per source. Setting it to `0` disables startup backfill entirely; producers then start live-only, exactly as before.
+
+Backfill happens once, when a source is first tracked during the process lifetime — it is not a reconnect catch-up mechanism. Per-source ordering is oldest-to-newest (for Kubernetes: previous-container logs, then current startup logs, then live); cross-source ordering is arrival order, not timestamp order — there is no global sort. Blocked sources are skipped before any backfill work. A failed history request is logged and live following still starts. When many sources each hit the cap, the ring buffer may evict older backfilled entries while startup is still in progress; that is normal retention behavior, not an ingest failure.
 
 ## Profiles
 
