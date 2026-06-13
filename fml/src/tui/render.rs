@@ -558,7 +558,8 @@ const HELP_TEXT: &str = "\
   :filter api,db  pane source filter · :filter
   :filter =Name   exact match · Tab completes
   :sources        fuzzy source picker
-  :vs :sp :q :qa :only :tabnew [name] :tabclose
+  :vs vsplit · :sp :hs hsplit (stacked)
+  :q :qa :only :tabnew [name] :tabclose
   :tail go live · :refresh re-rank frozen search
   :clear :help                Ctrl-c quits";
 
