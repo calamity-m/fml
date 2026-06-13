@@ -693,8 +693,8 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) {
 
 /// Command names offered by first-token completion.
 const COMMAND_NAMES: &[&str] = &[
-    "filter", "sources", "vsplit", "split", "tabnew", "tabclose", "tabnext", "tabprev", "tail",
-    "refresh", "clear", "only", "help", "quit", "qa",
+    "filter", "sources", "vsplit", "split", "hsplit", "tabnew", "tabclose", "tabnext", "tabprev",
+    "tail", "refresh", "clear", "only", "help", "quit", "qa",
 ];
 
 /// Vim-style `:` completion. The first Tab gathers candidates for the
@@ -781,7 +781,7 @@ fn execute_command(state: &mut AppState, line: &str) {
         "q" | "quit" => close_focused_pane(state),
         "qa" | "qall" | "quitall" => quit(state),
         "vs" | "vsplit" => split_pane(state, Direction::Horizontal),
-        "sp" | "split" => split_pane(state, Direction::Vertical),
+        "sp" | "split" | "hs" | "hsplit" => split_pane(state, Direction::Vertical),
         "only" | "on" => {
             let closed = state.workspace.only_focused_pane();
             for id in closed {
@@ -1295,6 +1295,26 @@ mod tests {
         let state = handle_tui_event(input(KeyCode::Char('x')), state);
         let state = handle_tui_event(input(KeyCode::Enter), state);
         assert_eq!(state.workspace.notice.as_deref(), Some("not a command: x"));
+    }
+
+    #[test]
+    fn hs_command_stacks_panes() {
+        use crate::tui::workspace::Node;
+
+        let mut state = state_with_entries(1);
+        state = handle_tui_event(input(KeyCode::Char(':')), state);
+        for c in "hs".chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        match &state.workspace.tab().tree {
+            Node::Split { dir, children } => {
+                assert_eq!(*dir, Direction::Vertical);
+                assert_eq!(children.len(), 2);
+            }
+            node => panic!("expected stacked split, got {node:?}"),
+        }
     }
 
     #[test]
