@@ -1,206 +1,25 @@
 # fml
 
-hello
+This is really a test project for myself to re-envision how i handle log triage and issue resolution. Right now I don't have a LGTM stack that's dependable as I imagine a bunch of others don't either. Additionally, I seem to continually get people patting me on the shoulder with minimal info, in which I immediately find the issue by correlating 2-3 different logs.
 
-```
-┌─────────────────────────────────────┬──────────────────────┐
-│ Log Pane                            │ Info                 │
-│                                     │──────────────────────│
-│   [src-a] request timeout host=x    │ timestamp  ...       │
-│   [src-b] pod restarted reason=oom  │ level      error     │
-│ > [src-a] connection refused host=x │ message    conn...   │
-│   [src-c] dial tcp: no such host    │ host       x         │
-│   [src-a] retrying after backoff    │ source     src-a     │
-│                                     │──────────────────────│
-│                                     │ Preview              │
-│                                     │──────────────────────│
-│                                     │ [src-a] req started  │
-│                                     │ [src-a] req timeout  │
-│                                     │>[src-a] conn refused │
-│                                     │ [src-a] retrying...  │
-├─────────────────────────────────────┴──────────────────────┤
-│ Query  conn refused                                        │
-├────────────────────────────────────────────────────────────┤
-│ SEARCH  src-a,src-b,src-c  3/120 matches                   │
-└────────────────────────────────────────────────────────────┘
-```
+fml should help, somehow, in this regard. If it doesn't, idk, use some other tool. LGTM stak or splunk is the best for this but also, I like staying in my terminal and am tired of constantly having 10 tabs open for 10 different queries, etc.
 
-## Log Pane Terms
+lnav is also good but my workflow doesn't really fit it. I basically play the human searching through the haystack to find the needle. It probably is inefficient but i don't think everyone can stand atop their SRE team and say "giveth to me thy errors, illuminate the way upon the world which you control". I dunno if this makes sense, but I do a DFS mixed with temporary BFS, idk fuck its been so long since i did any algorithms:
 
-- Head -> Oldest entry of the log store
-- Tail -> Most recent entry of the log store
-- Rendered Window -> Visible log lines in the log pane
-- Rendered Head -> Top of the visible log lines
-- Rendered Tail -> Bottom of the vissible log lines
-- Retained Window -> Log lines the log pane has access to, which may extend past a Rendered Window, but not encompass a full ring buffer
+1. Find an interesting thread like an error log, or something related to a search, muh bfs.
+2. go deep into thread to some n depth that feels good
+3. discover related events to that depth, either walk down more or walk up and go back down
 
-## Line Wrap
+no tool seems to help me do this naturally currently other than opening 5 browser tabs or 5 terminals and having a complete mess of a workspace.
 
-By default the log pane renders each entry on a single line and clips text past the right edge. Press `w` to toggle wrapped mode, in which long `msg` text wraps onto continuation lines indented under the `msg` column. Setting `[tui] line_wrap = true` (or `FML__TUI__LINE_WRAP=true`) makes wrapped mode the startup default. The custom binding can be remapped via `[tui.keybindings] toggle_line_wrap = ["..."]`.
+## Theory
 
-## Keybindings
+I feel like having a nvim/helix editor style is the most intuitive to me, maybe that's because I'm ultimately opening tons of log streams into editors, but it lets me split and highlight particular sections. I don't need to copy an entire log, only the relevant portion i care about.
 
-Configurable actions are remapped under `[tui.keybindings]`. Each action takes a
-list of key specs; the first spec is the primary label shown in the help popup
-(`?`) and status bar, and an empty list disables the action.
+fml can extend on this by allowing for panes to be split with, or tabs to be created with, 'filter' logic. i.e. some correlation, like same 'request-id', same source, time gated, etc.
 
-```toml
-[tui.keybindings]
-toggle_help            = ["?"]
-toggle_source_selector = ["ctrl+s"]
-toggle_preview_mode    = ["ctrl+p"]
-show_info              = ["i"]
-scroll_head            = ["g", "home"]
-scroll_tail            = ["G", "end"]
-toggle_select_mode     = ["f2"]
-yank_selected_entry    = ["y"]
-toggle_line_wrap       = ["w"]
-```
+or just the same log stream, to allow me to search for another needle.
 
-A key spec is a lowercase string like `"?"`, `"enter"`, `"ctrl+s"`, `"pgdn"`, or
-`"f2"`. Optional `ctrl`/`alt`/`shift` modifier prefixes are joined with `+`;
-printable characters are written directly and keep their case (`"G"` is shift-g).
+## AI Disclaimer
 
-`ctrl+c` (quit), `tab` (cycle focus), `esc` (close popup), and the `j`/`k`/arrow
-log-navigation keys are reserved fallbacks and are not remappable. An invalid key
-spec aborts startup with a keybinding error.
-
-## Log Producers
-
-Attach log sources with the repeatable `--producer KIND[:ARG]` flag:
-
-```sh
-cargo run -p fml -- --producer demo
-cargo run -p fml -- --producer file:/var/log/app.log
-cargo run -p fml -- --producer docker
-cargo run -p fml -- --producer kubernetes
-cargo run -p fml -- --producer kubernetes:my-namespace
-```
-
-Multiple producers can run together:
-
-```sh
-cargo run -p fml -- \
-  --producer file:/var/log/app.log \
-  --producer docker \
-  --producer kubernetes:my-namespace
-```
-
-Supported kinds:
-
-- `demo` starts a synthetic demo source. Repeat it to create multiple demo sources. Demo sources are live-only and never backfill.
-- `file:<path>` tails one file and follows common rotation patterns. With startup backfill enabled (the default), an existing file contributes its most recent complete lines before live following begins; raw files have no trustworthy per-line timestamps, so only the line cap (not the time window) bounds file backfill. A file that is missing at startup is read from the beginning when it is later created.
-- `docker` discovers currently running containers, tails stdout/stderr, and tracks container start/stop events. Requires access to the local Docker daemon. With startup backfill enabled, each running container's log stream opens with bounded history (`since` the configured window, capped at the configured line count) and then continues live in the same stream. Stopped containers are never browsed.
-
-  > **Note on Docker log delivery:** the Docker daemon delivers container logs in batches over its HTTP API, not as a continuous byte stream. On native Linux this batching is usually small enough to feel real-time. On WSL2 / Docker Desktop the additional VM boundary amplifies it noticeably — high-volume containers may appear to pause for 1–2 seconds and then deliver thousands of entries at once. This is a property of the Docker / bollard log stream and cannot be smoothed out in the producer. It is distinct from intentional startup backfill, which is a one-time bounded history burst when a container is first tracked.
-
-- `kubernetes[:namespace]` watches running pod containers in one namespace and tails each container. Without `:namespace`, fml uses the active kubeconfig context namespace, falling back to `default`. Requires a working local kubeconfig; in-cluster service-account config and explicit context selection are not currently supported. With startup backfill enabled, each newly tracked pod container first emits bounded logs from the terminated *previous* instance of that same pod/container (when one exists), then bounded current-container startup history, then live output. Previous logs are startup-only history attached to the same source; they are not rediscovered after startup, and lines logged in the brief window between the history fetch and the live stream opening can be missed.
-
-If a producer cannot be constructed, fml logs a warning and continues with the other producers.
-Repeated identical real producers are allowed but may duplicate log entries.
-
-For local showcase setups, see `examples/file` and `examples/docker`.
-
-### Startup backfill
-
-When a `file`, `docker`, or `kubernetes` producer first tracks a live source, it emits bounded existing logs for that source before following live output. The policy is configured under `[ingest]`:
-
-```toml
-[ingest]
-backfill_window_secs = 1800           # provider-side time window (docker/kubernetes)
-backfill_max_lines_per_source = 5000  # hard cap per source; 0 disables backfill
-```
-
-- `backfill_window_secs` (default `1800`, 30 minutes) applies where the backend supports server-side time filtering: Docker `since` and Kubernetes `since_seconds`. It is not applied to raw files.
-- `backfill_max_lines_per_source` (default `5000`) is a hard safety cap per source. For Kubernetes the previous-instance and current-instance fetches share one allowance, so the cap holds across the pair. Setting it to `0` disables startup backfill entirely; producers then start live-only, exactly as before.
-
-Backfill is a startup mechanism, not reconnect catch-up — and re-tracked sources do not replay history fml already delivered. A crash-looping Kubernetes container is re-tracked on every restart, but only its first track fetches `previous` logs (later restarts were already tailed live; the new instance's startup history is still fetched). Likewise a restarted Docker container resumes from when fml last saw it instead of re-fetching the full window. Per-source ordering is oldest-to-newest (for Kubernetes: previous-container logs, then current startup logs, then live); cross-source ordering is arrival order, not timestamp order — there is no global sort. Blocked sources are skipped before any backfill work. A failed history request is logged and live following still starts. When many sources each hit the cap, the ring buffer may evict older backfilled entries while startup is still in progress; that is normal retention behavior, not an ingest failure.
-
-## Profiles
-
-A profile is a named bundle of producers in `config.toml`. Activate one at startup with `--profile <name>`, or set `profile = "<name>"` in config:
-
-```toml
-profile = "dev"
-
-[[profiles.dev.producers]]
-type = "demo"
-
-[[profiles.dev.producers]]
-type = "kubernetes"
-namespace = "team-a"
-blocked = "^istio"
-
-[[profiles.dev.producers]]
-type = "docker"
-skip_istio = true
-```
-
-Profile keys:
-
-- `type` is one of `demo`, `file`, `docker`, `kubernetes`.
-- `file` requires `file = "<path>"`.
-- `kubernetes` accepts an optional `namespace`. Multiple kubernetes entries with different namespaces are allowed.
-- `demo` is repeatable.
-- `docker` may appear at most once per profile (a second is a config error).
-- `blocked = "<regex>"` and `skip_istio = true` are accepted on `docker` and `kubernetes` entries.
-
-If `--profile` (or `config.profile`) names a profile that doesn't exist, fml aborts with the available profile names.
-
-### `--producer` precedence over a profile
-
-When combined with `--profile`, each `--producer` matches profile entries by `(kind, disambiguator)`:
-
-| CLI                         | Matches                                                  | Behavior                                |
-| --------------------------- | -------------------------------------------------------- | --------------------------------------- |
-| `--producer demo`           | nothing (demo is repeatable)                             | append a new demo                       |
-| `--producer file:<path>`    | profile `file` entry with the same path string           | replace; otherwise append               |
-| `--producer docker`         | the single profile `docker` entry                        | replace; otherwise append               |
-| `--producer kubernetes:<n>` | profile `kubernetes` entry whose namespace equals `<n>`  | replace; otherwise append               |
-| `--producer kubernetes`     | the unique profile `kubernetes` entry, if exactly one    | replace; ambiguous (>1) is a hard error |
-
-A `--producer` override is a brand-new producer config block — it drops the matched profile entry's `blocked` / `skip_istio`. For durable settings, prefer config + `--profile`. Use `--producer` for ad-hoc overrides.
-
-## Source blocking
-
-Per-producer source filtering. Configured under each docker or kubernetes producer entry:
-
-```toml
-[[profiles.dev.producers]]
-type = "kubernetes"
-namespace = "team-a"
-blocked = "^istio"     # regex matched against source.id OR source.display_name
-skip_istio = true      # shortcut: substring-matches "istio-proxy"
-```
-
-Match semantics:
-
-- `blocked` is a regex tested against both `source.id` and `source.display_name`. A match against either field blocks the source.
-- `skip_istio` (or the global `--skip-istio`) adds the literal `istio-proxy` substring to the matcher. Substring match handles real ids like `istio-proxy-abc123` and pod-prefixed forms like `productpage/istio-proxy`.
-- Both compose; neither overrides the other.
-
-`--skip-istio` on the CLI ORs `skip_istio = true` into every kubernetes and docker producer in effect. It is additive, never subtractive: a profile entry already setting `blocked = "^istio"` plus `--skip-istio` results in both the regex and the literal substring being active. `--skip-istio` is a no-op for `file` and `demo` producers.
-
-Blocked sources emit no events at all — no `SourceFound`, no `SourceLost`, no log entries. Block configuration is **static for the process lifetime**: there is no runtime mutation API and no UI affordance to unblock. To change blocking, restart with a different profile or CLI flags.
-
-If `blocked` is an invalid regex, that one producer is skipped with a warning and the rest of the producers still start.
-
-## Source Selector
-
-Press `ctrl+s` to open or close the source selector popup. The binding is remappable via `[tui.keybindings] toggle_source_selector = ["..."]`. Some terminals reserve `ctrl+s` for XOFF flow control, so either remap it here, disable terminal flow control, or remap it at the terminal level if the popup does not open.
-
-Sources are organized as `Producer -> Group -> Display Name`. The `producer` field is the top-level row users recognize, such as `file`, `docker`, or a Kubernetes namespace. The optional `group` field is the second-level bucket, such as a Docker compose project, deployment group, path category, or `(ungrouped)` when no group exists. Display names are labels only; source IDs remain the identity used for filtering.
-
-Use `up`/`down` or `k`/`j` to move through rows. Press `space` to toggle the highlighted source, group, or producer. Press `a` to enable all sources in the open selector snapshot, `n` to disable them, and `esc` or `enter` to close. Tail, history, and fuzzy searches all use the enabled source set. Disabling every source is allowed and shows a `No sources selected` empty state in the log pane.
-
-## Fuzzy Search
-
-Press `/` to focus the query box and start typing a search term. Fuzzy search updates as you type. Press `Enter` to return focus to the log pane and resume navigation without clearing the active query. Backspace and delete edit the query while the query box is focused.
-
-Typing in the query box dispatches a debounced fuzzy search over the retained log store. The default matcher is `nucleo`; set `search.fuzzy_matcher = "frizbee"` to use the previous frizbee matcher. `search.fuzzy_max_typos` is only used by frizbee, and can be set to `0` for exact fuzzy-character matching or left unset for the library default.
-
-Nucleo queries use nucleo's parsed pattern syntax. Plain words are fuzzy positive terms, a leading apostrophe requires a contiguous substring match such as `'timeout`, and a leading `!` excludes entries matching that term, such as `error !debug`. Negative-only queries return retained entries that do not match the excluded term, newest first.
-
-Fuzzy searches scan a snapshot of the current retained bounds and emit partial ranked results while that snapshot is incomplete. If new logs arrive during a long scan, they do not appear in the in-flight snapshot; after the snapshot emits `complete = true`, the worker notices the changed retained bounds on the next tick and performs a fresh scan. Source filtering is applied when each scan snapshot is built, so partial progress totals, final results, and later re-scans all use the enabled source set.
-
-## TODOs
+This originally started as a much more human-organic project, but i'm slow and losing steam. A lot of AI is now being used to develop this project, though I'm generally keeping control and still employ oversight. You've been warned though, if you hate AI-developed projects it's best to leave now.
