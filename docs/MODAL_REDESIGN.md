@@ -79,9 +79,11 @@ AppState
 
 **Mode is global; follow is per-pane.** "Tail mode" in the UI is simply
 "focused pane has `follow = true` and mode is Normal" — shown as `TAIL` in
-the status line. Any cursor motion breaks follow; `F` (or `:tail`) restores
-it. This means a split can sit in tail mode while you investigate in another
-— which is the point of splits.
+the status line. Any cursor motion that actually moves the cursor breaks
+follow; `F` (or `:tail`) restores it. This means a split can sit in tail mode
+while you investigate in another — which is the point of splits. The same
+follow flag is the live/frozen boundary for search (below): absence of the
+`TAIL` badge *is* the frozen indicator, there is no separate marker.
 
 **Cursor is seq-anchored.** The cursor is a store sequence id, not a row
 index. Result application clamps it to the nearest retained entry, so ring
@@ -92,12 +94,23 @@ entries (Tail or History query). Motion near the window edge redispatches a
 `History` query centered on the cursor; workers re-emit on their tick so the
 window stays fresh as the ring evicts. `gg`/`G` jump to the retained bounds.
 
-**Search is per-pane grep + jump.** `/` live-dispatches `Query::Fuzzy` to
-the focused pane's engine (filtered by its sources). The pane shows the
-match list (seq-ordered, highlighted). `Enter` confirms and records hit
-seqs; `Enter` on a hit re-enters stream view centered there; `Esc` abandons
-and restores the stream. `n`/`N` jump the stream cursor between recorded
-hits.
+**Search is per-pane grep + jump, live or frozen.** `/` dispatches
+`Query::Fuzzy` to the focused pane's engine (filtered by its sources),
+inheriting the pane's follow state. From `TAIL` the search is **live**: an
+unbounded query that re-ranks every tick with the cursor pinned to the newest
+match. From a scrolled (non-following) pane it is **frozen**: a query bounded
+at the dispatch-time high seq (`until_seq`) that scans all still-retained
+history once, completes, and then stops — entries newer than the bound are
+never scored. The pane shows the match list (seq-ordered, highlighted).
+`Enter` confirms and records hit seqs while staying in the results view (a
+confirmed live search keeps extending its hit list as new matches arrive);
+`Esc` abandons, returning to the tailing stream when live or the anchored
+stream when frozen. Scrolling up through live results (or the first `n`/`N`)
+freezes the search in place — the high bound is captured, the displayed list
+is held, and the bounded re-rank replaces it on completion without a visible
+rebuild. `F`/`:tail` goes live again on the active search; `:refresh`
+re-snapshots a frozen search at the current high seq (one re-rank, then stable
+again) without leaving normal mode. `n`/`N` walk the recorded hit list.
 
 ### Chrome
 
@@ -127,9 +140,9 @@ Render tick ──▶ recursive split layout → per-pane draw → status/prompt
 | NORMAL | `j` `k` (count ok), `Ctrl-d`/`u`, `Ctrl-f`/`b` | move cursor / half / full page |
 | NORMAL | `h` `l` `0` `$` `w` `b` | column motions within the row |
 | NORMAL | `gg` / `G` | oldest / newest retained entry |
-| NORMAL | `F` | re-enter follow (tail) |
-| NORMAL | `/` | fuzzy search prompt |
-| NORMAL | `n` / `N` | next / previous confirmed hit |
+| NORMAL | `F` | re-enter follow: go live on a search, else tail the stream |
+| NORMAL | `/` | fuzzy search prompt (live from TAIL, frozen otherwise) |
+| NORMAL | `n` / `N` | next / previous confirmed hit (first jump from live results freezes) |
 | NORMAL | `v` / `V` | charwise / linewise visual selection |
 | NORMAL | `y` | yank cursor entry as JSON (OSC52) |
 | NORMAL | `Enter` | results view: jump to hit in stream; stream: toggle detail overlay |
@@ -140,8 +153,8 @@ Render tick ──▶ recursive split layout → per-pane draw → status/prompt
 | NORMAL | `?` | help overlay |
 | NORMAL | `Esc` | clear pending / hits / results view |
 | VISUAL | motions, `y`, `v`/`V`, `Esc` | extend, yank selection, switch kind / leave |
-| SEARCH | text, `Enter`, `Esc` | live fuzzy; confirm; abandon |
-| COMMAND | `:q :qa :sp :vs :only :tabnew :tabclose :tabn :tabp :filter :tail :clear :help` | see below |
+| SEARCH | text, `Enter`, `Esc` | live/frozen fuzzy; confirm (stays in results); abandon |
+| COMMAND | `:q :qa :sp :vs :only :tabnew :tabclose :tabn :tabp :filter :tail :refresh :clear :help` | see below |
 | any | `Ctrl-c` | quit |
 
 `:filter pat[,pat]` sets the pane's source patterns (substring match against
@@ -151,9 +164,13 @@ exactly; bare `:filter` clears. Source discovery is built into the cmdline:
 producers (cycling vim-style), and `:sources` (alias `:ls`) opens a fuzzy
 picker — type to narrow, `Tab` toggles, `Ctrl-a` toggles all narrowed rows,
 `Enter` writes the focused pane's filter as exact `=name` patterns (with
-nothing toggled it takes the highlighted row). `:clear` drops search
-results/hits back to plain stream. `:q` closes the focused pane; closing the
-last pane closes the tab; closing the last tab quits.
+nothing toggled it takes the highlighted row). `:tail` re-enters follow —
+going live on an active search or tailing the stream. `:refresh` re-snapshots
+a frozen fuzzy search at the current high seq (one re-rank, then stable),
+staying in normal mode; it shows a notice when the pane is already live or has
+no active search. `:clear` drops search results/hits back to plain stream.
+`:q` closes the focused pane; closing the last pane closes the tab; closing
+the last tab quits.
 
 ## Deliberately deferred
 

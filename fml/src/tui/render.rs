@@ -539,9 +539,9 @@ const HELP_TEXT: &str = "\
   h l 0 $ w b    move within the line
   Ctrl-d Ctrl-u  half page · Ctrl-f Ctrl-b page
   gg G           oldest / newest entry
-  F              follow tail again
-  /              fuzzy search this pane
-  n N            next / previous hit
+  F              follow tail · go live on a search
+  /              fuzzy search (TAIL = live, else frozen)
+  n N            next / previous hit (first jump freezes)
   v V            visual chars / lines · y yanks
   y              yank entry as JSON
   Enter          results: open in context
@@ -559,7 +559,8 @@ const HELP_TEXT: &str = "\
   :filter =Name   exact match · Tab completes
   :sources        fuzzy source picker
   :vs :sp :q :qa :only :tabnew [name] :tabclose
-  :tail :clear :help          Ctrl-c quits";
+  :tail go live · :refresh re-rank frozen search
+  :clear :help                Ctrl-c quits";
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect, theme: &ThemeConfig) {
     let width = 50.min(area.width);

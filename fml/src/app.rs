@@ -166,9 +166,17 @@ impl<B: Backend> App<B> {
                     self.state = new_state;
                 },
                 Some(event) = self.state.event_bus.search_event_rx.recv() => {
-                    search_count += 1;
-                    let new_state = search::handle_search_event(event, self.state);
-                    self.state = new_state;
+                    // Drain everything already queued and coalesce superseded
+                    // same-target searches so rapid frozen typing never spawns
+                    // a scan per intermediate keystroke.
+                    let mut batch = vec![event];
+                    while let Ok(queued) = self.state.event_bus.search_event_rx.try_recv() {
+                        batch.push(queued);
+                    }
+                    for event in search::coalesce_search_events(batch) {
+                        search_count += 1;
+                        self.state = search::handle_search_event(event, self.state);
+                    }
                 },
                 Some(event) = self.state.event_bus.producer_event_rx.recv() => {
                     producer_count += 1;

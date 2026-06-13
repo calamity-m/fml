@@ -137,6 +137,41 @@ pub(crate) async fn emit_error(message: String, tx: &mpsc::Sender<SearchEvent>) 
     }
 }
 
+/// Drops superseded same-target search requests from a batch of pending
+/// search events.
+///
+/// When several `Search` (or a `Search` then a `Cancel`) for the same target
+/// arrive back-to-back — rapid typing in a frozen pane spawns one bounded
+/// scan per keystroke — every earlier `Search` is redundant: latest-wins
+/// would abort its worker the moment the next one is processed, but only
+/// after that worker has already done a full eager `fetch_range` over
+/// retained history. Removing the superseded `Search` before it reaches
+/// [`handle_search_event`] means no scan is ever spawned for an intermediate
+/// term. Relative order of the surviving events is preserved, and non-`Search`
+/// events (results, errors) always survive.
+pub(crate) fn coalesce_search_events(events: Vec<SearchEvent>) -> Vec<SearchEvent> {
+    let superseded = |target: SearchTarget, rest: &[SearchEvent]| {
+        rest.iter().any(|event| match event {
+            SearchEvent::Search { target: t, .. } | SearchEvent::Cancel { target: t } => {
+                *t == target
+            }
+            _ => false,
+        })
+    };
+    let mut keep = Vec::with_capacity(events.len());
+    for (idx, event) in events.iter().enumerate() {
+        keep.push(match event {
+            SearchEvent::Search { target, .. } => !superseded(*target, &events[idx + 1..]),
+            _ => true,
+        });
+    }
+    events
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(event, keep)| keep.then_some(event))
+        .collect()
+}
+
 /// Applies a single [`SearchEvent`] to the application state.
 ///
 /// This is the search subsystem's main reducer entry point. It is intended to:
@@ -176,7 +211,9 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 Query::History { .. } | Query::Surrounding { .. } | Query::FieldMatched { .. } => {
                     Duration::from_millis(state.config.search.history_poll_interval_ms)
                 }
-                Query::Fuzzy(_) => Duration::from_millis(state.config.search.fuzzy_tick_rate_ms),
+                Query::Fuzzy { .. } => {
+                    Duration::from_millis(state.config.search.fuzzy_tick_rate_ms)
+                }
             };
             let ctx = SearchContext {
                 target,
@@ -208,7 +245,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     *buffer,
                     predicates.clone(),
                 ),
-                Query::Fuzzy(_) => fuzzy::start_fuzzy_search(
+                Query::Fuzzy { .. } => fuzzy::start_fuzzy_search(
                     ctx,
                     fuzzy::FuzzySearchOptions {
                         result_limit: state.config.search.fuzzy_result_limit,
@@ -281,6 +318,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 matches_by_seq,
                 hit_seqs,
                 progress,
+                complete,
                 retained_bounds,
             );
             state
@@ -356,6 +394,73 @@ mod tests {
         }
     }
 
+    fn fuzzy(term: &str, until_seq: Option<u64>) -> Query {
+        Query::Fuzzy {
+            term: term.to_string(),
+            until_seq,
+        }
+    }
+
+    #[test]
+    fn coalesce_keeps_only_latest_search_per_target() {
+        let a = PaneId(1);
+        let b = PaneId(2);
+        let events = vec![
+            SearchEvent::Search {
+                target: a,
+                query: fuzzy("e", Some(10)),
+                sources: vec![],
+            },
+            SearchEvent::Search {
+                target: a,
+                query: fuzzy("er", Some(10)),
+                sources: vec![],
+            },
+            SearchEvent::Search {
+                target: b,
+                query: Query::Tail,
+                sources: vec![],
+            },
+            SearchEvent::Search {
+                target: a,
+                query: fuzzy("err", Some(10)),
+                sources: vec![],
+            },
+        ];
+
+        let surviving: Vec<(PaneId, Query)> = coalesce_search_events(events)
+            .into_iter()
+            .map(|event| match event {
+                SearchEvent::Search { target, query, .. } => (target, query),
+                other => panic!("unexpected surviving event: {other:?}"),
+            })
+            .collect();
+
+        // Intermediate "e"/"er" scans for pane A never spawn; order otherwise
+        // preserved (B's tail before A's final term).
+        assert_eq!(
+            surviving,
+            vec![(b, Query::Tail), (a, fuzzy("err", Some(10)))]
+        );
+    }
+
+    #[test]
+    fn coalesce_cancel_supersedes_earlier_search() {
+        let a = PaneId(1);
+        let events = vec![
+            SearchEvent::Search {
+                target: a,
+                query: fuzzy("err", Some(10)),
+                sources: vec![],
+            },
+            SearchEvent::Cancel { target: a },
+        ];
+        assert!(matches!(
+            coalesce_search_events(events).as_slice(),
+            [SearchEvent::Cancel { target }] if *target == a
+        ));
+    }
+
     #[test]
     fn tail_result_routes_to_pane_and_pins_cursor() {
         let mut state = state_with_entries(3);
@@ -402,7 +507,10 @@ mod tests {
         let mut state = state_with_entries(2);
         let pane_id = focused_pane_id(&state);
         state.search.client_mut(pane_id).latest_request_id = 1;
-        let query = Query::Fuzzy("entry".to_string());
+        let query = Query::Fuzzy {
+            term: "entry".to_string(),
+            until_seq: None,
+        };
         state.workspace.focused_pane_mut().active_query = Some(query.clone());
 
         let state = handle_search_event(

@@ -180,7 +180,15 @@ fn split_state(state: &mut AppState) -> (&mut Workspace, SearchCtx<'_>) {
 fn dispatch_pane_current(pane: &mut Pane, ctx: &SearchCtx) {
     match &pane.view {
         View::Results { term, .. } if !term.is_empty() => {
-            pane.dispatch(Query::Fuzzy(term.clone()), ctx)
+            // Re-rank live while following, frozen at the current high otherwise.
+            let until_seq = (!pane.follow).then_some(ctx.bounds.1);
+            pane.dispatch(
+                Query::Fuzzy {
+                    term: term.clone(),
+                    until_seq,
+                },
+                ctx,
+            )
         }
         _ => pane.dispatch_stream(ctx),
     }
@@ -686,7 +694,7 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) {
 /// Command names offered by first-token completion.
 const COMMAND_NAMES: &[&str] = &[
     "filter", "sources", "vsplit", "split", "tabnew", "tabclose", "tabnext", "tabprev", "tail",
-    "clear", "only", "help", "quit", "qa",
+    "refresh", "clear", "only", "help", "quit", "qa",
 ];
 
 /// Vim-style `:` completion. The first Tab gathers candidates for the
@@ -814,6 +822,12 @@ fn execute_command(state: &mut AppState, line: &str) {
         "tail" => {
             let (ws, ctx) = split_state(state);
             ws.focused_pane_mut().enter_follow(&ctx);
+        }
+        "refresh" => {
+            let (ws, ctx) = split_state(state);
+            if !ws.focused_pane_mut().refresh_search(&ctx) {
+                ws.notice = Some("nothing to refresh".to_string());
+            }
         }
         "clear" | "noh" => {
             let (ws, ctx) = split_state(state);
@@ -961,7 +975,15 @@ mod tests {
         let bounds = state.store.bounds();
         let pane = state.workspace.focused_pane_mut();
         pane.active_query = Some(Query::Tail);
-        pane.apply_result(&Query::Tail, entries, HashMap::new(), None, None, bounds);
+        pane.apply_result(
+            &Query::Tail,
+            entries,
+            HashMap::new(),
+            None,
+            None,
+            true,
+            bounds,
+        );
     }
 
     fn drain_search_events(state: &mut AppState) -> Vec<SearchEvent> {
@@ -1042,6 +1064,21 @@ mod tests {
     }
 
     #[test]
+    fn refresh_command_notices_when_following() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+        assert!(state.workspace.focused_pane().follow);
+
+        execute_command(&mut state, "refresh");
+
+        assert_eq!(
+            state.workspace.notice.as_deref(),
+            Some("nothing to refresh"),
+            "refresh on a live pane is a no-op notice"
+        );
+    }
+
+    #[test]
     fn capital_f_reenters_tail() {
         let mut state = state_with_entries(5);
         seed_tail(&mut state, &[1, 2, 3, 4, 5]);
@@ -1077,7 +1114,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 SearchEvent::Search {
-                    query: Query::Fuzzy(term),
+                    query: Query::Fuzzy { term, .. },
                     ..
                 } => Some(term.clone()),
                 _ => None,
@@ -1094,13 +1131,16 @@ mod tests {
         // Type a search and inject a fuzzy result as the engine would.
         let mut state = handle_tui_event(input(KeyCode::Char('/')), state);
         state.workspace.prompt.insert('e');
-        let term = Query::Fuzzy("e".to_string());
+        let term = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: None,
+        };
         let mut entries = Vec::new();
         state.store.fetch_requested(&[2, 4], &mut entries).unwrap();
         {
             let pane = state.workspace.focused_pane_mut();
             pane.active_query = Some(term.clone());
-            pane.apply_result(&term, entries, HashMap::new(), None, None, (1, 5));
+            pane.apply_result(&term, entries, HashMap::new(), None, None, true, (1, 5));
         }
 
         let state = handle_tui_event(input(KeyCode::Enter), state);

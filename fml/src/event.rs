@@ -89,7 +89,16 @@ pub enum Query {
         buffer: u64,
         predicates: Vec<FieldPredicate>,
     },
-    Fuzzy(String),
+    /// Fuzzy text search. `until_seq` bounds the scan: `None` is a live
+    /// query that keeps re-ranking new entries forever; `Some(seq)` is a
+    /// frozen snapshot that scores only entries with `seq <= until_seq`,
+    /// emits `complete = true` once, and then stops. The bound is part of
+    /// the query identity — same term with different bounds are distinct
+    /// queries and must not accept each other's emissions.
+    Fuzzy {
+        term: String,
+        until_seq: Option<u64>,
+    },
 }
 
 /// Identity of a single workspace pane.

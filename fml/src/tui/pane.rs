@@ -105,6 +105,11 @@ pub struct Pane {
     /// Full match list of the in-flight (unconfirmed) search, ascending.
     /// Uncapped, unlike the displayed results.
     live_hit_seqs: Vec<u64>,
+    /// A non-following bounded fuzzy search is mid-handoff: the displayed
+    /// entries are held (only progress updates render) until that bounded
+    /// request's accepted `complete = true` emission replaces them. Cleared
+    /// by every new dispatch so a superseding query is never swallowed.
+    holding_for_complete: bool,
     /// Cursor position to restore when a live search is abandoned.
     pub search_return_seq: Option<u64>,
     /// Center of the last dispatched history query, used to avoid
@@ -136,6 +141,7 @@ impl Pane {
             last_search: None,
             hits: Vec::new(),
             live_hit_seqs: Vec::new(),
+            holding_for_complete: false,
             search_return_seq: None,
             last_history_center: None,
             empty_note: None,
@@ -167,13 +173,19 @@ impl Pane {
                     term: term.clone(),
                 },
             },
-            active_query: None,
+            // Copy the active query so the freeze bound (carried in
+            // `until_seq`) rides into the split; the clone keeps the frozen
+            // view until the user interacts.
+            active_query: self.active_query.clone(),
             cursor_seq: self.cursor_seq,
             cursor_col: self.cursor_col,
             follow: self.follow,
             last_search: self.last_search.clone(),
             hits: self.hits.clone(),
             live_hit_seqs: self.live_hit_seqs.clone(),
+            // Results route by pane id, so a clone mid-hold would never get
+            // the release emission; start it clear.
+            holding_for_complete: false,
             search_return_seq: None,
             last_history_center: None,
             empty_note: self.empty_note.clone(),
@@ -225,6 +237,10 @@ impl Pane {
 
     /// Dispatch `query` to this pane's search engine, applying the filter.
     pub fn dispatch(&mut self, query: Query, ctx: &SearchCtx) {
+        // Any new dispatch supersedes a held freeze handoff; clearing here
+        // covers every path (typing, F, :refresh, Esc, filter changes) so a
+        // superseding query's partial emissions are never silently swallowed.
+        self.holding_for_complete = false;
         let Some(sources) = self.resolve_filter(ctx.sources) else {
             self.empty_note = Some(format!(
                 "no sources match :filter {}",
@@ -285,6 +301,7 @@ impl Pane {
     /// `hit_seqs` is the full uncapped match list for fuzzy queries —
     /// displayed entries are only the top-scored subset, but `n`/`N`
     /// navigation should walk every match.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_result(
         &mut self,
         query: &Query,
@@ -292,29 +309,58 @@ impl Pane {
         matches: HashMap<u64, Vec<Match>>,
         hit_seqs: Option<Vec<u64>>,
         progress: Option<SearchProgress>,
+        complete: bool,
         retained_bounds: (u64, u64),
     ) {
         if self.active_query.as_ref() != Some(query) {
             return;
         }
         let _ = retained_bounds;
+
+        // Frozen handoff: while holding for the bounded freeze request's
+        // completion, render scan progress but keep the held entries (and the
+        // pre-freeze hit list) until the accepted `complete = true` arrives.
+        // `holding_for_complete` is only ever set while `active_query` is the
+        // bounded freeze query, so any emission reaching here is for it.
+        if self.holding_for_complete {
+            if let View::Results { progress: p, .. } = &mut self.view {
+                *p = progress;
+            }
+            if !complete {
+                return;
+            }
+            self.holding_for_complete = false;
+        }
+
         if let Some(hit_seqs) = hit_seqs {
             self.live_hit_seqs = hit_seqs;
         }
 
         match query {
-            Query::Fuzzy(term) => {
+            Query::Fuzzy { term, .. } => {
                 // Fuzzy workers emit best-first; logs read better in time order.
                 entries.sort_by_key(|entry| entry.seq);
                 self.empty_note = entries
                     .is_empty()
                     .then(|| format!("no matches for `{term}`"));
-                // Default the cursor to the most recent match.
-                let cursor = self
-                    .cursor_seq
-                    .and_then(|seq| nearest_index(&entries, seq))
-                    .or(entries.len().checked_sub(1));
-                self.cursor_seq = cursor.map(|idx| entries[idx].seq);
+                if self.follow {
+                    // Live search: ride the newest match like a tail stream so
+                    // the cursor stays on the freshest hit as results re-rank.
+                    self.cursor_seq = entries.last().map(|entry| entry.seq);
+                } else {
+                    // Frozen search: keep the cursor on its row when the entry
+                    // is still present, else fall back to the nearest match.
+                    let cursor = self
+                        .cursor_seq
+                        .and_then(|seq| nearest_index(&entries, seq))
+                        .or(entries.len().checked_sub(1));
+                    self.cursor_seq = cursor.map(|idx| entries[idx].seq);
+                }
+                // A confirmed live search keeps its hit list growing with each
+                // new emission, so a later freeze inherits post-confirm matches.
+                if self.follow && self.last_search.as_deref() == Some(term.as_str()) {
+                    self.hits = self.live_hit_seqs.clone();
+                }
                 self.view = View::Results {
                     entries,
                     matches,
@@ -344,16 +390,15 @@ impl Pane {
 
     // ---- motions -------------------------------------------------------
 
-    /// Move the cursor by `delta` rows within the current view. Any motion
-    /// breaks follow; stream views re-page near window edges.
+    /// Move the cursor by `delta` rows within the current view. Real movement
+    /// (the cursor index actually changes) breaks follow; a clamped no-op
+    /// keeps the view live so an underfilled tail/results view keeps updating.
+    /// Stream views re-page near window edges.
     pub fn move_cursor(&mut self, delta: i64, ctx: &SearchCtx) {
         let entries = self.view.entries();
         if entries.is_empty() {
             return;
         }
-        let was_following = self.follow;
-        self.follow = false;
-
         let idx = self
             .cursor_seq
             .and_then(|seq| nearest_index(entries, seq))
@@ -361,15 +406,53 @@ impl Pane {
         let new_idx = idx
             .saturating_add_signed(delta as isize)
             .min(entries.len() - 1);
-        self.cursor_seq = Some(entries[new_idx].seq);
+        // The cursor can't move (0–1 rows, or already at the boundary): no
+        // freeze, stay live.
+        if new_idx == idx {
+            return;
+        }
+        let new_seq = entries[new_idx].seq;
+        let was_following = self.follow;
+        self.cursor_seq = Some(new_seq);
 
-        // Breaking out of tail: anchor a history window on the cursor so the
-        // view stops sliding underneath the user.
         if was_following {
-            self.dispatch_stream(ctx);
+            // Breaking out of tail: freeze a live search in place, or anchor a
+            // history window on the cursor so a stream stops sliding.
+            match &self.view {
+                View::Results { .. } => self.freeze_search(ctx),
+                View::Stream { .. } => {
+                    self.follow = false;
+                    self.dispatch_stream(ctx);
+                }
+            }
             return;
         }
         self.maybe_repage(new_idx, ctx);
+    }
+
+    /// Freeze a live (following) results view: capture the store high bound,
+    /// trim the displayed list to it for instant stability, dispatch the
+    /// bounded query, and hold the trimmed view until that request's
+    /// `complete` emission replaces it. No-op outside a results view.
+    fn freeze_search(&mut self, ctx: &SearchCtx) {
+        let bound = ctx.bounds.1;
+        let term = match &mut self.view {
+            View::Results { term, entries, .. } => {
+                entries.retain(|entry| entry.seq <= bound);
+                term.clone()
+            }
+            View::Stream { .. } => return,
+        };
+        self.follow = false;
+        self.dispatch(
+            Query::Fuzzy {
+                term,
+                until_seq: Some(bound),
+            },
+            ctx,
+        );
+        // Set after dispatch, which clears it.
+        self.holding_for_complete = true;
     }
 
     /// Jump the cursor to an absolute seq and center a window there.
@@ -393,10 +476,49 @@ impl Pane {
         self.jump_to(ctx.bounds.1, ctx);
     }
 
-    /// Re-enter follow (TAIL) mode.
+    /// Re-enter follow (TAIL) mode. View-aware: on an active fuzzy results
+    /// view it goes live on that search (unbounded, pinned to the newest
+    /// matches, staying in results); on a plain stream it tails the stream.
     pub fn enter_follow(&mut self, ctx: &SearchCtx) {
         self.follow = true;
-        self.dispatch(Query::Tail, ctx);
+        let fuzzy_term = match &self.view {
+            View::Results { term, .. } if !term.is_empty() => Some(term.clone()),
+            _ => None,
+        };
+        match fuzzy_term {
+            Some(term) => self.dispatch(
+                Query::Fuzzy {
+                    term,
+                    until_seq: None,
+                },
+                ctx,
+            ),
+            None => self.dispatch(Query::Tail, ctx),
+        }
+    }
+
+    /// Re-snapshot a frozen fuzzy search at the current store high seq: one
+    /// bounded re-rank, then stable again, staying in normal mode. Returns
+    /// `false` without dispatching when there is nothing to refresh — the
+    /// pane is following (already live) or has no active fuzzy search.
+    pub fn refresh_search(&mut self, ctx: &SearchCtx) -> bool {
+        if self.follow {
+            return false;
+        }
+        let term = match &self.view {
+            View::Results { term, .. } if !term.is_empty() => term.clone(),
+            _ => return false,
+        };
+        self.dispatch(
+            Query::Fuzzy {
+                term,
+                until_seq: Some(ctx.bounds.1),
+            },
+            ctx,
+        );
+        // Set after dispatch, which clears it.
+        self.holding_for_complete = true;
+        true
     }
 
     /// Jump to the next/previous confirmed search hit. Returns `false` when
@@ -417,8 +539,13 @@ impl Pane {
         match &self.view {
             // In a results view the hit list is the view itself; just move.
             View::Results { .. } => {
+                let was_following = self.follow;
                 self.cursor_seq = Some(seq);
-                self.follow = false;
+                if was_following {
+                    // First n/N out of a live results view is cursor motion:
+                    // freeze at jump time so the live worker stops re-ranking.
+                    self.freeze_search(ctx);
+                }
             }
             View::Stream { entries } => {
                 // Avoid a re-dispatch when the hit is already loaded.
@@ -471,13 +598,18 @@ impl Pane {
 
     // ---- search lifecycle ----------------------------------------------
 
-    /// Begin a live fuzzy search: remember where to return on abandon.
+    /// Begin a fuzzy search: remember where to return on abandon. Follow is
+    /// inherited — a search started from TAIL stays live, one started from a
+    /// scrolled (frozen) pane stays bounded — so the live/frozen split is the
+    /// pane's existing follow boundary.
     pub fn begin_search(&mut self) {
         self.search_return_seq = self.cursor_seq;
-        self.follow = false;
     }
 
-    /// Live-update the in-flight search term.
+    /// Live-update the in-flight search term. A following pane stays live
+    /// (unbounded, re-ranking every tick); a non-following pane dispatches a
+    /// fresh bounded query per keystroke and holds the displayed entries until
+    /// that query completes, so frozen results never flicker between terms.
     pub fn update_search(&mut self, term: &str, ctx: &SearchCtx) {
         if term.is_empty() {
             self.view = View::Results {
@@ -488,10 +620,21 @@ impl Pane {
             };
             self.empty_note = Some("type to search".to_string());
             self.active_query = None;
+            self.holding_for_complete = false;
             let _ = ctx.tx.try_send(SearchEvent::Cancel { target: self.id });
             return;
         }
-        self.dispatch(Query::Fuzzy(term.to_string()), ctx);
+        let until_seq = (!self.follow).then_some(ctx.bounds.1);
+        let hold = until_seq.is_some();
+        self.dispatch(
+            Query::Fuzzy {
+                term: term.to_string(),
+                until_seq,
+            },
+            ctx,
+        );
+        // Set after dispatch, which clears it.
+        self.holding_for_complete = hold;
     }
 
     /// Confirm the current results view: record hits for `n`/`N`.
@@ -511,18 +654,25 @@ impl Pane {
         self.hits.len()
     }
 
-    /// Abandon a live search and restore the stream where it was.
+    /// Abandon a search and restore the stream where it was. Follow-aware:
+    /// abandoning a live search returns to the tailing stream (follow kept),
+    /// while abandoning a frozen search restores the anchored position. Both
+    /// dispatch a stream query, which also tears down the fuzzy worker via
+    /// the engine's latest-wins abort.
     pub fn abandon_search(&mut self, ctx: &SearchCtx) {
-        self.follow = false;
         self.cursor_seq = self.search_return_seq.take().or(self.cursor_seq);
-        let middle = self.cursor_seq.unwrap_or(ctx.bounds.1);
-        self.dispatch(
-            Query::History {
-                middle_seq_id: middle,
-                buffer: ctx.buffer,
-            },
-            ctx,
-        );
+        if self.follow {
+            self.dispatch(Query::Tail, ctx);
+        } else {
+            let middle = self.cursor_seq.unwrap_or(ctx.bounds.1);
+            self.dispatch(
+                Query::History {
+                    middle_seq_id: middle,
+                    buffer: ctx.buffer,
+                },
+                ctx,
+            );
+        }
     }
 
     /// Leave a results view back into the stream, centered on the cursor.
@@ -571,10 +721,11 @@ impl Pane {
             .unwrap_or(0)
     }
 
-    /// Anchor the pane if it was following; column motions must not ride a
-    /// sliding tail window.
+    /// Anchor a following stream before a column motion so it stops sliding.
+    /// Column motion stays within the cursor row, so it never freezes a live
+    /// results view — only row motion / `n`/`N` do that.
     fn break_follow(&mut self, ctx: &SearchCtx) {
-        if self.follow {
+        if self.follow && matches!(self.view, View::Stream { .. }) {
             self.follow = false;
             self.dispatch_stream(ctx);
         }
@@ -835,6 +986,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (1, 3),
         );
         assert_eq!(pane.cursor_seq, Some(3));
@@ -845,6 +997,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (2, 4),
         );
         assert_eq!(pane.cursor_seq, Some(4));
@@ -867,6 +1020,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (7, 9),
         );
         assert_eq!(pane.cursor_seq, Some(7));
@@ -877,11 +1031,15 @@ mod tests {
         let mut pane = Pane::new(PaneId(1));
         pane.active_query = Some(Query::Tail);
         pane.apply_result(
-            &Query::Fuzzy("err".to_string()),
+            &Query::Fuzzy {
+                term: "err".to_string(),
+                until_seq: None,
+            },
             entries(&[1]),
             HashMap::new(),
             None,
             None,
+            true,
             (1, 1),
         );
         assert!(pane.view.entries().is_empty());
@@ -891,7 +1049,10 @@ mod tests {
     #[test]
     fn fuzzy_result_sorts_by_seq_and_cursors_latest() {
         let mut pane = Pane::new(PaneId(1));
-        let query = Query::Fuzzy("entry".to_string());
+        let query = Query::Fuzzy {
+            term: "entry".to_string(),
+            until_seq: None,
+        };
         pane.active_query = Some(query.clone());
         pane.apply_result(
             &query,
@@ -899,6 +1060,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (1, 9),
         );
 
@@ -919,6 +1081,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (1, 3),
         );
 
@@ -952,6 +1115,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (1, 3),
         );
         pane.cursor_seq = Some(3);
@@ -974,7 +1138,15 @@ mod tests {
             buffer: 100,
         };
         pane.active_query = Some(query.clone());
-        pane.apply_result(&query, entries(&seqs), HashMap::new(), None, None, (1, 200));
+        pane.apply_result(
+            &query,
+            entries(&seqs),
+            HashMap::new(),
+            None,
+            None,
+            true,
+            (1, 200),
+        );
         // apply_result kept cursor at latest; drag it near the top edge.
         pane.cursor_seq = Some(55);
 
@@ -1044,7 +1216,10 @@ mod tests {
     #[test]
     fn confirm_search_prefers_full_hit_list_over_displayed_entries() {
         let mut pane = Pane::new(PaneId(1));
-        let query = Query::Fuzzy("entry".to_string());
+        let query = Query::Fuzzy {
+            term: "entry".to_string(),
+            until_seq: None,
+        };
         pane.active_query = Some(query.clone());
         // Display shows only seq 9, but the worker reported three matches.
         pane.apply_result(
@@ -1053,6 +1228,7 @@ mod tests {
             HashMap::new(),
             Some(vec![2, 5, 9]),
             None,
+            true,
             (1, 9),
         );
 
@@ -1065,7 +1241,10 @@ mod tests {
         let srcs = [source("src-a", None)];
         let (ctx, _rx) = ctx_with(&srcs, (1, 9));
         let mut pane = Pane::new(PaneId(1));
-        let query = Query::Fuzzy("entry".to_string());
+        let query = Query::Fuzzy {
+            term: "entry".to_string(),
+            until_seq: None,
+        };
         pane.active_query = Some(query.clone());
         pane.apply_result(
             &query,
@@ -1073,6 +1252,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (1, 9),
         );
 
@@ -1085,6 +1265,523 @@ mod tests {
         assert!(!pane.jump_hit(true, &ctx));
         assert!(pane.jump_hit(false, &ctx));
         assert_eq!(pane.cursor_seq, Some(5));
+    }
+
+    #[test]
+    fn following_pane_search_dispatches_unbounded_fuzzy() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = Pane::new(PaneId(1));
+        assert!(pane.follow);
+
+        pane.begin_search();
+        pane.update_search("err", &ctx);
+
+        assert!(pane.follow, "search from TAIL stays live");
+        match rx.try_recv().expect("dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy { until_seq, .. },
+                ..
+            } => assert_eq!(until_seq, None, "live search is unbounded"),
+            event => panic!("expected fuzzy dispatch, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn non_following_pane_search_dispatches_bounded_fuzzy() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+
+        pane.begin_search();
+        pane.update_search("err", &ctx);
+
+        assert!(!pane.follow);
+        match rx.try_recv().expect("dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy { until_seq, .. },
+                ..
+            } => assert_eq!(until_seq, Some(9), "frozen search is bounded at high seq"),
+            event => panic!("expected bounded fuzzy dispatch, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn confirmed_live_search_extends_hits_on_new_emission() {
+        let mut pane = Pane::new(PaneId(1));
+        assert!(pane.follow);
+        let query = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: None,
+        };
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[2, 4]),
+            HashMap::new(),
+            Some(vec![2, 4]),
+            None,
+            true,
+            (1, 5),
+        );
+        assert_eq!(pane.confirm_search(), 2);
+        assert_eq!(pane.hits, vec![2, 4]);
+
+        // A later live emission adds a match; the confirmed hit list grows.
+        pane.apply_result(
+            &query,
+            entries(&[2, 4, 6]),
+            HashMap::new(),
+            Some(vec![2, 4, 6]),
+            None,
+            true,
+            (1, 6),
+        );
+        assert_eq!(pane.hits, vec![2, 4, 6]);
+    }
+
+    #[test]
+    fn confirm_frozen_search_keeps_bounded_query_and_follow_off() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        let query = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: Some(5),
+        };
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[2, 4]),
+            HashMap::new(),
+            Some(vec![2, 4]),
+            None,
+            true,
+            (1, 5),
+        );
+
+        assert_eq!(pane.confirm_search(), 2);
+        assert!(!pane.follow, "confirming a frozen search does not go live");
+        assert_eq!(pane.active_query, Some(query), "bounded query is preserved");
+    }
+
+    #[test]
+    fn abandon_live_search_restores_tail_keeping_follow() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = Pane::new(PaneId(1));
+        assert!(pane.follow);
+        pane.begin_search();
+        pane.update_search("err", &ctx);
+        let _ = rx.try_recv().expect("fuzzy dispatch");
+
+        pane.abandon_search(&ctx);
+
+        assert!(pane.follow, "abandoning a live search stays in TAIL");
+        match rx.try_recv().expect("dispatch") {
+            SearchEvent::Search {
+                query: Query::Tail, ..
+            } => {}
+            event => panic!("expected tail dispatch, got {event:?}"),
+        }
+    }
+
+    /// Sets up a following pane sitting on a live fuzzy results view.
+    fn live_results_pane(seqs: &[u64], high: u64) -> Pane {
+        let mut pane = Pane::new(PaneId(1));
+        let query = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: None,
+        };
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(seqs),
+            HashMap::new(),
+            Some(seqs.to_vec()),
+            None,
+            true,
+            (1, high),
+        );
+        pane
+    }
+
+    #[test]
+    fn scroll_up_in_live_results_freezes_at_high_bound() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[3, 6, 9], 9);
+        assert!(pane.follow);
+        assert_eq!(pane.cursor_seq, Some(9));
+
+        pane.move_cursor(-1, &ctx);
+
+        assert!(!pane.follow, "real movement freezes the live search");
+        assert!(pane.holding_for_complete, "held until the bounded complete");
+        assert_eq!(
+            pane.active_query,
+            Some(Query::Fuzzy {
+                term: "e".to_string(),
+                until_seq: Some(9)
+            })
+        );
+        match rx.try_recv().expect("freeze dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy { term, until_seq },
+                ..
+            } => {
+                assert_eq!(term, "e");
+                assert_eq!(until_seq, Some(9), "bound captured at jump time");
+            }
+            event => panic!("expected bounded fuzzy, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn unmovable_scroll_in_live_results_stays_live() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[9], 9);
+        assert!(pane.follow);
+
+        // A single match means the cursor can't move: no freeze, no dispatch.
+        pane.move_cursor(-1, &ctx);
+
+        assert!(pane.follow, "underfilled live view keeps following");
+        assert!(rx.try_recv().is_err(), "no dispatch on an unmovable cursor");
+    }
+
+    #[test]
+    fn first_jump_hit_from_live_results_freezes() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[3, 6, 9], 9);
+        pane.confirm_search();
+        pane.cursor_seq = Some(3);
+
+        assert!(pane.jump_hit(true, &ctx));
+
+        assert_eq!(pane.cursor_seq, Some(6));
+        assert!(!pane.follow, "first n/N freezes the live search");
+        assert!(pane.holding_for_complete);
+        match rx.try_recv().expect("freeze dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy {
+                    until_seq: Some(9), ..
+                },
+                ..
+            } => {}
+            event => panic!("expected bounded fuzzy, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn freeze_excludes_entries_appended_after_the_bound() {
+        let srcs = [source("src-a", None)];
+        // Bound is captured from ctx.bounds at jump time (high = 9).
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[3, 6, 9], 9);
+
+        pane.move_cursor(-1, &ctx);
+
+        match rx.try_recv().expect("freeze dispatch") {
+            SearchEvent::Search {
+                query:
+                    Query::Fuzzy {
+                        until_seq: Some(bound),
+                        ..
+                    },
+                ..
+            } => assert_eq!(bound, 9, "newer entries (seq > 9) are excluded"),
+            event => panic!("expected bounded fuzzy, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn stale_unbounded_emission_after_freeze_is_dropped() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        // Frozen: active query is bounded.
+        pane.active_query = Some(Query::Fuzzy {
+            term: "err".to_string(),
+            until_seq: Some(100),
+        });
+        // A late emission from the torn-down live worker (unbounded query).
+        pane.apply_result(
+            &Query::Fuzzy {
+                term: "err".to_string(),
+                until_seq: None,
+            },
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            Some(vec![1, 2, 3]),
+            None,
+            true,
+            (1, 200),
+        );
+        assert!(
+            pane.view.entries().is_empty(),
+            "an unbounded emission must not land on a frozen pane"
+        );
+    }
+
+    #[test]
+    fn same_term_different_bound_emission_is_rejected() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        pane.active_query = Some(Query::Fuzzy {
+            term: "err".to_string(),
+            until_seq: Some(150),
+        });
+        // An older-bounded result for the same term must not be accepted.
+        pane.apply_result(
+            &Query::Fuzzy {
+                term: "err".to_string(),
+                until_seq: Some(100),
+            },
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            Some(vec![1, 2, 3]),
+            None,
+            true,
+            (1, 200),
+        );
+        assert!(pane.view.entries().is_empty());
+    }
+
+    #[test]
+    fn partial_freeze_emissions_held_complete_replaces_and_preserves_cursor() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        let bounded = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: Some(9),
+        };
+        pane.active_query = Some(bounded.clone());
+        // Seed the held view and enter the hold.
+        pane.apply_result(
+            &bounded,
+            entries(&[3, 6]),
+            HashMap::new(),
+            Some(vec![3, 6]),
+            None,
+            true,
+            (1, 9),
+        );
+        pane.cursor_seq = Some(6);
+        pane.holding_for_complete = true;
+
+        // A partial emission updates progress but must not replace entries.
+        pane.apply_result(
+            &bounded,
+            entries(&[3]),
+            HashMap::new(),
+            Some(vec![3]),
+            Some(SearchProgress {
+                scanned: 1,
+                total: 3,
+            }),
+            false,
+            (1, 9),
+        );
+        assert!(pane.holding_for_complete);
+        assert_eq!(
+            pane.view
+                .entries()
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            vec![3, 6],
+            "held entries unchanged by a partial"
+        );
+        match &pane.view {
+            View::Results { progress, .. } => assert_eq!(
+                *progress,
+                Some(SearchProgress {
+                    scanned: 1,
+                    total: 3
+                })
+            ),
+            View::Stream { .. } => panic!("expected results view"),
+        }
+
+        // The complete emission replaces the view and preserves the cursor.
+        pane.apply_result(
+            &bounded,
+            entries(&[3, 6, 9]),
+            HashMap::new(),
+            Some(vec![3, 6, 9]),
+            None,
+            true,
+            (1, 9),
+        );
+        assert!(!pane.holding_for_complete);
+        assert_eq!(
+            pane.view
+                .entries()
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            vec![3, 6, 9]
+        );
+        assert_eq!(pane.cursor_seq, Some(6), "selected seq preserved");
+    }
+
+    #[test]
+    fn typing_during_handoff_clears_old_hold() {
+        let srcs = [source("src-a", None)];
+        let (ctx, _rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        let bounded = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: Some(9),
+        };
+        pane.active_query = Some(bounded.clone());
+        pane.apply_result(
+            &bounded,
+            entries(&[3, 6]),
+            HashMap::new(),
+            Some(vec![3, 6]),
+            None,
+            true,
+            (1, 9),
+        );
+        pane.holding_for_complete = true;
+
+        // Typing dispatches a new bounded term; the old hold is cleared and a
+        // new one begins for the new term.
+        pane.update_search("er", &ctx);
+
+        assert!(
+            pane.holding_for_complete,
+            "new bounded term re-arms the hold"
+        );
+        match &pane.active_query {
+            Some(Query::Fuzzy { term, until_seq }) => {
+                assert_eq!(term, "er");
+                assert_eq!(*until_seq, Some(9));
+            }
+            other => panic!("expected bounded fuzzy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clone_of_frozen_search_carries_bound_and_resets_hold() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        pane.holding_for_complete = true;
+        pane.active_query = Some(Query::Fuzzy {
+            term: "err".to_string(),
+            until_seq: Some(100),
+        });
+
+        let clone = pane.clone_into(PaneId(2));
+
+        assert_eq!(
+            clone.active_query,
+            Some(Query::Fuzzy {
+                term: "err".to_string(),
+                until_seq: Some(100)
+            }),
+            "the freeze bound rides into the split"
+        );
+        assert!(
+            !clone.holding_for_complete,
+            "a clone never receives the release emission, so it starts clear"
+        );
+    }
+
+    #[test]
+    fn enter_follow_on_frozen_results_goes_live_unbounded() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 20));
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        let frozen = Query::Fuzzy {
+            term: "err".to_string(),
+            until_seq: Some(9),
+        };
+        pane.active_query = Some(frozen.clone());
+        pane.apply_result(
+            &frozen,
+            entries(&[3, 6, 9]),
+            HashMap::new(),
+            Some(vec![3, 6, 9]),
+            None,
+            true,
+            (1, 9),
+        );
+
+        pane.enter_follow(&ctx);
+
+        assert!(pane.follow);
+        match rx.try_recv().expect("dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy { term, until_seq },
+                ..
+            } => {
+                assert_eq!(term, "err");
+                assert_eq!(until_seq, None, "going live is unbounded");
+            }
+            event => panic!("expected live fuzzy, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_resnapshots_frozen_search_at_fresh_bound_without_following() {
+        let srcs = [source("src-a", None)];
+        // The store high (20) has advanced past the original freeze bound (9).
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 20));
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        let frozen = Query::Fuzzy {
+            term: "err".to_string(),
+            until_seq: Some(9),
+        };
+        pane.active_query = Some(frozen.clone());
+        pane.apply_result(
+            &frozen,
+            entries(&[3, 6, 9]),
+            HashMap::new(),
+            Some(vec![3, 6, 9]),
+            None,
+            true,
+            (1, 9),
+        );
+
+        assert!(pane.refresh_search(&ctx));
+        assert!(!pane.follow, "refresh stays frozen");
+        assert!(pane.holding_for_complete);
+        match rx.try_recv().expect("dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy { term, until_seq },
+                ..
+            } => {
+                assert_eq!(term, "err");
+                assert_eq!(until_seq, Some(20), "refresh captures a fresh high bound");
+            }
+            event => panic!("expected bounded fuzzy, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_is_noop_when_following_or_no_active_search() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 20));
+        let mut pane = Pane::new(PaneId(1));
+
+        // Following pane: already live, nothing to refresh.
+        assert!(pane.follow);
+        assert!(!pane.refresh_search(&ctx));
+
+        // Non-following plain stream: no fuzzy search to refresh.
+        pane.follow = false;
+        assert!(!pane.refresh_search(&ctx));
+        assert!(
+            rx.try_recv().is_err(),
+            "no dispatch when nothing to refresh"
+        );
     }
 
     #[test]
@@ -1102,6 +1799,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
+            true,
             (1, 5),
         );
         pane.cursor_seq = Some(2);

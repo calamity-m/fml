@@ -82,7 +82,7 @@ pub struct FuzzySearchOptions {
 /// Starts the background worker for a fuzzy text search.
 ///
 /// The worker matches the needle (carried inside `ctx.query` as
-/// `Query::Fuzzy(term)`) against each retained `LogEntry`'s `msg`, `level`
+/// `Query::Fuzzy { term, .. }`) against each retained `LogEntry`'s `msg`, `level`
 /// display name, source display name, and `fields` values using the
 /// configured matcher, weights those matches (msg > level > fields), and
 /// emits ranked hits at `ctx.tick_rate` cadence. A snapshot of the retained
@@ -106,14 +106,19 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
     } = ctx;
 
     tokio::spawn(async move {
-        let term = match &query {
-            Query::Fuzzy(term) => term.clone(),
+        let (term, until_seq) = match &query {
+            Query::Fuzzy { term, until_seq } => (term.clone(), *until_seq),
             other => panic!("start_fuzzy_search invoked with non-fuzzy query: {other:?}"),
         };
+        // A bounded (frozen) query scores only entries at or below this seq
+        // and exits after one complete scan; an unbounded (live) query keeps
+        // re-ranking new arrivals forever.
+        let bounded = until_seq.is_some();
+        let bound_high = until_seq.unwrap_or(u64::MAX);
 
         debug!(
-            "spawned fuzzy search - term: {}, sources: {:?}, result_limit: {}, tick_rate: {:?}",
-            term, sources, options.result_limit, tick_rate
+            "spawned fuzzy search - term: {}, until_seq: {:?}, sources: {:?}, result_limit: {}, tick_rate: {:?}",
+            term, until_seq, sources, options.result_limit, tick_rate
         );
 
         // An empty needle would match every entry with score 0 and produce
@@ -170,7 +175,10 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
             if scan.is_none() {
                 ticker.tick().await;
 
-                let (low, high) = store.bounds();
+                let (low, store_high) = store.bounds();
+                // Frozen queries never look above their captured bound, so a
+                // store that has grown past it is treated as if it stopped there.
+                let high = store_high.min(bound_high);
 
                 if high == 0 {
                     if last_complete_bounds != Some((low, high)) {
@@ -192,6 +200,10 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                             EmitOutcome::ReceiverGone => return,
                         }
                         last_complete_bounds = Some((low, high));
+                        // A frozen query over an empty store is already done.
+                        if bounded {
+                            return;
+                        }
                     }
                     continue;
                 }
@@ -226,6 +238,10 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                         EmitOutcome::ReceiverGone => return,
                     }
                     last_complete_bounds = Some((low, high));
+                    // Frozen scan reached its bound via pure eviction: done.
+                    if bounded {
+                        return;
+                    }
                     continue;
                 }
 
@@ -289,6 +305,12 @@ pub fn start_fuzzy_search(ctx: SearchContext, options: FuzzySearchOptions) -> Jo
                         scanned_high = *snap_high;
                         last_complete_bounds = Some((*snap_low, *snap_high));
                         scan = None;
+                        // Frozen query: one complete scan over everything at
+                        // or below the bound, then the worker exits instead of
+                        // entering the perpetual rescan loop.
+                        if bounded {
+                            return;
+                        }
                     }
                 }
             }
@@ -853,8 +875,10 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_test_fuzzy_search(
         term: String,
+        until_seq: Option<u64>,
         sources: Vec<SourceId>,
         tick_rate: Duration,
         options: FuzzySearchOptions,
@@ -865,7 +889,7 @@ mod tests {
         start_fuzzy_search(
             SearchContext {
                 target: crate::event::PaneId(1),
-                query: Query::Fuzzy(term),
+                query: Query::Fuzzy { term, until_seq },
                 sources,
                 request_id,
                 tick_rate,
@@ -883,6 +907,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             String::new(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
@@ -924,6 +949,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
@@ -958,6 +984,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec!["s1".to_string()],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
@@ -983,6 +1010,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
@@ -1007,6 +1035,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_search_excludes_entries_above_until_seq() {
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("alpha error", "s1", Some(LogLevel::Info)));
+        let bound = store.bounds().1;
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_test_fuzzy_search(
+            "error".to_string(),
+            Some(bound),
+            vec![],
+            Duration::from_millis(10),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
+            store.clone(),
+            3,
+            tx,
+        );
+
+        // A matching entry appended after the bound was captured must never
+        // appear in a frozen result.
+        store.insert(make_entry("beta error", "s1", Some(LogLevel::Info)));
+
+        let (results, rid, complete) = recv_result(&mut rx).await;
+        assert_eq!(rid, 3);
+        assert!(complete);
+        assert_eq!(
+            results.iter().map(|r| r.seq_id).collect::<Vec<_>>(),
+            vec![1]
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_worker_finishes_after_complete() {
+        let store = RingBufferStore::new(store_config(64));
+        store.insert(make_entry("alpha error", "s1", Some(LogLevel::Info)));
+        let bound = store.bounds().1;
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = start_test_fuzzy_search(
+            "error".to_string(),
+            Some(bound),
+            vec![],
+            Duration::from_millis(10),
+            fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
+            store.clone(),
+            4,
+            tx,
+        );
+
+        loop {
+            let (_, _, complete) = recv_result(&mut rx).await;
+            if complete {
+                break;
+            }
+        }
+
+        // A bounded worker exits on its own once the snapshot completes,
+        // instead of entering the perpetual rescan loop.
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("bounded worker should finish after the complete emission")
+            .expect("worker task panicked");
+    }
+
+    #[tokio::test]
     async fn msg_match_indices_are_ascending() {
         let store = RingBufferStore::new(store_config(64));
         store.insert(make_entry("server", "s1", Some(LogLevel::Info)));
@@ -1014,6 +1108,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "er".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
@@ -1047,6 +1142,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "WARN".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, None),
@@ -1086,6 +1182,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "payments".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Frizbee, Some(0)),
@@ -1120,6 +1217,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(5, FuzzyMatcherKind::Frizbee, None),
@@ -1144,6 +1242,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(10, FuzzyMatcherKind::Frizbee, None),
@@ -1187,6 +1286,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(2, FuzzyMatcherKind::Frizbee, None),
@@ -1229,6 +1329,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(1),
             fuzzy_options(20, FuzzyMatcherKind::Frizbee, None),
@@ -1263,6 +1364,7 @@ mod tests {
         // between ticks — so partials grow rather than always being empty.
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec![],
             Duration::from_millis(1),
             fuzzy_options(20_000, FuzzyMatcherKind::Frizbee, None),
@@ -1319,6 +1421,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(128);
         let handle = start_test_fuzzy_search(
             "error".to_string(),
+            None,
             vec!["s1".to_string()],
             Duration::from_millis(1),
             fuzzy_options(20_000, FuzzyMatcherKind::Frizbee, None),
@@ -1397,6 +1500,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "'needle".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Nucleo, None),
@@ -1425,6 +1529,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "error !beta".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Nucleo, None),
@@ -1454,6 +1559,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let handle = start_test_fuzzy_search(
             "!beta".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(100, FuzzyMatcherKind::Nucleo, None),
@@ -1505,6 +1611,7 @@ mod tests {
         options.max_field_bytes = 512;
         let handle = start_test_fuzzy_search(
             "alpha".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             options,
@@ -1544,6 +1651,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let handle = start_test_fuzzy_search(
             "alpha".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             fuzzy_options(1, FuzzyMatcherKind::Frizbee, Some(0)),
@@ -1590,6 +1698,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let handle = start_test_fuzzy_search(
             "alpha".to_string(),
+            None,
             vec![],
             Duration::from_millis(10),
             // Zero typos: only true subsequence matches count, so noise
