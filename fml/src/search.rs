@@ -180,8 +180,8 @@ pub(crate) fn coalesce_search_events(events: Vec<SearchEvent>) -> Vec<SearchEven
 ///   [`SearchEvent::Search`] request arrives,
 /// - accept [`SearchEvent::Result`] messages produced by background workers,
 ///   fetch the referenced entries, and route them to the owning pane, and
-/// - handle [`SearchEvent::Error`] messages without destabilizing the rest of
-///   the application loop.
+/// - surface [`SearchEvent::Error`] messages as a workspace notice so a failed
+///   background worker does not stop updating a pane silently.
 ///
 /// Search requests are target/request scoped so stale responses can be
 /// discarded without one pane cancelling another pane's work.
@@ -324,7 +324,14 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
             state
         }
 
-        SearchEvent::Error(_) => state,
+        SearchEvent::Error(message) => {
+            // A worker that emits an error has already returned, so the search
+            // is dead. The event carries no target, so notify globally rather
+            // than letting the owning pane just stop updating with no reason.
+            warn!("search worker reported error: {message}");
+            state.workspace.notice = Some(format!("search error: {message}"));
+            state
+        }
     }
 }
 
@@ -488,6 +495,18 @@ mod tests {
         let state = handle_search_event(result_event(pane_id, Query::Tail, vec![hit(1)], 1), state);
 
         assert!(state.workspace.focused_pane().view.entries().is_empty());
+    }
+
+    #[test]
+    fn error_event_surfaces_notice() {
+        let state = state_with_entries(1);
+
+        let state = handle_search_event(SearchEvent::Error("boom".to_string()), state);
+
+        assert_eq!(
+            state.workspace.notice.as_deref(),
+            Some("search error: boom")
+        );
     }
 
     #[test]
