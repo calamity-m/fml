@@ -238,6 +238,11 @@ impl Pane {
     /// new mode on the next frame.
     pub fn toggle_line_wrap(&mut self) {
         self.line_wrap = !self.line_wrap;
+        // Turning wrap on while following: snap so the newest entry shows its
+        // last display row rather than wrapping a tall entry from row 0.
+        if self.line_wrap && self.follow {
+            self.snap_col_to_row_end();
+        }
     }
 
     /// The entry under the cursor, if any.
@@ -391,6 +396,9 @@ impl Pane {
                     // Live search: ride the newest match like a tail stream so
                     // the cursor stays on the freshest hit as results re-rank.
                     self.cursor_seq = entries.last().map(|entry| entry.seq);
+                    // Keep the cursor on the newest entry's last display row so
+                    // wrapping a tall fresh match shows its tail, not row 0.
+                    self.snap_col_to_row_end();
                 } else {
                     // Frozen search: keep the cursor on its row when the entry
                     // is still present, else fall back to the nearest match.
@@ -415,6 +423,9 @@ impl Pane {
             _ => {
                 if self.follow {
                     self.cursor_seq = entries.last().map(|entry| entry.seq);
+                    // Tail/startup: land on the newest entry's last display row
+                    // when wrapping so a tall fresh entry isn't clipped at row 0.
+                    self.snap_col_to_row_end();
                 } else {
                     self.cursor_seq = self
                         .cursor_seq
@@ -1895,5 +1906,61 @@ mod tests {
 
         let selected: Vec<u64> = pane.selection(4).iter().map(|e| e.seq).collect();
         assert_eq!(selected, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn follow_results_snap_col_when_wrapping() {
+        // A following pane that advances to a fresh tall entry must park the
+        // sticky column past the line end so wrapping shows the entry's last
+        // display row, not row 0. Covers tail/startup result application.
+        let mut pane = Pane::new(PaneId(1));
+        pane.line_wrap = true;
+        pane.cursor_col = 0;
+        let query = Query::Tail;
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            None,
+            None,
+            true,
+            (1, 3),
+        );
+        assert!(pane.follow);
+        assert_eq!(pane.cursor_col, usize::MAX, "follow snaps to row end");
+
+        // Wrap off leaves the column untouched (render path stays unchanged).
+        let mut pane = Pane::new(PaneId(1));
+        pane.cursor_col = 0;
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            None,
+            None,
+            true,
+            (1, 3),
+        );
+        assert_eq!(pane.cursor_col, 0, "wrap off is a no-op snap");
+    }
+
+    #[test]
+    fn toggle_wrap_on_while_following_snaps_col() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.cursor_col = 0;
+        assert!(pane.follow && !pane.line_wrap);
+
+        pane.toggle_line_wrap();
+        assert_eq!(pane.cursor_col, usize::MAX, "wrap-on while following snaps");
+
+        // Toggling back off should not re-snap, and a non-following pane keeps
+        // its column when wrap is toggled.
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        pane.cursor_col = 7;
+        pane.toggle_line_wrap();
+        assert_eq!(pane.cursor_col, 7, "no snap when not following");
     }
 }

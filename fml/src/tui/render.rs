@@ -268,7 +268,10 @@ fn draw_pane(
     };
 
     // An entry can occupy several consecutive display rows; compute its full
-    // per-char style buffer once and slice each display row out of it.
+    // per-char style buffer once and slice each display row out of it. Wrap off
+    // only ever shows one display row truncated to `width`, so cap the styled
+    // span there instead of styling the whole (possibly tens-of-KB) log line.
+    let style_limit = if pane.line_wrap { usize::MAX } else { width };
     let mut lines: Vec<Line> = Vec::with_capacity(height);
     let mut cached: Option<(usize, Vec<char>, Vec<Style>, Style)> = None;
     for (entry_idx, drow) in visible {
@@ -284,6 +287,7 @@ fn draw_pane(
                 matches,
                 is_cursor_row,
                 effective_col,
+                style_limit,
             );
             cached = Some((entry_idx, chars, styles, row_bg));
         }
@@ -309,6 +313,10 @@ fn draw_pane(
 /// with. The block cursor's reversed cell is patched at `effective_col`; with
 /// wrap off, a column past the pane width stays out of the single visible slice
 /// (the pre-existing off-screen-cursor behavior, unchanged).
+///
+/// `limit` caps how many leading chars are collected and styled. Wrap on passes
+/// `usize::MAX` (the wrap renderer may slice any display row); wrap off passes
+/// the pane width so the bounded single-row work is preserved.
 #[allow(clippy::too_many_arguments)]
 fn entry_row_styles(
     entry: &LogEntry,
@@ -319,8 +327,9 @@ fn entry_row_styles(
     matches: Option<&HashMap<u64, Vec<Match>>>,
     is_cursor_row: bool,
     effective_col: usize,
+    limit: usize,
 ) -> (Vec<char>, Vec<Style>, Style) {
-    let chars: Vec<char> = row_text(entry).chars().collect();
+    let chars: Vec<char> = row_text(entry).chars().take(limit).collect();
     let level_style = Style::default().fg(theme.log_row_fg(entry.level));
     let dim = Style::default().fg(theme.border_unfocused_fg);
 
