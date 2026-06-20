@@ -61,6 +61,36 @@ pub struct SearchCtx<'a> {
     pub bounds: (u64, u64),
 }
 
+/// Scroll position of a pane's log view.
+///
+/// Kept typed so the wrap-off (entry-index) and wrap-on (display-row) meanings
+/// can never be silently confused when toggling wrap, cloning on split, or
+/// reading the anchor in the renderer. The renderer normalizes the anchor to
+/// the pane's current `line_wrap` mode each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollAnchor {
+    /// Wrap off: index of the first visible entry.
+    Entry(usize),
+    /// Wrap on: the first visible display row, as the entry index plus the
+    /// display-row offset within that entry.
+    Display { entry: usize, row: usize },
+}
+
+impl ScrollAnchor {
+    /// The first visible entry index, regardless of variant.
+    pub fn entry(self) -> usize {
+        match self {
+            Self::Entry(entry) | Self::Display { entry, .. } => entry,
+        }
+    }
+}
+
+impl Default for ScrollAnchor {
+    fn default() -> Self {
+        Self::Entry(0)
+    }
+}
+
 /// What the pane is currently displaying.
 pub enum View {
     /// A contiguous window of the filtered store (tail or history query).
@@ -119,8 +149,12 @@ pub struct Pane {
     pub empty_note: Option<String>,
     /// Last rendered content area; drives paging sizes and directional focus.
     pub rect: Rect,
-    /// First visible row offset, kept across renders for scroll stability.
-    pub scroll: usize,
+    /// Scroll position, kept across renders for stability. Typed so the
+    /// wrap-off (entry) and wrap-on (display-row) meanings never collide.
+    pub scroll: ScrollAnchor,
+    /// Wrap long entries across continuation rows (per-pane runtime toggle).
+    /// Seeded from `TuiConfig.line_wrap`; flipped by `:wrap`/`W`.
+    pub line_wrap: bool,
     /// Whether the detail overlay (full entry JSON) is open.
     pub detail_open: bool,
     pub detail_scroll: u16,
@@ -146,7 +180,8 @@ impl Pane {
             last_history_center: None,
             empty_note: None,
             rect: Rect::default(),
-            scroll: 0,
+            scroll: ScrollAnchor::default(),
+            line_wrap: false,
             detail_open: false,
             detail_scroll: 0,
         }
@@ -191,8 +226,22 @@ impl Pane {
             empty_note: self.empty_note.clone(),
             rect: Rect::default(),
             scroll: self.scroll,
+            // Splits inherit the current pane's wrap state.
+            line_wrap: self.line_wrap,
             detail_open: false,
             detail_scroll: 0,
+        }
+    }
+
+    /// Flip line wrapping for this pane. Splits inherit the new state via
+    /// [`Pane::clone_into`]; the renderer normalizes the scroll anchor to the
+    /// new mode on the next frame.
+    pub fn toggle_line_wrap(&mut self) {
+        self.line_wrap = !self.line_wrap;
+        // Turning wrap on while following: snap so the newest entry shows its
+        // last display row rather than wrapping a tall entry from row 0.
+        if self.line_wrap && self.follow {
+            self.snap_col_to_row_end();
         }
     }
 
@@ -347,6 +396,9 @@ impl Pane {
                     // Live search: ride the newest match like a tail stream so
                     // the cursor stays on the freshest hit as results re-rank.
                     self.cursor_seq = entries.last().map(|entry| entry.seq);
+                    // Keep the cursor on the newest entry's last display row so
+                    // wrapping a tall fresh match shows its tail, not row 0.
+                    self.snap_col_to_row_end();
                 } else {
                     // Frozen search: keep the cursor on its row when the entry
                     // is still present, else fall back to the nearest match.
@@ -371,6 +423,9 @@ impl Pane {
             _ => {
                 if self.follow {
                     self.cursor_seq = entries.last().map(|entry| entry.seq);
+                    // Tail/startup: land on the newest entry's last display row
+                    // when wrapping so a tall fresh entry isn't clipped at row 0.
+                    self.snap_col_to_row_end();
                 } else {
                     self.cursor_seq = self
                         .cursor_seq
@@ -473,7 +528,20 @@ impl Pane {
     }
 
     pub fn goto_bottom(&mut self, ctx: &SearchCtx) {
+        self.snap_col_to_row_end();
         self.jump_to(ctx.bounds.1, ctx);
+    }
+
+    /// When wrapping, park the sticky column past the end of the line so the
+    /// cursor lands on the newest entry's *last* display row — otherwise tail
+    /// would show the first display row of a tall newest entry and clip the
+    /// rest. The effective column clamps to the row's last char, so a sentinel
+    /// is enough and stays correct as the newest entry changes. No-op with
+    /// wrap off, keeping that render path byte-for-byte unchanged.
+    fn snap_col_to_row_end(&mut self) {
+        if self.line_wrap {
+            self.cursor_col = usize::MAX;
+        }
     }
 
     /// Re-enter follow (TAIL) mode. View-aware: on an active fuzzy results
@@ -481,6 +549,7 @@ impl Pane {
     /// matches, staying in results); on a plain stream it tails the stream.
     pub fn enter_follow(&mut self, ctx: &SearchCtx) {
         self.follow = true;
+        self.snap_col_to_row_end();
         let fuzzy_term = match &self.view {
             View::Results { term, .. } if !term.is_empty() => Some(term.clone()),
             _ => None,
@@ -1785,6 +1854,37 @@ mod tests {
     }
 
     #[test]
+    fn charwise_selection_text_is_wrap_independent() {
+        // Wrapping is render-only: a charwise selection spanning what would be
+        // a wrap boundary still yanks the exact contiguous `row_text` slice.
+        let mut pane = Pane::new(PaneId(1));
+        pane.line_wrap = true;
+        let e = Arc::new(LogEntry {
+            seq: 1,
+            msg: "abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
+            ts: Utc::now(),
+            level: Some(LogLevel::Info),
+            source: Source {
+                producer: "p".to_string(),
+                id: "s".to_string(),
+                display_name: "src".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        });
+        pane.view = View::Stream {
+            entries: vec![e.clone()],
+        };
+        pane.cursor_seq = Some(1);
+        pane.cursor_col = 45;
+
+        // Select cols 35..=45 — a span that straddles a 40-col wrap boundary.
+        let got = pane.charwise_selection_text(1, 35);
+        let expected: String = row_text(&e).chars().skip(35).take(45 - 35 + 1).collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
     fn selection_spans_anchor_to_cursor_inclusive() {
         let mut pane = Pane::new(PaneId(1));
         let query = Query::History {
@@ -1806,5 +1906,61 @@ mod tests {
 
         let selected: Vec<u64> = pane.selection(4).iter().map(|e| e.seq).collect();
         assert_eq!(selected, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn follow_results_snap_col_when_wrapping() {
+        // A following pane that advances to a fresh tall entry must park the
+        // sticky column past the line end so wrapping shows the entry's last
+        // display row, not row 0. Covers tail/startup result application.
+        let mut pane = Pane::new(PaneId(1));
+        pane.line_wrap = true;
+        pane.cursor_col = 0;
+        let query = Query::Tail;
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            None,
+            None,
+            true,
+            (1, 3),
+        );
+        assert!(pane.follow);
+        assert_eq!(pane.cursor_col, usize::MAX, "follow snaps to row end");
+
+        // Wrap off leaves the column untouched (render path stays unchanged).
+        let mut pane = Pane::new(PaneId(1));
+        pane.cursor_col = 0;
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[1, 2, 3]),
+            HashMap::new(),
+            None,
+            None,
+            true,
+            (1, 3),
+        );
+        assert_eq!(pane.cursor_col, 0, "wrap off is a no-op snap");
+    }
+
+    #[test]
+    fn toggle_wrap_on_while_following_snaps_col() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.cursor_col = 0;
+        assert!(pane.follow && !pane.line_wrap);
+
+        pane.toggle_line_wrap();
+        assert_eq!(pane.cursor_col, usize::MAX, "wrap-on while following snaps");
+
+        // Toggling back off should not re-snap, and a non-following pane keeps
+        // its column when wrap is toggled.
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        pane.cursor_col = 7;
+        pane.toggle_line_wrap();
+        assert_eq!(pane.cursor_col, 7, "no snap when not following");
     }
 }

@@ -26,12 +26,13 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config) -> Result<Self, FmlError> {
         let theme = config.tui.resolved_theme_with(&config.themes)?;
+        let line_wrap = config.tui.line_wrap;
         Ok(AppState {
             store: RingBufferStore::new(config.store.clone()),
             config,
             theme,
             event_bus: EventBus::new(),
-            workspace: Workspace::new(),
+            workspace: Workspace::new(line_wrap),
             search: SearchState::new(),
             producer: ProducerState::new(),
         })

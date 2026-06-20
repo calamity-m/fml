@@ -356,8 +356,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new() -> Self {
-        let pane = Pane::new(PaneId(1));
+    /// Build a workspace whose initial pane starts at the configured wrap
+    /// default. Splits and new tabs inherit/seed from there.
+    pub fn new(line_wrap: bool) -> Self {
+        let mut pane = Pane::new(PaneId(1));
+        pane.line_wrap = line_wrap;
         Self {
             tabs: vec![Tab::new("main".to_string(), pane)],
             active_tab: 0,
@@ -455,10 +458,12 @@ impl Workspace {
 
     /// Create a new tab with a fresh tailing pane and focus it.
     /// Returns the new pane id for dispatch.
-    pub fn new_tab(&mut self, name: Option<String>) -> PaneId {
+    pub fn new_tab(&mut self, name: Option<String>, line_wrap: bool) -> PaneId {
         let id = self.alloc_pane_id();
         let name = name.unwrap_or_else(|| format!("tab {}", self.tabs.len() + 1));
-        self.tabs.push(Tab::new(name, Pane::new(id)));
+        let mut pane = Pane::new(id);
+        pane.line_wrap = line_wrap;
+        self.tabs.push(Tab::new(name, pane));
         self.active_tab = self.tabs.len() - 1;
         id
     }
@@ -487,7 +492,7 @@ impl Workspace {
 
 impl Default for Workspace {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
@@ -497,7 +502,7 @@ mod tests {
 
     #[test]
     fn split_same_axis_extends_instead_of_nesting() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.split(Direction::Horizontal);
         ws.split(Direction::Horizontal);
 
@@ -513,7 +518,7 @@ mod tests {
 
     #[test]
     fn split_other_axis_nests_under_focused_leaf() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.split(Direction::Horizontal);
         ws.split(Direction::Vertical);
 
@@ -536,7 +541,7 @@ mod tests {
 
     #[test]
     fn split_clones_focused_pane_filter() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.focused_pane_mut().filter = vec!["api".to_string()];
 
         let new_id = ws.split(Direction::Horizontal);
@@ -547,8 +552,31 @@ mod tests {
     }
 
     #[test]
+    fn startup_default_seeds_initial_pane_wrap() {
+        let ws = Workspace::new(true);
+        assert!(ws.focused_pane().line_wrap);
+    }
+
+    #[test]
+    fn split_inherits_wrap_state_of_source_pane() {
+        let mut ws = Workspace::new(false);
+        ws.focused_pane_mut().line_wrap = true;
+
+        ws.split(Direction::Horizontal);
+
+        assert!(ws.focused_pane().line_wrap, "split inherits the wrap flag");
+    }
+
+    #[test]
+    fn new_tab_seeds_wrap_from_config_default() {
+        let mut ws = Workspace::new(false);
+        ws.new_tab(Some("wrapped".to_string()), true);
+        assert!(ws.focused_pane().line_wrap);
+    }
+
+    #[test]
     fn close_collapses_split_and_last_pane_closes_tab() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.split(Direction::Horizontal);
 
         let (closed, empty) = ws.close_focused_pane();
@@ -563,7 +591,7 @@ mod tests {
 
     #[test]
     fn only_keeps_focused_pane() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.split(Direction::Horizontal);
         ws.split(Direction::Vertical);
         let focused = ws.tab().focused;
@@ -578,8 +606,8 @@ mod tests {
 
     #[test]
     fn tabs_cycle_and_close() {
-        let mut ws = Workspace::new();
-        ws.new_tab(Some("errors".to_string()));
+        let mut ws = Workspace::new(false);
+        ws.new_tab(Some("errors".to_string()), false);
         assert_eq!(ws.active_tab, 1);
         assert_eq!(ws.tab().name, "errors");
 
@@ -596,7 +624,7 @@ mod tests {
 
     #[test]
     fn directional_focus_uses_rendered_rects() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         let right = ws.split(Direction::Horizontal);
         let left = PaneId(1);
         ws.tab_mut().pane_mut(left).unwrap().rect = Rect::new(0, 0, 40, 20);
@@ -613,7 +641,7 @@ mod tests {
 
     #[test]
     fn layout_splits_area_evenly_with_vsplit_gutter() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.split(Direction::Horizontal);
         let mut rects = Vec::new();
         let mut gutters = Vec::new();
@@ -631,7 +659,7 @@ mod tests {
 
     #[test]
     fn stacked_layout_has_no_gutters() {
-        let mut ws = Workspace::new();
+        let mut ws = Workspace::new(false);
         ws.split(Direction::Vertical);
         let mut rects = Vec::new();
         let mut gutters = Vec::new();

@@ -52,12 +52,14 @@ pub struct TuiConfig {
     #[serde(default)]
     pub suppress_status_messages: bool,
 
-    /// Startup default for line wrapping in the log and preview panes.
+    /// Startup default for line wrapping in log panes.
     ///
     /// When `true`, long log entries wrap onto continuation lines indented
     /// under the `msg` column. When `false` (default), entries render on a
-    /// single line and are clipped to the pane width. Toggle at runtime with
-    /// the `toggle_line_wrap` keybinding; the flag is shared by both panes.
+    /// single line and are clipped to the pane width. This is only the startup
+    /// seed: wrapping is a **per-pane** runtime flag, toggled with `:wrap`
+    /// (`:set wrap`/`:set nowrap`) or the hardcoded `W` key, and each split
+    /// inherits the wrap state of the pane it was cloned from.
     #[serde(default)]
     pub line_wrap: bool,
 }
@@ -457,9 +459,11 @@ pub struct KeybindingsConfig {
 
     /// Toggle line-wrap mode for the log pane.
     ///
-    /// Only fires when the log pane has focus. Flips between single-line
-    /// truncated rendering and wrapped rendering with hanging-indent
-    /// continuation lines under the `msg` column.
+    /// **Not yet consulted by dispatch.** Like the rest of
+    /// [`KeybindingsConfig`], this field is advisory scaffolding — dispatch is
+    /// hardcoded, and line wrap is bound to a fixed `W` key (plus the `:wrap`
+    /// command). The default below documents that real key; overriding it has
+    /// no effect until configurable keybindings are wired.
     #[serde(default = "default_toggle_line_wrap")]
     pub toggle_line_wrap: Vec<String>,
 }
@@ -513,7 +517,9 @@ fn default_yank_selected_entry() -> Vec<String> {
 }
 
 fn default_toggle_line_wrap() -> Vec<String> {
-    vec!["w".into()]
+    // Hardcoded dispatch uses shift+`W` (`w` is word-forward); this advisory
+    // default matches the real key even though the field is not consulted.
+    vec!["W".into()]
 }
 
 #[cfg(test)]
@@ -531,8 +537,10 @@ mod tests {
     }
 
     #[test]
-    fn default_toggle_line_wrap_binding_is_w() {
+    fn default_toggle_line_wrap_binding_matches_hardcoded_key() {
+        // Advisory only (dispatch is hardcoded), but the default must match the
+        // real `W` key rather than the dead `w` (word-forward) it once claimed.
         let kb = KeybindingsConfig::default();
-        assert_eq!(kb.toggle_line_wrap, vec!["w".to_string()]);
+        assert_eq!(kb.toggle_line_wrap, vec!["W".to_string()]);
     }
 }

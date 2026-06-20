@@ -18,6 +18,7 @@ use ratatui::{Terminal, backend::Backend, layout::Direction};
 use tokio::{sync::mpsc, time::interval};
 use tracing::{debug, error, warn};
 
+pub mod layout;
 pub mod pane;
 pub mod render;
 pub mod workspace;
@@ -473,6 +474,8 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
 
     match (key.code, ctrl) {
         (KeyCode::Char('w'), true) => state.workspace.pending.prefix = Some(Prefix::Window),
+        // `W` (shift+w) toggles wrap; `w` (word-forward) is handled in motions.
+        (KeyCode::Char('W'), false) => state.workspace.focused_pane_mut().toggle_line_wrap(),
         (KeyCode::Char('F'), false) => {
             let (ws, ctx) = split_state(state);
             ws.focused_pane_mut().enter_follow(&ctx);
@@ -694,7 +697,7 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) {
 /// Command names offered by first-token completion.
 const COMMAND_NAMES: &[&str] = &[
     "filter", "sources", "vsplit", "split", "hsplit", "tabnew", "tabclose", "tabnext", "tabprev",
-    "tail", "refresh", "clear", "only", "help", "quit", "qa",
+    "tail", "refresh", "clear", "only", "help", "quit", "qa", "wrap", "set",
 ];
 
 /// Vim-style `:` completion. The first Tab gathers candidates for the
@@ -789,9 +792,10 @@ fn execute_command(state: &mut AppState, line: &str) {
             }
         }
         "tabnew" => {
+            let line_wrap = state.config.tui.line_wrap;
             state
                 .workspace
-                .new_tab((!args.is_empty()).then(|| args.join(" ")));
+                .new_tab((!args.is_empty()).then(|| args.join(" ")), line_wrap);
             let (ws, ctx) = split_state(state);
             dispatch_pane_current(ws.focused_pane_mut(), &ctx);
         }
@@ -837,6 +841,17 @@ fn execute_command(state: &mut AppState, line: &str) {
                 pane.results_to_stream(&ctx);
             }
         }
+        "wrap" => {
+            state.workspace.focused_pane_mut().toggle_line_wrap();
+        }
+        // `:set` is not a general option namespace — only wrap/nowrap.
+        "set" => match args.first().copied() {
+            Some("wrap") => state.workspace.focused_pane_mut().line_wrap = true,
+            Some("nowrap") => state.workspace.focused_pane_mut().line_wrap = false,
+            _ => {
+                state.workspace.notice = Some("usage: :set wrap | :set nowrap".to_string());
+            }
+        },
         "sources" | "src" | "ls" => open_source_picker(state),
         "help" | "h" => state.workspace.help_open = true,
         unknown => {
@@ -1036,6 +1051,83 @@ mod tests {
         let state = handle_tui_event(input(KeyCode::Char('k')), state);
 
         assert_eq!(state.workspace.focused_pane().cursor_seq, Some(8));
+    }
+
+    #[test]
+    fn shift_w_toggles_line_wrap_on_active_pane() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+        assert!(!state.workspace.focused_pane().line_wrap);
+
+        let shift_w = || TuiEvent::Input(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        let state = handle_tui_event(shift_w(), state);
+        assert!(state.workspace.focused_pane().line_wrap);
+        let state = handle_tui_event(shift_w(), state);
+        assert!(!state.workspace.focused_pane().line_wrap);
+    }
+
+    #[test]
+    fn lowercase_w_is_word_forward_not_wrap() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+
+        let state = handle_tui_event(input(KeyCode::Char('w')), state);
+
+        // `w` must remain word-forward and leave wrap untouched.
+        assert!(!state.workspace.focused_pane().line_wrap);
+    }
+
+    #[test]
+    fn wrap_command_toggles_and_set_is_idempotent() {
+        let mut state = state_with_entries(3);
+        seed_tail(&mut state, &[1, 2, 3]);
+
+        execute_command(&mut state, "wrap");
+        assert!(state.workspace.focused_pane().line_wrap);
+        execute_command(&mut state, "wrap");
+        assert!(!state.workspace.focused_pane().line_wrap);
+
+        execute_command(&mut state, "set wrap");
+        execute_command(&mut state, "set wrap");
+        assert!(
+            state.workspace.focused_pane().line_wrap,
+            ":set wrap is idempotent"
+        );
+        execute_command(&mut state, "set nowrap");
+        execute_command(&mut state, "set nowrap");
+        assert!(
+            !state.workspace.focused_pane().line_wrap,
+            ":set nowrap is idempotent"
+        );
+    }
+
+    #[test]
+    fn set_without_known_arg_reports_usage() {
+        let mut state = state_with_entries(1);
+        execute_command(&mut state, "set bogus");
+        assert!(
+            state
+                .workspace
+                .notice
+                .as_deref()
+                .unwrap_or("")
+                .contains("set wrap")
+        );
+        assert!(!state.workspace.focused_pane().line_wrap);
+    }
+
+    #[test]
+    fn startup_default_seeds_pane_line_wrap() {
+        let mut config = Config::default();
+        config.tui.line_wrap = true;
+        let state = AppState::new(config).expect("app state");
+        assert!(state.workspace.focused_pane().line_wrap);
+    }
+
+    #[test]
+    fn command_names_include_wrap_and_set_for_completion() {
+        assert!(COMMAND_NAMES.contains(&"wrap"));
+        assert!(COMMAND_NAMES.contains(&"set"));
     }
 
     #[test]
