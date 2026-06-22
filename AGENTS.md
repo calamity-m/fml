@@ -1,6 +1,6 @@
-# Init Context
+# fml
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+A tui tool built to assist overburdened developers triage issues by finding needles in log output haystacks
 
 ## 1. Think Before Coding
 
@@ -14,38 +14,14 @@ Before implementing:
 - Don't silently expand into wiring, integrations, or adjacent work that wasn't requested.
 - If something is unclear, stop, name what's confusing, and ask.
 
-## 2. Simplicity First
+## 2. Guidelines
 
-**Minimum code that solves the problem. Nothing speculative.**
+- Test-only helpers or methods are rejected
+- Do not refactor code to allow for testability without asking the user first
+- Overengineering is a sin and premature optimization is the root of all evil but low quality code and committed shortcuts are just as bad
+- Complex UI features should be self-tested for verification via any zellij or tmux use skills
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No configurability that wasn't requested.
-- No error handling for impossible scenarios.
-- No test-only helpers or methods. If an existing helper is close, generalize it (add a parameter, update its callers) rather than adding a `_with_x` sibling. Methods on production types must have a real production caller — not just a test.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't improve adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing Rust style, module layout, and test patterns.
-- If you notice unrelated dead code, mention it instead of deleting it.
-
-When your changes create orphans:
-
-- Remove imports, variables, functions, or tests that your changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
+## 3. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
@@ -65,7 +41,7 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria require clarification.
 
-## 5. In-Code Documentation
+## 4. In-Code Documentation
 
 **Public API must be documented. Internal logic should explain the why.**
 
@@ -80,69 +56,8 @@ For internal code, comment the why, not the what:
 - Event ordering, async cancellation, terminal lifecycle, and store/search invariants earn a short comment.
 - Keep comments short. Delete comments that merely restate the code.
 
-## 6. Pre-commit Hooks
-
-**Prefer automated checks over repeated manual reminders.**
-
-No pre-commit configuration is currently checked in. If adding one, base it on the commands this repo already uses naturally:
-
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets`
-
-Rustfmt is available, but `cargo fmt --check` currently reports existing formatting drift in `fml/src/producer/file.rs` and `fml/src/producer/normalizer/logfmt.rs`. Do not make it a blocking hook until that drift is fixed. Likewise, do not add `-- -D warnings` to clippy until the existing producer/normalizer warnings are cleared.
-
-For local verification after Rust changes, run the smallest relevant command first, then broaden to `cargo test --workspace` when the change touches shared state, event flow, producers, search, or TUI rendering.
-
-For release steps, follow `docs/RELEASE.md`.
-
-## 7. Repository Map
-
-**Brief orientation. Where things live, where execution starts, how data moves.**
-
-### Key directories
-
-```text
-fml/src/                 -> Rust crate source for the terminal log viewer
-fml/src/main.rs          -> CLI parsing, config/logging initialization, app startup
-fml/src/app.rs           -> App construction, producer lifecycle, main async event loop
-fml/src/tui/             -> ratatui/crossterm rendering, input handling, layout, widgets
-fml/src/state/           -> AppState plus focused TUI/search/producer state structs
-fml/src/producer/        -> fake/file/docker/kubernetes log producers and normalizers
-fml/src/search/          -> tail, history, and fuzzy search workers and reducer
-fml/src/config/          -> TOML/env-backed config structs and built-in themes
-fml/tests/               -> integration and snapshot-style tests
-```
-
-### Entry points
-
-```text
-fml/src/main.rs  -> `cargo run -p fml -- --producer demo` (interactive demo TUI)
-fml/src/lib.rs   -> `cargo test -p fml` (library and integration tests)
-```
-
-### Data flow
-
-```text
-CLI/config -> App::new -> AppState + RingBufferStore + EventBus
-          -> tui::spawn + registered LogProducer::start
-          -> App::event_loop receives TuiEvent/SearchEvent/ProducerEvent
-          -> reducers update AppState, store entries, dispatch searches, and render TUI
-```
-
-Producers emit `SourceFound`, `SourceLost`, and `StoreEvent` messages. Store events append to `RingBufferStore`; TUI actions dispatch `Query` values; search workers read retained log entries and return target-scoped results back through the event bus.
-
-## 8. Project-Specific Notes
+## 5. Key Decisions
 
 - The app is an async terminal UI built on tokio, crossterm, and ratatui.
 - `App::event_loop` is the central reducer loop; keep event ordering changes deliberate and tested.
-- `LogProducer::start` must return promptly; long-running ingest work belongs in a spawned task and must observe the producer cancellation contract.
-- Producers should announce sources before emitting entries that reference them.
 - `RingBufferStore` assigns monotonic sequence IDs while retaining only the configured capacity.
-- Search is latest-wins per `SearchTarget`; stale worker results are intentionally discarded by request id.
-- Source filtering uses stable source IDs, while display names are labels for users.
-- Config loads from user config, local `.config/fml/config`, then `FML__*` environment overrides.
-- Docker log delivery is inherently batched (worse on WSL2 / Docker Desktop); multi-second pauses followed by thousands of entries at once are the daemon, not the producer.
-
----
-
-**These guidelines are working if:** diffs stay focused, new behavior has concrete verification, and clarifying questions happen before implementation rather than after mistakes.
