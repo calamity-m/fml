@@ -524,12 +524,55 @@ impl Pane {
     }
 
     pub fn goto_top(&mut self, ctx: &SearchCtx) {
-        self.jump_to(ctx.bounds.0, ctx);
+        match &self.view {
+            // In a results view, `gg` is the earliest *match*, not the store's
+            // oldest entry — staying in the search rather than dropping to a
+            // stream. A stream pages to the absolute low bound.
+            View::Results { .. } => self.goto_results_end(false, ctx),
+            View::Stream { .. } => self.jump_to(ctx.bounds.0, ctx),
+        }
     }
 
     pub fn goto_bottom(&mut self, ctx: &SearchCtx) {
         self.snap_col_to_row_end();
-        self.jump_to(ctx.bounds.1, ctx);
+        match &self.view {
+            View::Results { .. } => self.goto_results_end(true, ctx),
+            View::Stream { .. } => self.jump_to(ctx.bounds.1, ctx),
+        }
+    }
+
+    /// Jump the cursor to the latest (`last`) or earliest match of the search
+    /// currently shown, staying in the results view. Walks the full uncapped
+    /// hit list so `gg`/`G` reach matches beyond the displayed top-scored
+    /// subset; falls back to displayed entries for results that predate
+    /// split emission (e.g. unit-injected). Freezes a following pane like any
+    /// other cursor motion, but only when the cursor actually moves — an
+    /// already-newest cursor on `G` stays live, matching [`Pane::move_cursor`].
+    fn goto_results_end(&mut self, last: bool, ctx: &SearchCtx) {
+        let edge = |first: Option<u64>, last_seq: Option<u64>| if last { last_seq } else { first };
+        let target = if self.live_hit_seqs.is_empty() {
+            let entries = self.view.entries();
+            edge(
+                entries.first().map(|entry| entry.seq),
+                entries.last().map(|entry| entry.seq),
+            )
+        } else {
+            edge(
+                self.live_hit_seqs.first().copied(),
+                self.live_hit_seqs.last().copied(),
+            )
+        };
+        let Some(seq) = target else {
+            return;
+        };
+        if self.cursor_seq == Some(seq) {
+            return;
+        }
+        let was_following = self.follow;
+        self.cursor_seq = Some(seq);
+        if was_following {
+            self.freeze_search(ctx);
+        }
     }
 
     /// When wrapping, park the sticky column past the end of the line so the
@@ -1518,6 +1561,98 @@ mod tests {
 
         assert!(pane.follow, "underfilled live view keeps following");
         assert!(rx.try_recv().is_err(), "no dispatch on an unmovable cursor");
+    }
+
+    #[test]
+    fn goto_top_in_results_jumps_to_earliest_hit_not_store_bound() {
+        let srcs = [source("src-a", None)];
+        // Store low bound is 1, but the earliest *match* is 3.
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[3, 6, 9], 9);
+        assert!(pane.follow);
+
+        pane.goto_top(&ctx);
+
+        assert_eq!(pane.cursor_seq, Some(3), "lands on the earliest match");
+        assert!(
+            !pane.follow,
+            "leaving the newest match freezes the live search"
+        );
+        assert!(pane.holding_for_complete);
+        // Stays a fuzzy results query — never a History stream dispatch.
+        match rx.try_recv().expect("freeze dispatch") {
+            SearchEvent::Search {
+                query: Query::Fuzzy { until_seq, .. },
+                ..
+            } => assert_eq!(until_seq, Some(9)),
+            event => panic!("expected bounded fuzzy, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_results_end_walks_full_hit_list_beyond_displayed_subset() {
+        let srcs = [source("src-a", None)];
+        let (ctx, _rx) = ctx_with(&srcs, (1, 1000));
+        // Displayed entries are a capped slice (20..=22); the full hit list
+        // spans 10..=1000.
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        let query = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: Some(1000),
+        };
+        pane.active_query = Some(query.clone());
+        pane.apply_result(
+            &query,
+            entries(&[20, 21, 22]),
+            HashMap::new(),
+            Some(vec![10, 20, 21, 22, 1000]),
+            None,
+            true,
+            (1, 1000),
+        );
+
+        pane.goto_top(&ctx);
+        assert_eq!(pane.cursor_seq, Some(10), "earliest of the full hit list");
+
+        pane.goto_bottom(&ctx);
+        assert_eq!(pane.cursor_seq, Some(1000), "latest of the full hit list");
+    }
+
+    #[test]
+    fn goto_bottom_in_live_results_at_newest_stays_live() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[3, 6, 9], 9);
+        assert!(pane.follow);
+        assert_eq!(pane.cursor_seq, Some(9));
+
+        // Already on the newest match: G must not freeze or dispatch.
+        pane.goto_bottom(&ctx);
+
+        assert!(pane.follow, "an already-newest cursor keeps following");
+        assert!(
+            rx.try_recv().is_err(),
+            "no dispatch when the cursor cannot move"
+        );
+    }
+
+    #[test]
+    fn goto_top_in_frozen_results_moves_cursor_without_dispatch() {
+        let srcs = [source("src-a", None)];
+        let (ctx, mut rx) = ctx_with(&srcs, (1, 9));
+        let mut pane = live_results_pane(&[3, 6, 9], 9);
+        // Freeze first so we are in a non-following results view.
+        pane.move_cursor(-1, &ctx);
+        let _ = rx.try_recv().expect("freeze dispatch");
+        pane.holding_for_complete = false;
+        pane.cursor_seq = Some(6);
+
+        pane.goto_top(&ctx);
+
+        assert_eq!(pane.cursor_seq, Some(3));
+        assert!(!pane.follow);
+        assert!(rx.try_recv().is_err(), "frozen gg only moves the cursor");
     }
 
     #[test]

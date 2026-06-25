@@ -796,7 +796,7 @@ const HELP_TEXT: &str = "\
   j k / ↓ ↑      move cursor (counts work: 5j)
   h l 0 $ w b    move within the line
   Ctrl-d Ctrl-u  half page · Ctrl-f Ctrl-b page
-  gg G           oldest / newest entry
+  gg G           oldest / newest entry (match in results)
   F              follow tail · go live on a search
   /              fuzzy search (TAIL = live, else frozen)
   n N            next / previous hit (first jump freezes)
