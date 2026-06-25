@@ -38,11 +38,12 @@ pub fn try_parse_logfmt(raw: &str, source: &Source) -> Option<NewLogEntry> {
                     level = LogLevel::parse_level(v);
                 }
 
-                if !ts_parsed && TIMESTAMP_KEYS.contains(&lower_key.as_str()) {
-                    if let Some(parsed) = super::json::try_parse_timestamp(v) {
-                        ts = parsed;
-                        ts_parsed = true;
-                    }
+                if !ts_parsed
+                    && TIMESTAMP_KEYS.contains(&lower_key.as_str())
+                    && let Some(parsed) = super::json::try_parse_timestamp(v)
+                {
+                    ts = parsed;
+                    ts_parsed = true;
                 }
 
                 if msg_value.is_none() && MESSAGE_KEYS.contains(&lower_key.as_str()) {
@@ -95,7 +96,7 @@ fn parse_pairs(mut input: &str) -> Option<Vec<(String, Option<String>)>> {
                 input = &input[1..]; // consume opening '"'
                 let mut value = String::new();
                 loop {
-                    match input.find(|c: char| c == '\\' || c == '"') {
+                    match input.find(['\\', '"']) {
                         Some(pos) => {
                             value.push_str(&input[..pos]);
                             if input[pos..].starts_with("\\\"") {

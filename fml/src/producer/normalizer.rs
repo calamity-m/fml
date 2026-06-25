@@ -8,7 +8,7 @@ mod json;
 mod logfmt;
 mod pattern;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Normalizer;
 
 impl Normalizer {
@@ -17,9 +17,9 @@ impl Normalizer {
     }
 
     pub fn normalize(&self, raw: &str, source: Source) -> NewLogEntry {
-        let parsed = json::try_parse_json(&raw, &source)
-            .or_else(|| logfmt::try_parse_logfmt(&raw, &source))
-            .or_else(|| pattern::try_parse_patterns(&raw, &source))
+        let parsed = json::try_parse_json(raw, &source)
+            .or_else(|| logfmt::try_parse_logfmt(raw, &source))
+            .or_else(|| pattern::try_parse_patterns(raw, &source))
             .unwrap_or_else(|| NewLogEntry {
                 msg: raw.to_string(),
                 ts: chrono::Utc::now(),

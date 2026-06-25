@@ -102,7 +102,7 @@ impl LogProducer for KubernetesProducer {
     fn start(&self, tx: mpsc::Sender<ProducerEvent>) {
         let client = self.client.clone();
         let namespace = self.namespace.clone();
-        let normalizer = self.normalizer.clone();
+        let normalizer = self.normalizer;
         let cancel = self.cancel.clone();
         let source_block = self.source_block.clone();
         let ingest = self.ingest;

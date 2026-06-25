@@ -71,7 +71,7 @@ impl DockerProducer {
 impl LogProducer for DockerProducer {
     fn start(&self, tx: mpsc::Sender<ProducerEvent>) {
         let docker = self.docker.clone();
-        let normalizer = self.normalizer.clone();
+        let normalizer = self.normalizer;
         let cancel = self.cancel.clone();
         let source_block = self.source_block.clone();
         let ingest = self.ingest;
@@ -117,7 +117,7 @@ async fn run_docker_producer(
             &last_seen,
             source,
             docker.clone(),
-            normalizer.clone(),
+            normalizer,
             tx.clone(),
             &cancel,
             &source_block,
@@ -141,7 +141,7 @@ async fn run_docker_producer(
                     &mut tracked,
                     &mut last_seen,
                     docker.clone(),
-                    normalizer.clone(),
+                    normalizer,
                     tx.clone(),
                     &cancel,
                     &source_block,

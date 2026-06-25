@@ -57,7 +57,7 @@ impl FileProducer {
 impl LogProducer for FileProducer {
     fn start(&self, tx: mpsc::Sender<ProducerEvent>) {
         let path = self.path.clone();
-        let normalizer = self.normalizer.clone();
+        let normalizer = self.normalizer;
         let cancel = self.cancel.clone();
         let ingest = self.ingest;
 

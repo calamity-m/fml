@@ -97,6 +97,7 @@ pub(crate) async fn emit_results(
 /// workers (fuzzy) that populate per-field `Match` data; the entry-only
 /// `emit_results` helper hard-codes an empty matches vec. `hit_seqs`
 /// carries the full uncapped match list when `hits` is display-capped.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_hits(
     target: SearchTarget,
     query: Query,
