@@ -120,6 +120,19 @@ impl Prompt {
     }
 }
 
+/// Transient ↑/↓ navigation over a prompt history list.
+///
+/// `pos` is `None` while the user edits the live draft and `Some(i)` once
+/// navigation has walked into the history at index `i`. `draft` stashes the
+/// in-progress text when navigation begins so ↓ past the newest entry restores
+/// it. Reset whenever a prompt is opened or edited so navigation always starts
+/// from the current input.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HistoryNav {
+    pub pos: Option<usize>,
+    pub draft: String,
+}
+
 /// Modal fuzzy source picker (`:sources`): type to narrow, Tab to toggle,
 /// Enter writes the focused pane's filter as exact `=name` patterns.
 #[derive(Debug, Default)]
@@ -352,6 +365,12 @@ pub struct Workspace {
     pub picker: Option<SourcePicker>,
     /// Active `:` prompt completion; cleared by any non-Tab edit.
     pub completion: Option<Completion>,
+    /// Confirmed `/` searches, oldest first, for ↑/↓ recall.
+    pub search_history: Vec<String>,
+    /// Executed `:` commands, oldest first, for ↑/↓ recall.
+    pub command_history: Vec<String>,
+    /// Transient ↑/↓ navigation state shared by both prompts.
+    pub history_nav: HistoryNav,
     next_pane_id: u64,
 }
 
@@ -371,8 +390,78 @@ impl Workspace {
             help_open: false,
             picker: None,
             completion: None,
+            search_history: Vec::new(),
+            command_history: Vec::new(),
+            history_nav: HistoryNav::default(),
             next_pane_id: 2,
         }
+    }
+
+    fn history(&self, command: bool) -> &[String] {
+        if command {
+            &self.command_history
+        } else {
+            &self.search_history
+        }
+    }
+
+    /// Append a confirmed prompt line to the matching history, deduping
+    /// against the most recent entry, and reset navigation. Empty lines are
+    /// dropped so blank confirmations don't pollute recall.
+    pub fn record_history(&mut self, command: bool, line: String) {
+        if !line.is_empty() {
+            let history = if command {
+                &mut self.command_history
+            } else {
+                &mut self.search_history
+            };
+            if history.last() != Some(&line) {
+                history.push(line);
+            }
+        }
+        self.history_nav = HistoryNav::default();
+    }
+
+    /// Reset ↑/↓ navigation so the next recall starts from the live input.
+    /// Called when a prompt opens and on every prompt edit.
+    pub fn reset_history_nav(&mut self) {
+        self.history_nav = HistoryNav::default();
+    }
+
+    /// Recall the previous (older) history entry into the prompt, stashing the
+    /// live draft on the first step.
+    pub fn history_prev(&mut self, command: bool) {
+        let len = self.history(command).len();
+        if len == 0 {
+            return;
+        }
+        let next = match self.history_nav.pos {
+            None => {
+                self.history_nav.draft = self.prompt.buf.clone();
+                len - 1
+            }
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.history_nav.pos = Some(next);
+        self.prompt.buf = self.history(command)[next].clone();
+        self.prompt.end();
+    }
+
+    /// Recall the next (newer) entry, restoring the stashed draft once
+    /// navigation walks past the newest entry. No-op while editing the draft.
+    pub fn history_next(&mut self, command: bool) {
+        let Some(i) = self.history_nav.pos else {
+            return;
+        };
+        if i + 1 < self.history(command).len() {
+            self.history_nav.pos = Some(i + 1);
+            self.prompt.buf = self.history(command)[i + 1].clone();
+        } else {
+            self.history_nav.pos = None;
+            self.prompt.buf = std::mem::take(&mut self.history_nav.draft);
+        }
+        self.prompt.end();
     }
 
     fn alloc_pane_id(&mut self) -> PaneId {
@@ -686,5 +775,73 @@ mod tests {
         prompt.right();
         prompt.insert('!');
         assert_eq!(prompt.buf, "é!x");
+    }
+
+    #[test]
+    fn record_history_appends_dedups_and_drops_empty() {
+        let mut ws = Workspace::new(false);
+        ws.record_history(false, "alpha".to_string());
+        ws.record_history(false, "alpha".to_string()); // consecutive dup ignored
+        ws.record_history(false, "beta".to_string());
+        ws.record_history(false, String::new()); // empty dropped
+        assert_eq!(ws.search_history, vec!["alpha", "beta"]);
+        // Non-consecutive repeats are allowed.
+        ws.record_history(false, "alpha".to_string());
+        assert_eq!(ws.search_history, vec!["alpha", "beta", "alpha"]);
+        // The `command` flag routes to the other list.
+        ws.record_history(true, "wrap".to_string());
+        assert_eq!(ws.command_history, vec!["wrap"]);
+    }
+
+    #[test]
+    fn history_prev_next_walks_entries_and_restores_draft() {
+        let mut ws = Workspace::new(false);
+        ws.record_history(false, "alpha".to_string());
+        ws.record_history(false, "beta".to_string());
+
+        // Stash an in-progress draft, then walk back through history.
+        ws.prompt.insert_str("xy");
+        ws.history_prev(false);
+        assert_eq!(ws.prompt.buf, "beta");
+        assert_eq!(ws.prompt.cursor, 4); // cursor parks at end
+        ws.history_prev(false);
+        assert_eq!(ws.prompt.buf, "alpha");
+        ws.history_prev(false); // clamps at the oldest entry
+        assert_eq!(ws.prompt.buf, "alpha");
+
+        // Walking forward returns toward the stashed draft.
+        ws.history_next(false);
+        assert_eq!(ws.prompt.buf, "beta");
+        ws.history_next(false);
+        assert_eq!(ws.prompt.buf, "xy");
+        // Past the newest entry, further `next` is a no-op on the draft.
+        ws.history_next(false);
+        assert_eq!(ws.prompt.buf, "xy");
+    }
+
+    #[test]
+    fn history_prev_on_empty_history_is_noop() {
+        let mut ws = Workspace::new(false);
+        ws.prompt.insert_str("draft");
+        ws.history_prev(false);
+        assert_eq!(ws.prompt.buf, "draft");
+        assert_eq!(ws.history_nav, HistoryNav::default());
+    }
+
+    #[test]
+    fn reset_history_nav_discards_stash() {
+        let mut ws = Workspace::new(false);
+        ws.record_history(false, "alpha".to_string());
+        ws.prompt.insert_str("xy");
+        ws.history_prev(false);
+        assert_eq!(ws.prompt.buf, "alpha");
+
+        // Simulating an edit: reset nav so the next walk re-stashes the
+        // current buffer rather than the stale draft.
+        ws.reset_history_nav();
+        ws.history_prev(false);
+        assert_eq!(ws.prompt.buf, "alpha");
+        ws.history_next(false);
+        assert_eq!(ws.prompt.buf, "alpha"); // restores the new buffer, not "xy"
     }
 }

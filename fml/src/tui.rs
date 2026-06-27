@@ -483,6 +483,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
         (KeyCode::Char('/'), false) => {
             state.workspace.mode = Mode::Search;
             state.workspace.prompt.reset();
+            state.workspace.reset_history_nav();
             let (ws, ctx) = split_state(state);
             let pane = ws.focused_pane_mut();
             pane.begin_search();
@@ -491,6 +492,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
         (KeyCode::Char(':'), false) => {
             state.workspace.mode = Mode::Command;
             state.workspace.prompt.reset();
+            state.workspace.reset_history_nav();
         }
         (KeyCode::Char(c @ ('v' | 'V')), false) => {
             let pane = state.workspace.focused_pane();
@@ -630,24 +632,37 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) {
         }
         (KeyCode::Enter, _) => {
             state.workspace.mode = Mode::Normal;
+            let term = state.workspace.prompt.buf.clone();
             let hits = state.workspace.focused_pane_mut().confirm_search();
             state.workspace.notice = Some(if hits == 0 {
                 "no matches".to_string()
             } else {
                 format!("{hits} matches — Enter opens in context, n/N jumps")
             });
+            state.workspace.record_history(false, term);
             state.workspace.prompt.reset();
+        }
+        (KeyCode::Up, _) => {
+            state.workspace.history_prev(false);
+            live_search(state);
+        }
+        (KeyCode::Down, _) => {
+            state.workspace.history_next(false);
+            live_search(state);
         }
         (KeyCode::Char('u'), true) => {
             state.workspace.prompt.reset();
+            state.workspace.reset_history_nav();
             live_search(state);
         }
         (KeyCode::Char(c), false) => {
             state.workspace.prompt.insert(c);
+            state.workspace.reset_history_nav();
             live_search(state);
         }
         (KeyCode::Backspace, _) => {
             state.workspace.prompt.backspace();
+            state.workspace.reset_history_nav();
             live_search(state);
         }
         (KeyCode::Left, _) => state.workspace.prompt.left(),
@@ -679,13 +694,25 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) {
             let line = state.workspace.prompt.buf.clone();
             state.workspace.mode = Mode::Normal;
             state.workspace.prompt.reset();
+            state.workspace.record_history(true, line.clone());
             execute_command(state, &line);
         }
         (KeyCode::Tab, _) => cycle_completion(state, true),
         (KeyCode::BackTab, _) => cycle_completion(state, false),
-        (KeyCode::Char('u'), true) => state.workspace.prompt.reset(),
-        (KeyCode::Char(c), false) => state.workspace.prompt.insert(c),
-        (KeyCode::Backspace, _) => state.workspace.prompt.backspace(),
+        (KeyCode::Up, _) => state.workspace.history_prev(true),
+        (KeyCode::Down, _) => state.workspace.history_next(true),
+        (KeyCode::Char('u'), true) => {
+            state.workspace.prompt.reset();
+            state.workspace.reset_history_nav();
+        }
+        (KeyCode::Char(c), false) => {
+            state.workspace.prompt.insert(c);
+            state.workspace.reset_history_nav();
+        }
+        (KeyCode::Backspace, _) => {
+            state.workspace.prompt.backspace();
+            state.workspace.reset_history_nav();
+        }
         (KeyCode::Left, _) => state.workspace.prompt.left(),
         (KeyCode::Right, _) => state.workspace.prompt.right(),
         (KeyCode::Home, _) => state.workspace.prompt.home(),
@@ -1252,6 +1279,80 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn type_str(mut state: AppState, text: &str) -> AppState {
+        for c in text.chars() {
+            state = handle_tui_event(input(KeyCode::Char(c)), state);
+        }
+        state
+    }
+
+    #[test]
+    fn search_history_recalls_confirmed_queries() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+
+        // Confirm two distinct searches.
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        let state = type_str(state, "alpha");
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        let state = type_str(state, "beta");
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.workspace.search_history, vec!["alpha", "beta"]);
+
+        // Open a fresh prompt, type a draft, then walk the history.
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        let state = type_str(state, "xy");
+        let state = handle_tui_event(input(KeyCode::Up), state);
+        assert_eq!(state.workspace.prompt.buf, "beta");
+        let state = handle_tui_event(input(KeyCode::Up), state);
+        assert_eq!(state.workspace.prompt.buf, "alpha");
+        // Up at the oldest entry stays put.
+        let state = handle_tui_event(input(KeyCode::Up), state);
+        assert_eq!(state.workspace.prompt.buf, "alpha");
+        // Down walks back toward the stashed draft.
+        let state = handle_tui_event(input(KeyCode::Down), state);
+        assert_eq!(state.workspace.prompt.buf, "beta");
+        let state = handle_tui_event(input(KeyCode::Down), state);
+        assert_eq!(state.workspace.prompt.buf, "xy");
+    }
+
+    #[test]
+    fn search_history_dedups_and_ignores_empty() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+
+        let confirm = |state, term: &str| {
+            let state = handle_tui_event(input(KeyCode::Char('/')), state);
+            let state = type_str(state, term);
+            handle_tui_event(input(KeyCode::Enter), state)
+        };
+        let state = confirm(state, "dup");
+        let state = confirm(state, "dup");
+        // Blank confirmation is dropped.
+        let state = handle_tui_event(input(KeyCode::Char('/')), state);
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.workspace.search_history, vec!["dup"]);
+    }
+
+    #[test]
+    fn command_history_recalls_executed_commands() {
+        let state = state_with_entries(1);
+
+        let state = handle_tui_event(input(KeyCode::Char(':')), state);
+        let state = type_str(state, "wrap");
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+
+        assert_eq!(state.workspace.command_history, vec!["wrap"]);
+
+        let state = handle_tui_event(input(KeyCode::Char(':')), state);
+        let state = handle_tui_event(input(KeyCode::Up), state);
+        assert_eq!(state.workspace.mode, Mode::Command);
+        assert_eq!(state.workspace.prompt.buf, "wrap");
     }
 
     #[test]
