@@ -244,17 +244,31 @@ fn handle_key(state: &mut AppState, key: KeyEvent) {
 }
 
 fn handle_detail_key(state: &mut AppState, key: KeyEvent) {
-    let pane = state.workspace.focused_pane_mut();
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            pane.detail_scroll = pane.detail_scroll.saturating_add(1)
+            let pane = state.workspace.focused_pane_mut();
+            pane.detail_scroll = pane.detail_scroll.saturating_add(1);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            pane.detail_scroll = pane.detail_scroll.saturating_sub(1)
+            let pane = state.workspace.focused_pane_mut();
+            pane.detail_scroll = pane.detail_scroll.saturating_sub(1);
         }
-        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let pane = state.workspace.focused_pane_mut();
             pane.detail_open = false;
             pane.detail_scroll = 0;
+        }
+        KeyCode::Enter => {
+            // Enter on an already-open overlay confirms the jump into the
+            // stream; Esc/q just back out of the overlay in place.
+            let was_results = matches!(state.workspace.focused_pane().view, View::Results { .. });
+            let pane = state.workspace.focused_pane_mut();
+            pane.detail_open = false;
+            pane.detail_scroll = 0;
+            if was_results {
+                let (ws, ctx) = split_state(state);
+                ws.focused_pane_mut().results_to_stream(&ctx);
+            }
         }
         _ => {}
     }
@@ -507,16 +521,10 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
         (KeyCode::Char('y'), false) => yank_cursor_entry(state),
         (KeyCode::Char('?'), false) => state.workspace.help_open = true,
         (KeyCode::Enter, _) => {
-            let (ws, ctx) = split_state(state);
-            let pane = ws.focused_pane_mut();
-            match &pane.view {
-                View::Results { .. } => pane.results_to_stream(&ctx),
-                View::Stream { .. } => {
-                    if pane.cursor_entry().is_some() {
-                        pane.detail_open = true;
-                        pane.detail_scroll = 0;
-                    }
-                }
+            let pane = state.workspace.focused_pane_mut();
+            if pane.cursor_entry().is_some() {
+                pane.detail_open = true;
+                pane.detail_scroll = 0;
             }
         }
         (KeyCode::Esc, _) => {
@@ -1271,6 +1279,66 @@ mod tests {
 
         // Esc drops back to a stream centered on the cursor.
         let mut state = handle_tui_event(input(KeyCode::Esc), state);
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::History { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn enter_on_results_expands_in_place_then_jumps_on_second_enter() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+
+        // Type a search and inject a fuzzy result as the engine would.
+        let mut state = handle_tui_event(input(KeyCode::Char('/')), state);
+        state.workspace.prompt.insert('e');
+        let term = Query::Fuzzy {
+            term: "e".to_string(),
+            until_seq: None,
+        };
+        let mut entries = Vec::new();
+        state.store.fetch_requested(&[2, 4], &mut entries).unwrap();
+        {
+            let pane = state.workspace.focused_pane_mut();
+            pane.active_query = Some(term.clone());
+            pane.apply_result(&term, entries, HashMap::new(), None, None, true, (1, 5));
+        }
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(matches!(
+            state.workspace.focused_pane().view,
+            View::Results { .. }
+        ));
+        drain_search_events(&mut state);
+
+        // First Enter on a result row expands the overlay in place, staying
+        // on the results view rather than jumping into the stream.
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(state.workspace.focused_pane().detail_open);
+        assert!(matches!(
+            state.workspace.focused_pane().view,
+            View::Results { .. }
+        ));
+        assert!(drain_search_events(&mut state).is_empty());
+
+        // Esc just closes the overlay, still browsing the results.
+        let state = handle_tui_event(input(KeyCode::Esc), state);
+        assert!(!state.workspace.focused_pane().detail_open);
+        assert!(matches!(
+            state.workspace.focused_pane().view,
+            View::Results { .. }
+        ));
+
+        // Reopen, then a second Enter on the open overlay jumps into the
+        // stream like the pre-existing single-Enter behavior did.
+        let state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(state.workspace.focused_pane().detail_open);
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(!state.workspace.focused_pane().detail_open);
         let events = drain_search_events(&mut state);
         assert!(events.iter().any(|event| matches!(
             event,
