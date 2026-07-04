@@ -12,6 +12,10 @@ use crate::event::PaneId;
 use crate::log::{Source, SourceId};
 use crate::tui::pane::Pane;
 
+/// Cap on retained entries per prompt history, oldest evicted first, so a
+/// long session's `/` and `:` recall lists don't grow unbounded.
+const MAX_HISTORY: usize = 200;
+
 /// Global input mode. `TAIL` is not a mode: it is the focused pane's
 /// `follow` flag, surfaced by the status line while mode is `Normal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +421,9 @@ impl Workspace {
             };
             if history.last() != Some(&line) {
                 history.push(line);
+                if history.len() > MAX_HISTORY {
+                    history.remove(0);
+                }
             }
         }
         self.history_nav = HistoryNav::default();
@@ -791,6 +798,17 @@ mod tests {
         // The `command` flag routes to the other list.
         ws.record_history(true, "wrap".to_string());
         assert_eq!(ws.command_history, vec!["wrap"]);
+    }
+
+    #[test]
+    fn record_history_evicts_oldest_beyond_cap() {
+        let mut ws = Workspace::new(false);
+        for i in 0..=MAX_HISTORY {
+            ws.record_history(false, format!("q{i}"));
+        }
+        assert_eq!(ws.search_history.len(), MAX_HISTORY);
+        assert_eq!(ws.search_history.first(), Some(&"q1".to_string()));
+        assert_eq!(ws.search_history.last(), Some(&format!("q{MAX_HISTORY}")));
     }
 
     #[test]
