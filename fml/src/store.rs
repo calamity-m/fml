@@ -352,6 +352,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_carries_timestamp_provenance_and_raw_line() {
+        let store = RingBufferStore::new(test_config(8));
+        let mut entry = make_entry("parsed msg", "test");
+        entry.ts_source = crate::log::TsSource::Parsed;
+        entry.raw = Some("original raw line".to_string());
+        let seq = store.insert(entry);
+
+        let mut out = Vec::new();
+        store.fetch_requested(&[seq], &mut out).unwrap();
+        assert_eq!(out[0].ts_source, crate::log::TsSource::Parsed);
+        assert_eq!(out[0].raw_line(), "original raw line");
+    }
+
+    #[test]
     fn bounds_reflect_inserted_entries() {
         let store = RingBufferStore::new(test_config(8));
         populate(&store, &[("a", "test"), ("b", "test"), ("c", "test")]);

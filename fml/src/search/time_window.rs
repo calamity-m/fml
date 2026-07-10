@@ -8,9 +8,7 @@ use crate::{
     error::FmlError,
     event::FieldPredicate,
     log::{LogEntry, SourceId},
-    search::{
-        EmitOutcome, SearchContext, emit_error, emit_results, field_matched::matches_predicates,
-    },
+    search::{EmitOutcome, SearchContext, emit_error, emit_results},
     store::LogStore,
 };
 
@@ -112,6 +110,13 @@ pub(crate) async fn collect_time_window(
     Ok(collected)
 }
 
+/// True when every predicate's key maps to an exactly equal JSON value.
+pub(crate) fn matches_predicates(entry: &LogEntry, predicates: &[FieldPredicate]) -> bool {
+    predicates
+        .iter()
+        .all(|predicate| entry.fields.get(&predicate.key) == Some(&predicate.value))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -196,5 +201,161 @@ mod tests {
         .expect("filtered time-window entries");
 
         assert_eq!(seqs(entries), vec![1]);
+    }
+
+    #[test]
+    fn predicate_equality_is_exact_without_type_coercion() {
+        let mut string_entry = entry(100, "a", "t1");
+        string_entry.fields = HashMap::from([("status".to_string(), json!("500"))]);
+        let mut number_entry = entry(100, "a", "t1");
+        number_entry.fields = HashMap::from([("status".to_string(), json!(500))]);
+        let store = RingBufferStore::new(StoreConfig { capacity: 4 });
+        store.insert(string_entry);
+        let number_seq = store.insert(number_entry);
+        let mut out = Vec::new();
+        store.fetch_requested(&[1, number_seq], &mut out).unwrap();
+        let predicates = [FieldPredicate {
+            key: "status".to_string(),
+            value: json!(500),
+        }];
+
+        assert!(!matches_predicates(&out[0], &predicates));
+        assert!(matches_predicates(&out[1], &predicates));
+    }
+
+    #[test]
+    fn multiple_predicates_use_and_semantics() {
+        let mut partial = entry(100, "a", "t1");
+        partial.fields = HashMap::from([("request_id".to_string(), json!("abc"))]);
+        let mut full = entry(100, "a", "t1");
+        full.fields = HashMap::from([
+            ("request_id".to_string(), json!("abc")),
+            ("status".to_string(), json!(500)),
+        ]);
+        let store = RingBufferStore::new(StoreConfig { capacity: 4 });
+        store.insert(partial);
+        store.insert(full);
+        let mut out = Vec::new();
+        store.fetch_requested(&[1, 2], &mut out).unwrap();
+        let predicates = [
+            FieldPredicate {
+                key: "request_id".to_string(),
+                value: json!("abc"),
+            },
+            FieldPredicate {
+                key: "status".to_string(),
+                value: json!(500),
+            },
+        ];
+
+        assert!(!matches_predicates(&out[0], &predicates));
+        assert!(matches_predicates(&out[1], &predicates));
+    }
+
+    #[tokio::test]
+    async fn excludes_entries_past_until_seq() {
+        let store = RingBufferStore::new(StoreConfig { capacity: 8 });
+        store.insert(entry(100, "a", "t1"));
+        store.insert(entry(101, "a", "t1"));
+        store.insert(entry(102, "a", "t1"));
+
+        let entries = collect_time_window(
+            &store,
+            Utc.timestamp_opt(100, 0).single().unwrap(),
+            10,
+            2,
+            &[],
+            &[],
+        )
+        .await
+        .expect("time-window entries");
+
+        assert_eq!(seqs(entries), vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn returns_empty_when_store_is_empty() {
+        let store = RingBufferStore::new(StoreConfig { capacity: 8 });
+
+        let entries = collect_time_window(
+            &store,
+            Utc.timestamp_opt(100, 0).single().unwrap(),
+            10,
+            u64::MAX,
+            &[],
+            &[],
+        )
+        .await
+        .expect("time-window entries");
+
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_empty_when_until_seq_precedes_retained_entries() {
+        let store = RingBufferStore::new(StoreConfig { capacity: 2 });
+        for ts in 100..105 {
+            store.insert(entry(ts, "a", "t1"));
+        }
+        // Seqs 1..=3 are evicted; a snapshot bound below the oldest retained
+        // entry must yield nothing rather than scanning out of bounds.
+        let entries = collect_time_window(
+            &store,
+            Utc.timestamp_opt(102, 0).single().unwrap(),
+            10,
+            3,
+            &[],
+            &[],
+        )
+        .await
+        .expect("time-window entries");
+
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scans_only_retained_entries_after_eviction() {
+        let store = RingBufferStore::new(StoreConfig { capacity: 2 });
+        for ts in 100..105 {
+            store.insert(entry(ts, "a", "t1"));
+        }
+
+        let entries = collect_time_window(
+            &store,
+            Utc.timestamp_opt(100, 0).single().unwrap(),
+            10,
+            u64::MAX,
+            &[],
+            &[],
+        )
+        .await
+        .expect("time-window entries");
+
+        assert_eq!(seqs(entries), vec![4, 5]);
+    }
+
+    #[tokio::test]
+    async fn collects_across_chunk_boundaries() {
+        let total = CHUNK_SIZE as usize + 10;
+        let store = RingBufferStore::new(StoreConfig { capacity: total });
+        for _ in 0..total {
+            store.insert(entry(100, "a", "t1"));
+        }
+
+        let entries = collect_time_window(
+            &store,
+            Utc.timestamp_opt(100, 0).single().unwrap(),
+            10,
+            u64::MAX,
+            &[],
+            &[],
+        )
+        .await
+        .expect("time-window entries");
+
+        assert_eq!(entries.len(), total);
+        // Equal timestamps fall back to seq order, so the chunk seam must
+        // not reorder or drop entries.
+        assert_eq!(seqs(entries), (1..=total as u64).collect::<Vec<_>>());
     }
 }

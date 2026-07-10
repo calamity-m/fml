@@ -274,4 +274,37 @@ mod tests {
         let entry = try_parse_json(r#"{"severity":"ERROR","message":"boom"}"#, &source()).unwrap();
         assert_eq!(entry.level, Some(LogLevel::Error));
     }
+
+    #[test]
+    fn parsed_timestamp_marks_ts_source_parsed() {
+        let entry =
+            try_parse_json(r#"{"ts":"2024-06-01T12:00:00Z","msg":"hi"}"#, &source()).unwrap();
+        assert_eq!(entry.ts_source, TsSource::Parsed);
+        assert_eq!(
+            entry.ts,
+            chrono::DateTime::parse_from_rfc3339("2024-06-01T12:00:00Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_or_unparseable_timestamp_marks_ts_source_ingest() {
+        let missing = try_parse_json(r#"{"msg":"hi"}"#, &source()).unwrap();
+        assert_eq!(missing.ts_source, TsSource::Ingest);
+
+        let unparseable =
+            try_parse_json(r#"{"ts":"yesterday-ish","msg":"hi"}"#, &source()).unwrap();
+        assert_eq!(unparseable.ts_source, TsSource::Ingest);
+    }
+
+    #[test]
+    fn raw_preserved_only_when_msg_differs_from_line() {
+        let line = r#"{"msg":"hello"}"#;
+        let extracted = try_parse_json(line, &source()).unwrap();
+        assert_eq!(extracted.raw.as_deref(), Some(line));
+
+        let fallback_line = r#"{"level":"info"}"#;
+        let fallback = try_parse_json(fallback_line, &source()).unwrap();
+        assert_eq!(fallback.msg, fallback_line);
+        assert_eq!(fallback.raw, None);
+    }
 }

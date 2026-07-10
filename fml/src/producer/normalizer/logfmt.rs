@@ -280,4 +280,31 @@ mod tests {
         let entry = try_parse_logfmt(raw, &source()).unwrap();
         assert_eq!(entry.level, Some(LogLevel::Error));
     }
+
+    #[test]
+    fn parsed_timestamp_marks_ts_source_parsed() {
+        let entry = try_parse_logfmt("ts=2024-06-01T12:00:00Z msg=ok", &source()).unwrap();
+        assert_eq!(entry.ts_source, TsSource::Parsed);
+    }
+
+    #[test]
+    fn missing_or_unparseable_timestamp_marks_ts_source_ingest() {
+        let missing = try_parse_logfmt("level=info msg=ok", &source()).unwrap();
+        assert_eq!(missing.ts_source, TsSource::Ingest);
+
+        let unparseable = try_parse_logfmt("ts=yesterday-ish msg=ok", &source()).unwrap();
+        assert_eq!(unparseable.ts_source, TsSource::Ingest);
+    }
+
+    #[test]
+    fn raw_preserved_only_when_msg_differs_from_line() {
+        let line = r#"level=info msg="starting server""#;
+        let extracted = try_parse_logfmt(line, &source()).unwrap();
+        assert_eq!(extracted.raw.as_deref(), Some(line));
+
+        let fallback_line = "level=error code=500";
+        let fallback = try_parse_logfmt(fallback_line, &source()).unwrap();
+        assert_eq!(fallback.msg, fallback_line);
+        assert_eq!(fallback.raw, None);
+    }
 }

@@ -1972,4 +1972,193 @@ mod tests {
         let state = handle_tui_event(input(KeyCode::Esc), state);
         assert!(!state.workspace.help_open);
     }
+
+    #[test]
+    fn shift_f_in_investigation_clears_predicates_without_tail() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+        let mut state = handle_tui_event(input(KeyCode::Char('I')), state);
+        assert!(matches!(
+            state.workspace.focused_pane().view,
+            View::Investigation { .. }
+        ));
+        drain_search_events(&mut state);
+
+        let mut state = handle_tui_event(input(KeyCode::Char('F')), state);
+
+        let events = drain_search_events(&mut state);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::Tail,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::TimeWindow { predicates, .. },
+                ..
+            } if predicates.is_empty()
+        )));
+        assert!(matches!(
+            state.workspace.focused_pane().view,
+            View::Investigation { .. }
+        ));
+    }
+
+    #[test]
+    fn source_change_does_not_redispatch_investigation_pane() {
+        let mut state = state_with_entries(5);
+        seed_tail(&mut state, &[1, 2, 3, 4, 5]);
+        state.workspace.focused_pane_mut().filter = vec!["Source A".to_string()];
+        let mut state = handle_tui_event(input(KeyCode::Char('I')), state);
+        let investigation_id = state.workspace.focused_pane().id;
+        drain_search_events(&mut state);
+
+        let mut state = producer::handle_producer_event(
+            ProducerEvent::SourceFound(Source {
+                producer: "fake".to_string(),
+                id: "src-b".to_string(),
+                display_name: "Source B".to_string(),
+                group: None,
+            }),
+            state,
+        );
+
+        let events = drain_search_events(&mut state);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search { target, .. } if *target == investigation_id
+        )));
+        assert!(matches!(
+            state.workspace.focused_pane().view,
+            View::Investigation { .. }
+        ));
+    }
+
+    #[test]
+    fn field_picker_orders_id_fields_first_and_builds_predicate() {
+        let state = state_with_entries(1);
+        let anchor_ts = Utc::now();
+        let mut state = producer::handle_producer_event(
+            ProducerEvent::StoreEvent(NewLogEntry {
+                msg: "anchor".to_string(),
+                ts: anchor_ts,
+                ts_source: crate::log::TsSource::Parsed,
+                raw: None,
+                level: Some(LogLevel::Info),
+                source: Source {
+                    producer: "fake".to_string(),
+                    id: "src-a".to_string(),
+                    display_name: "Source A".to_string(),
+                    group: None,
+                },
+                fields: HashMap::from([
+                    ("zeta".to_string(), serde_json::json!("z")),
+                    ("apple".to_string(), serde_json::json!("a")),
+                    ("trace_id".to_string(), serde_json::json!("t-1")),
+                    ("request_id".to_string(), serde_json::json!("r-1")),
+                ]),
+            }),
+            state,
+        );
+        let mut entries = Vec::new();
+        state.store.fetch_requested(&[2], &mut entries).unwrap();
+        let pane = state.workspace.focused_pane_mut();
+        pane.view = View::Investigation { entries, anchor_ts };
+        pane.active_query = Some(Query::TimeWindow {
+            anchor_seq_id: 2,
+            anchor_ts,
+            window_secs: 30,
+            until_seq: u64::MAX,
+            predicates: Vec::new(),
+        });
+
+        let mut state = handle_tui_event(input(KeyCode::Char('f')), state);
+        let keys: Vec<&str> = state
+            .workspace
+            .field_picker
+            .as_ref()
+            .expect("field picker open")
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["request_id", "trace_id", "apple", "zeta"]);
+
+        drain_search_events(&mut state);
+        let mut state = handle_tui_event(input(KeyCode::Enter), state);
+        assert!(state.workspace.field_picker.is_none());
+        let events = drain_search_events(&mut state);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Search {
+                query: Query::TimeWindow { predicates, .. },
+                ..
+            } if predicates
+                == &[FieldPredicate {
+                    key: "request_id".to_string(),
+                    value: serde_json::json!("r-1"),
+                }]
+        )));
+    }
+
+    fn export_entry(
+        ts_source: crate::log::TsSource,
+        raw: Option<&str>,
+        level: Option<LogLevel>,
+    ) -> std::sync::Arc<crate::log::LogEntry> {
+        std::sync::Arc::new(crate::log::LogEntry {
+            seq: 1,
+            msg: "parsed message".to_string(),
+            ts: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 1, 2, 3, 4, 5).unwrap(),
+            ts_source,
+            raw: raw.map(str::to_string),
+            level,
+            source: Source {
+                producer: "fake".to_string(),
+                id: "src-a".to_string(),
+                display_name: "api-1".to_string(),
+                group: None,
+            },
+            fields: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn fenced_export_formats_parsed_entry() {
+        let entries = vec![export_entry(
+            crate::log::TsSource::Parsed,
+            None,
+            Some(LogLevel::Info),
+        )];
+        assert_eq!(
+            fenced_export(&entries),
+            "```\n2026-01-02T03:04:05.000Z INFO  api-1 | parsed message\n```"
+        );
+    }
+
+    #[test]
+    fn fenced_export_marks_ingest_timestamps_and_prefers_raw() {
+        let entries = vec![export_entry(
+            crate::log::TsSource::Ingest,
+            Some("original raw line"),
+            Some(LogLevel::Error),
+        )];
+        assert_eq!(
+            fenced_export(&entries),
+            "```\n2026-01-02T03:04:05.000Z ≈     api-1 | original raw line\n```"
+        );
+    }
+
+    #[test]
+    fn fenced_export_handles_missing_level_and_empty_input() {
+        let entries = vec![export_entry(crate::log::TsSource::Parsed, None, None)];
+        assert_eq!(
+            fenced_export(&entries),
+            "```\n2026-01-02T03:04:05.000Z       api-1 | parsed message\n```"
+        );
+        assert_eq!(fenced_export(&[]), "```\n```");
+    }
 }
