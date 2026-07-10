@@ -23,7 +23,6 @@ use crate::{
     store::LogStore,
 };
 
-pub mod field_matched;
 pub mod fuzzy;
 pub mod history;
 pub mod tail;
@@ -210,10 +209,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
 
             let tick_rate = match &query {
                 Query::Tail => Duration::from_millis(state.config.search.tail_poll_interval_ms),
-                Query::History { .. }
-                | Query::Surrounding { .. }
-                | Query::FieldMatched { .. }
-                | Query::TimeWindow { .. } => {
+                Query::History { .. } | Query::TimeWindow { .. } => {
                     Duration::from_millis(state.config.search.history_poll_interval_ms)
                 }
                 Query::Fuzzy { .. } => {
@@ -235,21 +231,7 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                 Query::History {
                     middle_seq_id,
                     buffer,
-                }
-                | Query::Surrounding {
-                    middle_seq_id,
-                    buffer,
                 } => history::start_history_search(ctx, *middle_seq_id, *buffer),
-                Query::FieldMatched {
-                    anchor_seq_id,
-                    buffer,
-                    predicates,
-                } => field_matched::start_field_matched_search(
-                    ctx,
-                    *anchor_seq_id,
-                    *buffer,
-                    predicates.clone(),
-                ),
                 Query::TimeWindow {
                     anchor_ts,
                     window_secs,
@@ -355,15 +337,14 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Duration};
+    use std::collections::HashMap;
 
     use chrono::Utc;
-    use serde_json::json;
 
     use super::*;
     use crate::{
         config::Config,
-        event::{FieldPredicate, Match, PaneId, ProducerEvent},
+        event::{Match, PaneId, ProducerEvent},
         log::{LogLevel, NewLogEntry, Source},
         producer,
         tui::pane::View,
@@ -579,100 +560,6 @@ mod tests {
             View::Stream { .. } | View::Investigation { .. } => panic!("expected results view"),
         }
         assert_eq!(pane.cursor_seq, Some(2));
-    }
-
-    #[tokio::test]
-    async fn field_matched_search_event_routes_to_worker() {
-        let mut state = AppState::new(Config::default()).expect("app state");
-        for (seq, source_id, fields) in [
-            (
-                1,
-                "src-a",
-                HashMap::from([("trace_id".to_string(), json!("t1"))]),
-            ),
-            (2, "src-a", HashMap::new()),
-            (
-                3,
-                "src-b",
-                HashMap::from([("trace_id".to_string(), json!("t1"))]),
-            ),
-        ] {
-            state = producer::handle_producer_event(
-                ProducerEvent::StoreEvent(NewLogEntry {
-                    msg: format!("entry {seq}"),
-                    ts: Utc::now(),
-                    ts_source: crate::log::TsSource::Ingest,
-                    raw: None,
-                    level: Some(LogLevel::Info),
-                    source: Source {
-                        producer: "fake".to_string(),
-                        id: source_id.to_string(),
-                        display_name: source_id.to_string(),
-                        group: None,
-                    },
-                    fields,
-                }),
-                state,
-            );
-        }
-        let pane_id = focused_pane_id(&state);
-
-        let mut state = handle_search_event(
-            SearchEvent::Search {
-                target: pane_id,
-                query: Query::FieldMatched {
-                    anchor_seq_id: 3,
-                    buffer: 4,
-                    predicates: vec![FieldPredicate {
-                        key: "trace_id".to_string(),
-                        value: json!("t1"),
-                    }],
-                },
-                sources: vec!["ignored".to_string()],
-            },
-            state,
-        );
-
-        let event = tokio::time::timeout(
-            Duration::from_secs(2),
-            state.event_bus.search_event_rx.recv(),
-        )
-        .await
-        .expect("timed out awaiting field-matched result")
-        .expect("search event");
-        state.search.cancel(pane_id);
-
-        match event {
-            SearchEvent::Result {
-                target,
-                query,
-                results,
-                hit_seqs: _,
-                request_id,
-                complete,
-                progress,
-            } => {
-                assert_eq!(target, pane_id);
-                assert!(matches!(
-                    query,
-                    Query::FieldMatched {
-                        anchor_seq_id: 3,
-                        ..
-                    }
-                ));
-                assert_eq!(request_id, 1);
-                assert!(complete);
-                assert_eq!(progress, None);
-                assert_eq!(
-                    results
-                        .into_iter()
-                        .map(|result| result.seq_id)
-                        .collect::<Vec<_>>(),
-                    vec![1, 3]
-                );
-            }
-            event => panic!("expected field-matched result, got {event:?}"),
-        }
     }
 
     #[tokio::test]

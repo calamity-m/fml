@@ -63,7 +63,7 @@ pub struct SearchProgress {
     pub total: usize,
 }
 
-/// Exact key/value predicate used by field-matched searches.
+/// Exact key/value predicate applied to a log entry's fields.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct FieldPredicate {
     /// Field key to compare.
@@ -78,16 +78,6 @@ pub enum Query {
     History {
         middle_seq_id: u64,
         buffer: u64,
-    },
-    Surrounding {
-        middle_seq_id: u64,
-        buffer: u64,
-    },
-    /// Query for entries whose fields exactly match all predicates.
-    FieldMatched {
-        anchor_seq_id: u64,
-        buffer: u64,
-        predicates: Vec<FieldPredicate>,
     },
     /// Frozen timestamp-window query centered on an anchor entry.
     TimeWindow {
