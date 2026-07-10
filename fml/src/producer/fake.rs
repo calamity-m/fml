@@ -18,7 +18,7 @@ use tracing::debug;
 
 use crate::{
     event::ProducerEvent,
-    log::{LogLevel, NewLogEntry, Source},
+    log::{LogLevel, NewLogEntry, Source, TsSource},
     producer::LogProducer,
 };
 
@@ -112,15 +112,24 @@ fn synthetic_entry(source: &Source) -> NewLogEntry {
         serde_json::Value::from(rng.random_range(1u32..1000)),
     );
     if rng.random_bool(0.3) {
+        const REQUEST_IDS: &[&str] = &[
+            "req-demo-1",
+            "req-demo-2",
+            "req-demo-3",
+            "req-demo-4",
+            "req-demo-5",
+        ];
         fields.insert(
             "request_id".to_string(),
-            serde_json::Value::from(rng.random_range(1_000u32..9_999)),
+            serde_json::Value::from(*REQUEST_IDS.choose(&mut rng).unwrap_or(&"req-demo-1")),
         );
     }
 
     NewLogEntry {
         msg,
         ts: Utc::now(),
+        ts_source: TsSource::Ingest,
+        raw: None,
         level,
         source: source.clone(),
         fields,

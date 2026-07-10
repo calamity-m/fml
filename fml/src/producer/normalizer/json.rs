@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::log::{LogLevel, NewLogEntry, Source};
+use crate::log::{LogLevel, NewLogEntry, Source, TsSource};
 
 /// Well-known top-level keys for string log level detection.
 const LEVEL_KEYS: &[&str] = &[
@@ -81,9 +81,17 @@ pub fn try_parse_json(raw: &str, source: &Source) -> Option<NewLogEntry> {
         .map(str::to_string)
         .unwrap_or_else(|| raw.to_string());
 
+    let raw = (msg != raw).then(|| raw.to_string());
+
     Some(NewLogEntry {
         msg,
         ts,
+        ts_source: if ts_parsed {
+            TsSource::Parsed
+        } else {
+            TsSource::Ingest
+        },
+        raw,
         level,
         source: source.clone(),
         fields,

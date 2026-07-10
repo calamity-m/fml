@@ -8,7 +8,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use crate::log::{LogLevel, NewLogEntry, Source};
+use crate::log::{LogLevel, NewLogEntry, Source, TsSource};
 
 static LEVEL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|ERR|FATAL|CRIT(?:ICAL)?)\b").unwrap()
@@ -63,9 +63,16 @@ pub fn try_parse_patterns(raw: &str, source: &Source) -> Option<NewLogEntry> {
         );
     }
 
+    let (ts, ts_source) = match ts {
+        Some(ts) => (ts, TsSource::Parsed),
+        None => (chrono::Utc::now(), TsSource::Ingest),
+    };
+
     Some(NewLogEntry {
         msg: raw.to_string(),
-        ts: ts.unwrap_or_else(chrono::Utc::now),
+        ts,
+        ts_source,
+        raw: None,
         level,
         source: source.clone(),
         fields,

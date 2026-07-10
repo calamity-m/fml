@@ -9,8 +9,11 @@ use std::collections::HashSet;
 use ratatui::layout::{Direction, Rect};
 
 use crate::event::PaneId;
-use crate::log::{Source, SourceId};
 use crate::tui::pane::Pane;
+use crate::{
+    event::FieldPredicate,
+    log::{Source, SourceId},
+};
 
 /// Cap on retained entries per prompt history, oldest evicted first, so a
 /// long session's `/` and `:` recall lists don't grow unbounded.
@@ -166,6 +169,22 @@ impl SourcePicker {
                         .is_some_and(|group| group.to_lowercase().contains(&query))
             })
             .collect()
+    }
+}
+
+/// Transient field picker for investigation predicates.
+#[derive(Debug, Default)]
+pub struct FieldPicker {
+    pub rows: Vec<FieldPredicate>,
+    pub cursor: usize,
+}
+
+impl FieldPicker {
+    /// Currently highlighted predicate, if any.
+    pub fn selected(&self) -> Option<FieldPredicate> {
+        self.rows
+            .get(self.cursor.min(self.rows.len().saturating_sub(1)))
+            .cloned()
     }
 }
 
@@ -367,6 +386,8 @@ pub struct Workspace {
     pub help_open: bool,
     /// Open source picker, if any. Swallows input while present.
     pub picker: Option<SourcePicker>,
+    /// Open field picker for investigation predicates, if any.
+    pub field_picker: Option<FieldPicker>,
     /// Active `:` prompt completion; cleared by any non-Tab edit.
     pub completion: Option<Completion>,
     /// Confirmed `/` searches, oldest first, for ↑/↓ recall.
@@ -393,6 +414,7 @@ impl Workspace {
             notice: None,
             help_open: false,
             picker: None,
+            field_picker: None,
             completion: None,
             search_history: Vec::new(),
             command_history: Vec::new(),

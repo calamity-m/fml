@@ -136,7 +136,7 @@ pub(crate) fn collect_window(
     Ok(out)
 }
 
-fn matches_predicates(entry: &LogEntry, predicates: &[FieldPredicate]) -> bool {
+pub(crate) fn matches_predicates(entry: &LogEntry, predicates: &[FieldPredicate]) -> bool {
     predicates
         .iter()
         .all(|predicate| entry.fields.get(&predicate.key) == Some(&predicate.value))
@@ -170,6 +170,8 @@ mod tests {
         NewLogEntry {
             msg: msg.to_string(),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level: Some(LogLevel::Info),
             source: Source {
                 producer: "fake".to_string(),

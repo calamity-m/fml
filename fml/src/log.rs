@@ -55,6 +55,15 @@ impl LogLevel {
     }
 }
 
+/// Provenance of a log entry's timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum TsSource {
+    /// Parsed from the log line by a normalizer.
+    Parsed,
+    /// Fallback: stamped with ingest wall-clock time.
+    Ingest,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LogEntry {
     /// Monotonically increasing sequence number assigned by the store on insert.
@@ -64,6 +73,10 @@ pub struct LogEntry {
     pub msg: String,
     /// Ingest timestamp (UTC) or log entry's parsed timestamp
     pub ts: chrono::DateTime<chrono::Utc>,
+    /// Provenance of [`Self::ts`].
+    pub ts_source: TsSource,
+    /// Original pre-parse line when it differs from [`Self::msg`].
+    pub raw: Option<String>,
     /// Log level if normaliser finds one
     pub level: Option<LogLevel>,
     /// Source that produced this log entry
@@ -72,12 +85,23 @@ pub struct LogEntry {
     pub fields: HashMap<String, serde_json::Value>,
 }
 
+impl LogEntry {
+    /// Return the original log line, falling back to the display message when unchanged.
+    pub fn raw_line(&self) -> &str {
+        self.raw.as_deref().unwrap_or(&self.msg)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct NewLogEntry {
     /// Parsed display message of the log line
     pub msg: String,
     /// Ingest timestamp (UTC) or log entry's parsed timestamp
     pub ts: chrono::DateTime<chrono::Utc>,
+    /// Provenance of [`Self::ts`].
+    pub ts_source: TsSource,
+    /// Original pre-parse line when it differs from [`Self::msg`].
+    pub raw: Option<String>,
     /// Log level if normaliser finds one
     pub level: Option<LogLevel>,
     /// Source that produced this log entry

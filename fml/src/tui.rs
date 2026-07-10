@@ -27,13 +27,25 @@ use crate::{
     clipboard::OSC52_WARN_BYTES,
     config::tui::TuiConfig,
     error::FmlError,
-    event::{Query, QuitEvent, TuiEvent},
+    event::{FieldPredicate, Query, QuitEvent, TuiEvent},
     state::AppState,
     tui::{
         pane::{Pane, SearchCtx, View},
         workspace::{Mode, Prefix, Workspace},
     },
 };
+
+const DEFAULT_WINDOW_SECS: u64 = 30;
+const ID_FIELD_PRIORITY: &[&str] = &[
+    "request_id",
+    "requestid",
+    "request-id",
+    "trace_id",
+    "traceid",
+    "trace-id",
+    "span_id",
+    "correlation_id",
+];
 
 /// Start the TUI input reader task and install panic hooks that restore the
 /// terminal before unwinding.
@@ -155,7 +167,7 @@ pub fn redispatch_filtered_panes(state: &mut AppState) {
     let (ws, ctx) = split_state(state);
     for tab in &mut ws.tabs {
         for pane in &mut tab.panes {
-            if !pane.filter.is_empty() {
+            if !pane.filter.is_empty() && !matches!(pane.view, View::Investigation { .. }) {
                 dispatch_pane_current(pane, &ctx);
             }
         }
@@ -191,6 +203,9 @@ fn dispatch_pane_current(pane: &mut Pane, ctx: &SearchCtx) {
                 ctx,
             )
         }
+        View::Investigation { .. } => {
+            pane.dispatch_investigation(ctx);
+        }
         _ => pane.dispatch_stream(ctx),
     }
 }
@@ -218,6 +233,11 @@ fn handle_key(state: &mut AppState, key: KeyEvent) {
         ) {
             state.workspace.help_open = false;
         }
+        return;
+    }
+
+    if state.workspace.field_picker.is_some() {
+        handle_field_picker_key(state, key);
         return;
     }
 
@@ -324,6 +344,86 @@ fn apply_source_picker(state: &mut AppState) {
         dispatch_pane_current(pane, &ctx);
     }
     state.workspace.notice = Some(format!("filter → {count} sources"));
+}
+
+fn open_field_picker(state: &mut AppState) {
+    let Some(Query::TimeWindow { anchor_seq_id, .. }) =
+        state.workspace.focused_pane().active_query.clone()
+    else {
+        return;
+    };
+    let Some(anchor) = state
+        .workspace
+        .focused_pane()
+        .view
+        .entries()
+        .iter()
+        .find(|entry| entry.seq == anchor_seq_id)
+    else {
+        state.workspace.notice = Some("anchor is excluded from this view".to_string());
+        return;
+    };
+    let mut rows: Vec<FieldPredicate> = anchor
+        .fields
+        .iter()
+        .map(|(key, value)| FieldPredicate {
+            key: key.clone(),
+            value: value.clone(),
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        field_priority(&a.key)
+            .cmp(&field_priority(&b.key))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    if rows.is_empty() {
+        state.workspace.notice = Some("anchor has no fields".to_string());
+        return;
+    }
+    state.workspace.field_picker = Some(workspace::FieldPicker { rows, cursor: 0 });
+}
+
+fn field_priority(key: &str) -> usize {
+    ID_FIELD_PRIORITY
+        .iter()
+        .position(|candidate| candidate.eq_ignore_ascii_case(key))
+        .unwrap_or(ID_FIELD_PRIORITY.len())
+}
+
+fn apply_field_picker(state: &mut AppState) {
+    let Some(predicate) = state
+        .workspace
+        .field_picker
+        .take()
+        .and_then(|picker| picker.selected())
+    else {
+        return;
+    };
+    let (ws, ctx) = split_state(state);
+    ws.focused_pane_mut()
+        .set_investigation_predicates(&ctx, vec![predicate]);
+}
+
+fn handle_field_picker_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match (key.code, ctrl) {
+        (KeyCode::Esc, _) => state.workspace.field_picker = None,
+        (KeyCode::Enter, _) => apply_field_picker(state),
+        _ => {
+            let Some(picker) = state.workspace.field_picker.as_mut() else {
+                return;
+            };
+            match (key.code, ctrl) {
+                (KeyCode::Up, _) | (KeyCode::Char('k'), true) | (KeyCode::Char('p'), true) => {
+                    picker.cursor = picker.cursor.saturating_sub(1);
+                }
+                (KeyCode::Down, _) | (KeyCode::Char('j'), true) | (KeyCode::Char('n'), true) => {
+                    picker.cursor = (picker.cursor + 1).min(picker.rows.len().saturating_sub(1));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn handle_picker_key(state: &mut AppState, key: KeyEvent) {
@@ -490,6 +590,35 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
         (KeyCode::Char('w'), true) => state.workspace.pending.prefix = Some(Prefix::Window),
         // `W` (shift+w) toggles wrap; `w` (word-forward) is handled in motions.
         (KeyCode::Char('W'), false) => state.workspace.focused_pane_mut().toggle_line_wrap(),
+        (KeyCode::Char('I'), false) => open_investigation(state),
+        (KeyCode::Char('+'), false) => resize_investigation(state, true),
+        (KeyCode::Char('-'), false) => resize_investigation(state, false),
+        (KeyCode::Char('Y'), false)
+            if matches!(
+                state.workspace.focused_pane().view,
+                View::Investigation { .. }
+            ) =>
+        {
+            yank_investigation(state)
+        }
+        (KeyCode::Char('f'), false)
+            if matches!(
+                state.workspace.focused_pane().view,
+                View::Investigation { .. }
+            ) =>
+        {
+            open_field_picker(state)
+        }
+        (KeyCode::Char('F'), false)
+            if matches!(
+                state.workspace.focused_pane().view,
+                View::Investigation { .. }
+            ) =>
+        {
+            let (ws, ctx) = split_state(state);
+            ws.focused_pane_mut()
+                .set_investigation_predicates(&ctx, Vec::new());
+        }
         (KeyCode::Char('F'), false) => {
             let (ws, ctx) = split_state(state);
             ws.focused_pane_mut().enter_follow(&ctx);
@@ -536,7 +665,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) {
             let pane = ws.focused_pane_mut();
             match &pane.view {
                 View::Results { .. } => pane.results_to_stream(&ctx),
-                View::Stream { .. } => pane.clear_search(),
+                View::Stream { .. } | View::Investigation { .. } => pane.clear_search(),
             }
         }
         _ => {}
@@ -573,6 +702,44 @@ fn split_pane(state: &mut AppState, dir: Direction) {
     state.workspace.split(dir);
     let (ws, ctx) = split_state(state);
     dispatch_pane_current(ws.focused_pane_mut(), &ctx);
+}
+
+fn open_investigation(state: &mut AppState) {
+    let Some(anchor) = state.workspace.focused_pane().cursor_entry().cloned() else {
+        state.workspace.notice = Some("no line under cursor".to_string());
+        return;
+    };
+    let new_id = state.workspace.split(Direction::Vertical);
+    let (ws, ctx) = split_state(state);
+    let pane = ws.pane_mut(new_id).expect("newly split pane exists");
+    pane.follow = false;
+    pane.view = View::Investigation {
+        entries: Vec::new(),
+        anchor_ts: anchor.ts,
+    };
+    pane.cursor_seq = Some(anchor.seq);
+    pane.dispatch(
+        Query::TimeWindow {
+            anchor_seq_id: anchor.seq,
+            anchor_ts: anchor.ts,
+            window_secs: DEFAULT_WINDOW_SECS,
+            until_seq: ctx.bounds.1,
+            predicates: Vec::new(),
+        },
+        &ctx,
+    );
+}
+
+fn resize_investigation(state: &mut AppState, widen: bool) {
+    if !matches!(
+        state.workspace.focused_pane().view,
+        View::Investigation { .. }
+    ) {
+        return;
+    }
+    let (ws, ctx) = split_state(state);
+    ws.focused_pane_mut()
+        .resize_investigation_window(&ctx, widen);
 }
 
 fn close_focused_pane(state: &mut AppState) {
@@ -914,6 +1081,40 @@ fn yank_cursor_entry(state: &mut AppState) {
     yank(state, &payload, "entry");
 }
 
+/// Build a fenced-text export of investigation entries.
+pub fn fenced_export(entries: &[std::sync::Arc<crate::log::LogEntry>]) -> String {
+    let mut out = String::from("```\n");
+    for entry in entries {
+        let ts = entry
+            .ts
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let level = match entry.ts_source {
+            crate::log::TsSource::Parsed => entry
+                .level
+                .map(|level| level.to_string())
+                .unwrap_or_default(),
+            crate::log::TsSource::Ingest => "≈".to_string(),
+        };
+        out.push_str(&format!(
+            "{} {:<5} {} | {}\n",
+            ts,
+            level,
+            entry.source.display_name,
+            entry.raw_line()
+        ));
+    }
+    out.push_str("```");
+    out
+}
+
+fn yank_investigation(state: &mut AppState) {
+    let View::Investigation { entries, .. } = &state.workspace.focused_pane().view else {
+        return;
+    };
+    let payload = fenced_export(entries);
+    yank(state, &payload, "investigation");
+}
+
 fn yank_selection(state: &mut AppState, anchor_seq: u64, anchor_col: usize, linewise: bool) {
     let pane = state.workspace.focused_pane();
     let text = if linewise {
@@ -1003,6 +1204,8 @@ mod tests {
                 ProducerEvent::StoreEvent(NewLogEntry {
                     msg: format!("entry {seq}"),
                     ts: Utc::now(),
+                    ts_source: crate::log::TsSource::Ingest,
+                    raw: None,
                     level: Some(LogLevel::Info),
                     source: Source {
                         producer: "fake".to_string(),

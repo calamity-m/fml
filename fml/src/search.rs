@@ -27,6 +27,7 @@ pub mod field_matched;
 pub mod fuzzy;
 pub mod history;
 pub mod tail;
+pub mod time_window;
 
 pub(crate) enum EmitOutcome {
     Sent,
@@ -209,7 +210,10 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
 
             let tick_rate = match &query {
                 Query::Tail => Duration::from_millis(state.config.search.tail_poll_interval_ms),
-                Query::History { .. } | Query::Surrounding { .. } | Query::FieldMatched { .. } => {
+                Query::History { .. }
+                | Query::Surrounding { .. }
+                | Query::FieldMatched { .. }
+                | Query::TimeWindow { .. } => {
                     Duration::from_millis(state.config.search.history_poll_interval_ms)
                 }
                 Query::Fuzzy { .. } => {
@@ -244,6 +248,19 @@ pub fn handle_search_event(event: SearchEvent, mut state: AppState) -> AppState 
                     ctx,
                     *anchor_seq_id,
                     *buffer,
+                    predicates.clone(),
+                ),
+                Query::TimeWindow {
+                    anchor_ts,
+                    window_secs,
+                    until_seq,
+                    predicates,
+                    ..
+                } => time_window::start_time_window_search(
+                    ctx,
+                    *anchor_ts,
+                    *window_secs,
+                    *until_seq,
                     predicates.clone(),
                 ),
                 Query::Fuzzy { .. } => fuzzy::start_fuzzy_search(
@@ -359,6 +376,8 @@ mod tests {
                 ProducerEvent::StoreEvent(NewLogEntry {
                     msg: format!("entry {seq}"),
                     ts: Utc::now(),
+                    ts_source: crate::log::TsSource::Ingest,
+                    raw: None,
                     level: Some(LogLevel::Info),
                     source: Source {
                         producer: "fake".to_string(),
@@ -557,7 +576,7 @@ mod tests {
                 assert_eq!(entries.len(), 1);
                 assert_eq!(matches.get(&2).map(|m| m[0].key.as_str()), Some("msg"));
             }
-            View::Stream { .. } => panic!("expected results view"),
+            View::Stream { .. } | View::Investigation { .. } => panic!("expected results view"),
         }
         assert_eq!(pane.cursor_seq, Some(2));
     }
@@ -582,6 +601,8 @@ mod tests {
                 ProducerEvent::StoreEvent(NewLogEntry {
                     msg: format!("entry {seq}"),
                     ts: Utc::now(),
+                    ts_source: crate::log::TsSource::Ingest,
+                    raw: None,
                     level: Some(LogLevel::Info),
                     source: Source {
                         producer: "fake".to_string(),

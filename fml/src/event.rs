@@ -89,6 +89,18 @@ pub enum Query {
         buffer: u64,
         predicates: Vec<FieldPredicate>,
     },
+    /// Frozen timestamp-window query centered on an anchor entry.
+    TimeWindow {
+        anchor_seq_id: u64,
+        /// Timestamp retained independently of the ring-buffer anchor entry.
+        anchor_ts: chrono::DateTime<chrono::Utc>,
+        /// Half-width of the timestamp window in seconds.
+        window_secs: u64,
+        /// Snapshot bound captured at dispatch.
+        until_seq: u64,
+        /// Optional exact field predicates applied to every candidate.
+        predicates: Vec<FieldPredicate>,
+    },
     /// Fuzzy text search. `until_seq` bounds the scan: `None` is a live
     /// query that keeps re-ranking new entries forever; `Some(seq)` is a
     /// frozen snapshot that scores only entries with `seq <= until_seq`,

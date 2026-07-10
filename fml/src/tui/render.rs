@@ -19,8 +19,8 @@ use ratatui::{
 
 use crate::{
     config::tui::ThemeConfig,
-    event::Match,
-    log::LogEntry,
+    event::{Match, Query},
+    log::{LogEntry, TsSource},
     state::AppState,
     store::StoreStats,
     tui::{
@@ -85,9 +85,56 @@ pub fn draw(state: &mut AppState, frame: &mut Frame) {
     if state.workspace.picker.is_some() {
         draw_picker_overlay(state, frame, content, &theme);
     }
+    if state.workspace.field_picker.is_some() {
+        draw_field_picker_overlay(state, frame, content, &theme);
+    }
     if state.workspace.help_open {
         draw_help_overlay(frame, area, &theme);
     }
+}
+
+fn draw_field_picker_overlay(state: &AppState, frame: &mut Frame, area: Rect, theme: &ThemeConfig) {
+    let Some(picker) = &state.workspace.field_picker else {
+        return;
+    };
+    let width = 72.min(area.width);
+    let height = (picker.rows.len() as u16 + 2)
+        .clamp(4, (area.height as f32 * 0.7) as u16)
+        .min(area.height);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.primary_accent_fg))
+        .title(" fields — Enter filter · Esc cancel ");
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block.style(theme.surface_style()), rect);
+    let visible = inner.height as usize;
+    let cursor = picker.cursor.min(picker.rows.len().saturating_sub(1));
+    let scroll = cursor.saturating_sub(visible.saturating_sub(1));
+    let lines: Vec<Line> = picker
+        .rows
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .enumerate()
+        .map(|(offset, pred)| {
+            let idx = scroll + offset;
+            let text = format!(" {} = {}", pred.key, pred.value);
+            let style = if idx == cursor {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Centered fuzzy source picker: query line on top, narrowed source rows
@@ -264,7 +311,7 @@ fn draw_pane(
 
     let matches = match &pane.view {
         View::Results { matches, .. } => Some(matches),
-        View::Stream { .. } => None,
+        View::Stream { .. } | View::Investigation { .. } => None,
     };
 
     // An entry can occupy several consecutive display rows; compute its full
@@ -344,6 +391,12 @@ fn entry_row_styles(
         })
         .collect();
 
+    if matches!(pane.view, View::Investigation { .. }) && entry.ts_source == TsSource::Ingest {
+        for style in &mut styles {
+            *style = style.patch(Style::default().add_modifier(Modifier::DIM));
+        }
+    }
+
     // Fuzzy match highlights (msg-relative char indices).
     if let Some(entry_matches) = matches.and_then(|m| m.get(&entry.seq))
         && let Some(msg_match) = entry_matches.iter().find(|m| m.key == "msg")
@@ -366,11 +419,8 @@ fn entry_row_styles(
                 linewise: true,
                 ..
             } => {
-                if let Some(cursor_seq) = pane.cursor_seq {
-                    let (lo, hi) = (anchor_seq.min(cursor_seq), anchor_seq.max(cursor_seq));
-                    if entry.seq >= lo && entry.seq <= hi {
-                        row_bg = Style::default().bg(theme.log_selected_bg);
-                    }
+                if pane.linewise_selection_contains(anchor_seq, entry.seq) {
+                    row_bg = Style::default().bg(theme.log_selected_bg);
                 }
             }
             Mode::Visual {
@@ -650,6 +700,25 @@ fn draw_pane_statusline(
                 left.push_str(&format!(" /{term}({})", pane.hits.len()));
             }
         }
+        View::Investigation { anchor_ts, .. } => {
+            left.push_str(&format!(" INV @ {}", anchor_ts.format("%H:%M:%S")));
+            if let Some(Query::TimeWindow {
+                window_secs,
+                predicates,
+                ..
+            }) = &pane.active_query
+            {
+                left.push_str(&format!(" ±{window_secs}s"));
+                if !predicates.is_empty() {
+                    let pred = predicates
+                        .iter()
+                        .map(|p| format!("{}={}", p.key, p.value))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    left.push_str(&format!(" [{pred}]"));
+                }
+            }
+        }
     }
     if pane.follow {
         left.push_str(" TAIL");
@@ -687,7 +756,7 @@ fn draw_cmdline(
 ) {
     let ws = &state.workspace;
     let pane = ws.focused_pane();
-    let (badge, badge_color) = if ws.picker.is_some() {
+    let (badge, badge_color) = if ws.picker.is_some() || ws.field_picker.is_some() {
         (" PICKER ", Color::White)
     } else {
         mode_badge(ws.mode, pane.follow)
@@ -797,7 +866,9 @@ const HELP_TEXT: &str = "\
   h l 0 $ w b    move within the line
   Ctrl-d Ctrl-u  half page · Ctrl-f Ctrl-b page
   gg G           oldest / newest entry (match in results)
-  F              follow tail · go live on a search
+  F              follow tail · clear investigation filter
+  I              open investigation split · +/- resize window
+  f Y            investigation field filter / yank fenced export
   /              fuzzy search (TAIL = live, else frozen)
   n N            next / previous hit (first jump freezes)
   v V            visual chars / lines · y yanks
@@ -819,7 +890,7 @@ const HELP_TEXT: &str = "\
   :sources        fuzzy source picker
   :vs vsplit · :sp :hs hsplit (stacked)
   :q :qa :only :tabnew [name] :tabclose
-  :tail go live · :refresh re-rank frozen search
+  :tail go live · :refresh re-rank/refresh frozen view
   :clear :help                Ctrl-c quits";
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect, theme: &ThemeConfig) {
@@ -867,6 +938,8 @@ mod tests {
             msg: msg.to_string(),
             // Fixed 00:00:00 timestamp so row_text is deterministic.
             ts: DateTime::from_timestamp(0, 0).unwrap(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level: Some(LogLevel::Info),
             source: Source {
                 producer: "p".to_string(),

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::log::{LogLevel, NewLogEntry, Source};
+use crate::log::{LogLevel, NewLogEntry, Source, TsSource};
 
 const LEVEL_KEYS: &[&str] = &["level", "severity", "lvl", "log.level"];
 const TIMESTAMP_KEYS: &[&str] = &["ts", "timestamp", "time", "@timestamp", "t"];
@@ -56,10 +56,17 @@ pub fn try_parse_logfmt(raw: &str, source: &Source) -> Option<NewLogEntry> {
     }
 
     let msg = msg_value.unwrap_or_else(|| raw.to_string());
+    let raw = (msg != raw).then(|| raw.to_string());
 
     Some(NewLogEntry {
         msg,
         ts,
+        ts_source: if ts_parsed {
+            TsSource::Parsed
+        } else {
+            TsSource::Ingest
+        },
+        raw,
         level,
         source: source.clone(),
         fields,

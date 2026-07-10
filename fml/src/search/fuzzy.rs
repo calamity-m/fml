@@ -784,6 +784,8 @@ mod tests {
         NewLogEntry {
             msg: msg.to_string(),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level,
             source: Source {
                 producer: "fake".to_string(),
@@ -804,6 +806,8 @@ mod tests {
         NewLogEntry {
             msg: msg.to_string(),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level,
             source: Source {
                 producer: "fake".to_string(),
@@ -1169,6 +1173,8 @@ mod tests {
         store.insert(NewLogEntry {
             msg: "nothing".to_string(),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level: Some(LogLevel::Info),
             source: Source {
                 producer: "fake".to_string(),
@@ -1786,6 +1792,8 @@ mod tests {
                     seq,
                     msg: msgs[seq as usize % msgs.len()].to_string(),
                     ts: Utc::now(),
+                    ts_source: crate::log::TsSource::Ingest,
+                    raw: None,
                     level: Some(LogLevel::Info),
                     source: Source {
                         producer: "kubernetes".into(),

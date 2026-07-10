@@ -164,6 +164,8 @@ mod tests {
         NewLogEntry {
             msg: msg.to_string(),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level: Some(LogLevel::Info),
             source: Source {
                 producer: "fake".to_string(),

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tracing::trace;
 
-use crate::log::{NewLogEntry, Source};
+use crate::log::{NewLogEntry, Source, TsSource};
 
 mod json;
 mod logfmt;
@@ -23,6 +23,8 @@ impl Normalizer {
             .unwrap_or_else(|| NewLogEntry {
                 msg: raw.to_string(),
                 ts: chrono::Utc::now(),
+                ts_source: TsSource::Ingest,
+                raw: None,
                 level: None,
                 source,
                 fields: HashMap::new(),

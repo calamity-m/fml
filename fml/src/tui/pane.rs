@@ -10,8 +10,10 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
+use chrono::{DateTime, Utc};
+
 use crate::{
-    event::{Match, PaneId, Query, SearchEvent, SearchProgress},
+    event::{FieldPredicate, Match, PaneId, Query, SearchEvent, SearchProgress},
     log::{LogEntry, Source, SourceId},
 };
 
@@ -102,12 +104,19 @@ pub enum View {
         progress: Option<SearchProgress>,
         term: String,
     },
+    /// Frozen timestamp-correlated entries around an anchor line.
+    Investigation {
+        entries: Vec<Arc<LogEntry>>,
+        anchor_ts: DateTime<Utc>,
+    },
 }
 
 impl View {
     pub fn entries(&self) -> &[Arc<LogEntry>] {
         match self {
-            View::Stream { entries } | View::Results { entries, .. } => entries,
+            View::Stream { entries }
+            | View::Results { entries, .. }
+            | View::Investigation { entries, .. } => entries,
         }
     }
 }
@@ -207,6 +216,10 @@ impl Pane {
                     progress: *progress,
                     term: term.clone(),
                 },
+                View::Investigation { entries, anchor_ts } => View::Investigation {
+                    entries: entries.clone(),
+                    anchor_ts: *anchor_ts,
+                },
             },
             // Copy the active query so the freeze bound (carried in
             // `until_seq`) rides into the split; the clone keeps the frozen
@@ -249,14 +262,21 @@ impl Pane {
     pub fn cursor_entry(&self) -> Option<&Arc<LogEntry>> {
         let seq = self.cursor_seq?;
         let entries = self.view.entries();
-        let idx = nearest_index(entries, seq)?;
+        let idx = self.entry_index(seq)?;
         (entries[idx].seq == seq).then(|| &entries[idx])
     }
 
     /// Index of the cursor within the current view, clamped to the nearest
     /// loaded entry.
     pub fn cursor_index(&self) -> Option<usize> {
-        nearest_index(self.view.entries(), self.cursor_seq?)
+        self.entry_index(self.cursor_seq?)
+    }
+
+    fn entry_index(&self, seq: u64) -> Option<usize> {
+        match &self.view {
+            View::Investigation { entries, .. } => nearest_index_any_order(entries, seq),
+            View::Stream { entries } | View::Results { entries, .. } => nearest_index(entries, seq),
+        }
     }
 
     /// Rows of log content the pane showed last render (paging unit).
@@ -323,6 +343,89 @@ impl Pane {
         }) {
             error!("failed to dispatch search for pane {}: {err}", self.id);
         }
+    }
+
+    /// Re-dispatch the active investigation query with a fresh snapshot bound.
+    pub fn dispatch_investigation(&mut self, ctx: &SearchCtx) -> bool {
+        let Some(Query::TimeWindow {
+            anchor_seq_id,
+            anchor_ts,
+            window_secs,
+            predicates,
+            ..
+        }) = self.active_query.clone()
+        else {
+            return false;
+        };
+        self.dispatch(
+            Query::TimeWindow {
+                anchor_seq_id,
+                anchor_ts,
+                window_secs,
+                until_seq: ctx.bounds.1,
+                predicates,
+            },
+            ctx,
+        );
+        true
+    }
+
+    /// Resize the active investigation window and re-snapshot it.
+    pub fn resize_investigation_window(&mut self, ctx: &SearchCtx, widen: bool) -> bool {
+        let Some(Query::TimeWindow {
+            anchor_seq_id,
+            anchor_ts,
+            window_secs,
+            predicates,
+            ..
+        }) = self.active_query.clone()
+        else {
+            return false;
+        };
+        let window_secs = if widen {
+            window_secs.saturating_mul(2).max(1)
+        } else {
+            (window_secs / 2).max(1)
+        };
+        self.dispatch(
+            Query::TimeWindow {
+                anchor_seq_id,
+                anchor_ts,
+                window_secs,
+                until_seq: ctx.bounds.1,
+                predicates,
+            },
+            ctx,
+        );
+        true
+    }
+
+    /// Replace investigation predicates and re-snapshot it.
+    pub fn set_investigation_predicates(
+        &mut self,
+        ctx: &SearchCtx,
+        predicates: Vec<FieldPredicate>,
+    ) -> bool {
+        let Some(Query::TimeWindow {
+            anchor_seq_id,
+            anchor_ts,
+            window_secs,
+            ..
+        }) = self.active_query.clone()
+        else {
+            return false;
+        };
+        self.dispatch(
+            Query::TimeWindow {
+                anchor_seq_id,
+                anchor_ts,
+                window_secs,
+                until_seq: ctx.bounds.1,
+                predicates,
+            },
+            ctx,
+        );
+        true
     }
 
     /// Dispatch the stream query this pane wants given its follow state.
@@ -420,6 +523,20 @@ impl Pane {
                     term: term.clone(),
                 };
             }
+            Query::TimeWindow { anchor_ts, .. } => {
+                let cursor = self
+                    .cursor_seq
+                    .and_then(|seq| nearest_index_any_order(&entries, seq))
+                    .or(entries.len().checked_sub(1));
+                self.cursor_seq = cursor.map(|idx| entries[idx].seq);
+                self.empty_note = entries
+                    .is_empty()
+                    .then(|| "no entries in window".to_string());
+                self.view = View::Investigation {
+                    entries,
+                    anchor_ts: *anchor_ts,
+                };
+            }
             _ => {
                 if self.follow {
                     self.cursor_seq = entries.last().map(|entry| entry.seq);
@@ -454,10 +571,7 @@ impl Pane {
         if entries.is_empty() {
             return;
         }
-        let idx = self
-            .cursor_seq
-            .and_then(|seq| nearest_index(entries, seq))
-            .unwrap_or(entries.len() - 1);
+        let idx = self.cursor_index().unwrap_or(entries.len() - 1);
         let new_idx = idx
             .saturating_add_signed(delta as isize)
             .min(entries.len() - 1);
@@ -479,6 +593,7 @@ impl Pane {
                     self.follow = false;
                     self.dispatch_stream(ctx);
                 }
+                View::Investigation { .. } => self.follow = false,
             }
             return;
         }
@@ -496,7 +611,7 @@ impl Pane {
                 entries.retain(|entry| entry.seq <= bound);
                 term.clone()
             }
-            View::Stream { .. } => return,
+            View::Stream { .. } | View::Investigation { .. } => return,
         };
         self.follow = false;
         self.dispatch(
@@ -530,6 +645,9 @@ impl Pane {
             // stream. A stream pages to the absolute low bound.
             View::Results { .. } => self.goto_results_end(false, ctx),
             View::Stream { .. } => self.jump_to(ctx.bounds.0, ctx),
+            View::Investigation { entries, .. } => {
+                self.cursor_seq = entries.first().map(|entry| entry.seq)
+            }
         }
     }
 
@@ -538,6 +656,9 @@ impl Pane {
         match &self.view {
             View::Results { .. } => self.goto_results_end(true, ctx),
             View::Stream { .. } => self.jump_to(ctx.bounds.1, ctx),
+            View::Investigation { entries, .. } => {
+                self.cursor_seq = entries.last().map(|entry| entry.seq)
+            }
         }
     }
 
@@ -618,6 +739,7 @@ impl Pane {
             return false;
         }
         let term = match &self.view {
+            View::Investigation { .. } => return self.dispatch_investigation(ctx),
             View::Results { term, .. } if !term.is_empty() => term.clone(),
             _ => return false,
         };
@@ -670,6 +792,7 @@ impl Pane {
                     self.jump_to(seq, ctx);
                 }
             }
+            View::Investigation { .. } => return false,
         }
         true
     }
@@ -806,17 +929,39 @@ impl Pane {
         self.last_search = None;
     }
 
-    /// Entries between `anchor` and the cursor inclusive (visual selection).
+    /// Whether an entry lies in the linewise selection in display order.
+    pub fn linewise_selection_contains(&self, anchor: u64, seq: u64) -> bool {
+        let Some(cursor) = self.cursor_seq else {
+            return false;
+        };
+        let entries = self.view.entries();
+        let Some(anchor_idx) = entries.iter().position(|entry| entry.seq == anchor) else {
+            return false;
+        };
+        let Some(cursor_idx) = entries.iter().position(|entry| entry.seq == cursor) else {
+            return false;
+        };
+        let Some(entry_idx) = entries.iter().position(|entry| entry.seq == seq) else {
+            return false;
+        };
+        let (lo, hi) = (anchor_idx.min(cursor_idx), anchor_idx.max(cursor_idx));
+        entry_idx >= lo && entry_idx <= hi
+    }
+
+    /// Entries between `anchor` and the cursor inclusive in display order.
     pub fn selection(&self, anchor: u64) -> Vec<&Arc<LogEntry>> {
         let Some(cursor) = self.cursor_seq else {
             return Vec::new();
         };
-        let (lo, hi) = (anchor.min(cursor), anchor.max(cursor));
-        self.view
-            .entries()
-            .iter()
-            .filter(|entry| entry.seq >= lo && entry.seq <= hi)
-            .collect()
+        let entries = self.view.entries();
+        let Some(anchor_idx) = entries.iter().position(|entry| entry.seq == anchor) else {
+            return Vec::new();
+        };
+        let Some(cursor_idx) = entries.iter().position(|entry| entry.seq == cursor) else {
+            return Vec::new();
+        };
+        let (lo, hi) = (anchor_idx.min(cursor_idx), anchor_idx.max(cursor_idx));
+        entries[lo..=hi].iter().collect()
     }
 
     // ---- column cursor ---------------------------------------------------
@@ -904,10 +1049,13 @@ impl Pane {
     // ---- charwise selection ----------------------------------------------
 
     /// The ordered `(start, end)` positions of a charwise selection, where a
-    /// position is `(seq, col)`. `None` when the pane has no cursor.
+    /// position is `(display_index, col)`. `None` when either row is absent.
     fn charwise_bounds(&self, anchor_seq: u64, anchor_col: usize) -> Option<ColRange> {
-        let cursor = (self.cursor_seq?, self.effective_col());
-        let anchor = (anchor_seq, anchor_col);
+        let entries = self.view.entries();
+        let anchor_idx = entries.iter().position(|entry| entry.seq == anchor_seq)?;
+        let cursor_idx = self.cursor_index()?;
+        let cursor = (cursor_idx, self.effective_col());
+        let anchor = (anchor_idx, anchor_col);
         Some(if anchor <= cursor {
             (anchor, cursor)
         } else {
@@ -923,17 +1071,21 @@ impl Pane {
         anchor_seq: u64,
         anchor_col: usize,
     ) -> Option<(usize, usize)> {
+        let entries = self.view.entries();
+        let entry_idx = entries
+            .iter()
+            .position(|candidate| candidate.seq == entry.seq)?;
         let (start, end) = self.charwise_bounds(anchor_seq, anchor_col)?;
-        if entry.seq < start.0 || entry.seq > end.0 {
+        if entry_idx < start.0 || entry_idx > end.0 {
             return None;
         }
         let last = row_text(entry).chars().count().saturating_sub(1);
-        let from = if entry.seq == start.0 {
+        let from = if entry_idx == start.0 {
             start.1.min(last)
         } else {
             0
         };
-        let to = if entry.seq == end.0 {
+        let to = if entry_idx == end.0 {
             end.1.min(last)
         } else {
             last
@@ -949,8 +1101,9 @@ impl Pane {
         self.view
             .entries()
             .iter()
-            .filter(|entry| entry.seq >= start.0 && entry.seq <= end.0)
-            .filter_map(|entry| {
+            .enumerate()
+            .filter(|(idx, _)| *idx >= start.0 && *idx <= end.0)
+            .filter_map(|(_, entry)| {
                 let (from, to) = self.charwise_row_range(entry, anchor_seq, anchor_col)?;
                 let text: String = row_text(entry)
                     .chars()
@@ -973,8 +1126,8 @@ impl Pane {
     }
 }
 
-/// `((seq, col), (seq, col))` start/end positions of a charwise selection.
-type ColRange = ((u64, usize), (u64, usize));
+/// `((display_index, col), (display_index, col))` charwise selection bounds.
+type ColRange = ((usize, usize), (usize, usize));
 
 /// Whether one filter pattern matches a source.
 ///
@@ -1020,6 +1173,15 @@ pub fn nearest_index(entries: &[Arc<LogEntry>], seq: u64) -> Option<usize> {
     }
 }
 
+/// Index of the entry with seq closest to `seq` regardless of display order.
+fn nearest_index_any_order(entries: &[Arc<LogEntry>], seq: u64) -> Option<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, entry)| entry.seq.abs_diff(seq))
+        .map(|(idx, _)| idx)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1035,6 +1197,8 @@ mod tests {
             seq,
             msg: format!("entry {seq}"),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level: Some(LogLevel::Info),
             source: Source {
                 producer: "fake".to_string(),
@@ -1086,6 +1250,42 @@ mod tests {
         assert_eq!(nearest_index(&list, 24), Some(1));
         assert_eq!(nearest_index(&list, 26), Some(2));
         assert_eq!(nearest_index(&[], 5), None);
+    }
+
+    #[test]
+    fn investigation_cursor_and_selection_follow_display_order() {
+        let mut pane = Pane::new(PaneId(1));
+        pane.follow = false;
+        pane.view = View::Investigation {
+            entries: entries(&[3, 1, 2]),
+            anchor_ts: Utc::now(),
+        };
+        pane.cursor_seq = Some(1);
+        let (ctx, _rx) = ctx_with(&[], (1, 3));
+
+        assert_eq!(pane.cursor_index(), Some(1));
+        pane.move_cursor(1, &ctx);
+        assert_eq!(pane.cursor_seq, Some(2));
+        assert_eq!(
+            pane.selection(3)
+                .into_iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![3, 1, 2]
+        );
+
+        pane.cursor_col = 4;
+        let selected = pane.charwise_selection_text(3, 2);
+        let displayed = pane.view.entries();
+        let expected = [
+            row_text(&displayed[0]).chars().skip(2).collect::<String>(),
+            row_text(&displayed[1]),
+            row_text(&displayed[2]).chars().take(5).collect::<String>(),
+        ]
+        .join("\n");
+        assert_eq!(selected, expected);
+        assert!(pane.charwise_row_range(&displayed[1], 3, 2).is_some());
+        assert!(pane.linewise_selection_contains(3, 1));
     }
 
     #[test]
@@ -1806,7 +2006,7 @@ mod tests {
                     total: 3
                 })
             ),
-            View::Stream { .. } => panic!("expected results view"),
+            View::Stream { .. } | View::Investigation { .. } => panic!("expected results view"),
         }
 
         // The complete emission replaces the view and preserves the cursor.
@@ -1998,6 +2198,8 @@ mod tests {
             seq: 1,
             msg: "abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
             ts: Utc::now(),
+            ts_source: crate::log::TsSource::Ingest,
+            raw: None,
             level: Some(LogLevel::Info),
             source: Source {
                 producer: "p".to_string(),

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use chrono::{TimeZone, Utc};
 use ratatui::buffer::Buffer;
 
-use fml::log::{LogLevel, NewLogEntry, Source};
+use fml::log::{LogLevel, NewLogEntry, Source, TsSource};
 
 pub fn make_entry(msg: &str, source_id: &str) -> NewLogEntry {
     make_entry_with_source_display(msg, source_id, source_id)
@@ -40,6 +40,8 @@ pub fn make_entry_with_source_display_and_fields(
             .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
             .single()
             .expect("fixed timestamp"),
+        ts_source: TsSource::Ingest,
+        raw: None,
         level: Some(LogLevel::Info),
         source: Source {
             producer: "fake".to_string(),
